@@ -128,7 +128,7 @@ stellar-pay curl <url> --yes --max-usd 0.05   # unattended, under a ceiling
 
 stellar-pay setup --save main                 # new wallet (testnet: funded + trustline), sealed in the encrypted keystore
 stellar-pay account list                      # saved wallets (never the secret); import / default / remove / export too
-stellar-pay topup [--amount 25]               # QR + address to fund this wallet; waits for the deposit and confirms it
+stellar-pay topup [--amount 25]               # QR + address + real on-ramps (MoneyGram, exchanges, bridges); waits for the deposit
 stellar-pay send <G...address> --amount 1.5   # send USDC to an address (confirms first)
 stellar-pay history                           # recent USDC payments to/from the wallet
 ```
@@ -142,6 +142,12 @@ scrypt — Node built-ins, no plaintext on disk). `account list/default/remove/
 export` manage them. The default account unlocks with `STELLAR_PAY_PASSPHRASE`
 (for agents and the MCP) or an interactive prompt. `STELLAR_SECRET_KEY` always
 wins when set.
+
+`topup` on mainnet lists real ways to get USDC onto Stellar, pulled live from
+Stellar Light's partner directory — fiat on-ramps (MoneyGram cash→USDC,
+FinClusive, and regional anchors), the exchange withdraw path (Coinbase's
+embedded Onramp does not reach Stellar, so it's buy-then-withdraw-on-Stellar),
+and a cross-chain bridge (Rozo).
 
 ## Proof you can run
 

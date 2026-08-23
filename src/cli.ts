@@ -35,6 +35,7 @@ import {
 	offerUSD,
 	readOffers,
 } from "./pay/offers.js";
+import { BRIDGES, EXCHANGES, partnerRamps } from "./pay/ramps.js";
 import {
 	addTrustline,
 	history,
@@ -300,6 +301,25 @@ async function main() {
 		}
 		console.log(`pay URI:   ${uri}`);
 		console.log(t.guidance);
+		// On mainnet, surface real ways to get USDC onto Stellar — our own
+		// partner on-ramps (live), plus curated exchange and bridge paths.
+		if (t.network === "stellar:pubnet") {
+			const ramps = await partnerRamps();
+			if (ramps.length) {
+				console.log("\nfiat on-ramps (Stellar Light partners):");
+				for (const r of ramps.slice(0, 5))
+					console.log(
+						`  ${r.name}${r.usdc ? " · USDC" : ""}${r.regions.length ? ` · ${r.regions.join("/")}` : ""}${r.tagline ? ` — ${r.tagline}` : ""}  ${r.url}`,
+					);
+			}
+			console.log(
+				`buy on an exchange, then withdraw USDC on the Stellar network: ${EXCHANGES.map((e) => `${e.name} ${e.url}`).join("  ·  ")}`,
+			);
+			for (const b of BRIDGES)
+				console.log(
+					`bridge (USDC from another chain): ${b.name} ${b.url} — ${b.note}`,
+				);
+		}
 		// Wait for the deposit and confirm it, like `pay topup` — interactively
 		// only, so an agent or a pipe never hangs.
 		if (process.stdout.isTTY && !t.hasUsdcTrustline) {
