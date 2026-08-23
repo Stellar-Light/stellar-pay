@@ -87,6 +87,22 @@ be USDC and within a per-call ceiling. And, inside a task, **[Scrimp](https://gi
 have paid, and the waste rate. Proven on testnet: pay once, ask the same URL
 again in a task → replayed free, one on-chain payment for two calls.
 
+## Wrap any tool — `stellar-pay run`
+
+The MCP pays for calls an agent makes through it. `run` pays for calls a tool
+makes that we didn't write — `curl`, a Python script, another agent's client:
+
+```sh
+stellar-pay run --yes --max-usd 0.05 -- curl -X POST https://apiserver.mpprouter.dev/v1/services/exa/search -d '{"query":"stellar"}'
+stellar-pay run -- python my_script.py        # any command; its 402s get paid
+```
+
+It starts a localhost proxy, points the child at it (`HTTPS_PROXY` + a local CA
+the child trusts, never installed system-wide), and routes every request
+through the same pay loop: on a 402 it reads the offer, pays in USDC, and
+retries — the tool just sees the 200. The proxy lives only while the command
+runs. HTTPS is intercepted with a per-host cert minted by the local CA.
+
 ## For agents: MCP, Claude Code, Raven
 
 An MCP server gives agents the whole loop under that governance:

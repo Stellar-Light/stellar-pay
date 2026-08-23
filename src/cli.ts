@@ -10,6 +10,7 @@
  *   topup [--buy] [--amount N]             fund this wallet: --buy opens an on-ramp + waits; else QR + address + ramps
  *   account <list|import|default|remove|export> [--name N]   manage saved wallets (encrypted file or --keychain)
  *   setup --save <name> [--keychain]       new wallet sealed in the encrypted file, or (macOS) the Keychain
+ *   run [--yes --max-usd N] -- <cmd>…      wrap ANY command behind a proxy that pays its 402s
  *   mcp                                    serve the MCP on stdio
  *   claude|codex [args…]                   launch the agent with the MCP mounted
  * Wallet: STELLAR_SECRET_KEY, network: STELLAR_NETWORK (default stellar:pubnet).
@@ -144,6 +145,69 @@ async function main() {
 	if (a.cmd === "mcp") {
 		const { serveStdio } = await import("./mcp.js");
 		await serveStdio();
+		return;
+	}
+	if (a.cmd === "run") {
+		// Wrap ANY command: run it behind a local proxy that pays its 402s.
+		// `stellar-pay run [--yes --max-usd N] -- <cmd> <args…>`
+		const sep = process.argv.indexOf("--");
+		const cmdArgs =
+			sep >= 0
+				? process.argv.slice(sep + 1)
+				: process.argv.slice(2).filter((t, i, arr) => {
+						// everything after the first non-flag token (the command)
+						const first = arr.findIndex(
+							(x) => x !== "run" && !x.startsWith("-"),
+						);
+						return i > first;
+					});
+		const command =
+			sep >= 0
+				? cmdArgs.shift()
+				: process.argv.slice(2).find((x) => x !== "run" && !x.startsWith("-"));
+		if (!command) {
+			console.error(
+				"usage: stellar-pay run [--yes --max-usd N] -- <command> [args…]",
+			);
+			process.exitCode = 1;
+			return;
+		}
+		await ensureSecretLoaded();
+		const wallet = loadWallet();
+		const { startProxy, proxyEnv } = await import("./pay/proxy.js");
+		const approve = async (o: Offer) => {
+			if (wallet.network === "stellar:testnet") return true; // testnet has no value
+			const usd = offerUSD(o);
+			const line = `pay ${describeOffer(o)} for a request from \`${command}\``;
+			if (a.yes) {
+				const ok = usd != null && usd <= a.maxUsd;
+				console.error(
+					`${line} ${ok ? `(auto-approved under $${a.maxUsd})` : `(refused: ${usd == null ? "not USDC" : `over $${a.maxUsd}`})`}`,
+				);
+				return ok;
+			}
+			return ask(line);
+		};
+		const proxy = await startProxy({
+			wallet,
+			prefer: a.prefer,
+			approve,
+			onPaid: (p) =>
+				console.error(
+					`  ✓ paid ${p.usd != null ? `$${p.usd.toFixed(4)}` : "?"} via ${p.protocol.toUpperCase()} for ${p.url}${p.hash ? ` · ${explorer(wallet.network, p.hash)}` : ""}`,
+				),
+		});
+		console.error(
+			`stellar-pay: proxy on 127.0.0.1:${proxy.port}, wrapping \`${command}\` (Ctrl-C to stop)`,
+		);
+		const child = spawn(command, cmdArgs, {
+			stdio: "inherit",
+			env: { ...process.env, ...proxyEnv(proxy.port, proxy.caPath) },
+		});
+		child.on("exit", async (code) => {
+			await proxy.close();
+			process.exit(code ?? 0);
+		});
 		return;
 	}
 	if (a.cmd === "claude" || a.cmd === "codex") {
