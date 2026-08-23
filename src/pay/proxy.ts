@@ -211,7 +211,7 @@ export async function startProxy(
 	// The proxy the child points at: plain-HTTP requests handled directly;
 	// CONNECT tunnels are redirected into our own TLS terminator above.
 	const proxy = http.createServer((req, res) => handle(req, res, "http"));
-	proxy.on("connect", (req, clientSocket, head) => {
+	proxy.on("connect", (_req, clientSocket, head) => {
 		const upstream = netConnect(tlsPort, "127.0.0.1", () => {
 			clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
 			if (head?.length) upstream.write(head);

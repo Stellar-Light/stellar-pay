@@ -150,21 +150,19 @@ async function main() {
 	if (a.cmd === "run") {
 		// Wrap ANY command: run it behind a local proxy that pays its 402s.
 		// `stellar-pay run [--yes --max-usd N] -- <cmd> <args…>`
+		// The command is everything after `--` (the documented form), or the
+		// first bare token and the rest if `--` is omitted.
 		const sep = process.argv.indexOf("--");
-		const cmdArgs =
-			sep >= 0
-				? process.argv.slice(sep + 1)
-				: process.argv.slice(2).filter((t, i, arr) => {
-						// everything after the first non-flag token (the command)
-						const first = arr.findIndex(
-							(x) => x !== "run" && !x.startsWith("-"),
-						);
-						return i > first;
-					});
-		const command =
-			sep >= 0
-				? cmdArgs.shift()
-				: process.argv.slice(2).find((x) => x !== "run" && !x.startsWith("-"));
+		let command: string | undefined;
+		let cmdArgs: string[];
+		if (sep >= 0) {
+			[command, ...cmdArgs] = process.argv.slice(sep + 1);
+		} else {
+			const rest = process.argv.slice(2).filter((x) => x !== "run");
+			const at = rest.findIndex((x) => !x.startsWith("-"));
+			command = at >= 0 ? rest[at] : undefined;
+			cmdArgs = at >= 0 ? rest.slice(at + 1) : [];
+		}
 		if (!command) {
 			console.error(
 				"usage: stellar-pay run [--yes --max-usd N] -- <command> [args…]",
@@ -549,7 +547,7 @@ async function main() {
 		});
 		if (a.include) {
 			console.log(`HTTP ${r.res.status}`);
-			r.res.headers.forEach((v, k) => console.log(`${k}: ${v}`));
+			for (const [k, v] of r.res.headers) console.log(`${k}: ${v}`);
 			console.log();
 		}
 		process.stdout.write(await r.res.text());

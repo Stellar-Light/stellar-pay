@@ -56,7 +56,7 @@ function approveGate(w: Wallet): (o: Offer) => Promise<boolean> {
 		return usd != null && usd <= MAX_PER_CALL;
 	};
 }
-function gateRefusal(w: Wallet, o: Offer) {
+function gateRefusal(o: Offer) {
 	const usd = offerUSD(o);
 	if (usd == null)
 		return `the offer is not USDC (${o.asset ?? "unknown asset"}); only USDC is auto-approved on mainnet`;
@@ -83,7 +83,7 @@ async function getGoverned(prefer?: "x402" | "mpp"): Promise<Governed> {
 		wallet: w,
 		catalog,
 		approve: approveGate(w),
-		refusalReason: (offer) => gateRefusal(w, offer),
+		refusalReason: (offer) => gateRefusal(offer),
 		prefer,
 		budgetPerCall: MAX_PER_CALL,
 	});
