@@ -304,13 +304,19 @@ async function main() {
 		// the way `pay topup` does. The address is pre-filled where the provider
 		// supports it; otherwise it's printed to paste.
 		if (a.buy && t.network === "stellar:pubnet") {
-			const [primary] = onramps(t.address, a.amount);
+			const all = onramps(t.address, a.amount);
+			const primary = all[0];
+			if (!primary) {
+				console.error("no on-ramp configured");
+				process.exitCode = 1;
+				return;
+			}
 			console.log(`address:   ${t.address}   (paste this if the page asks)`);
 			console.log(
 				`opening ${primary.name} on-ramp in your browser: ${primary.url}`,
 			);
 			openBrowser(primary.url);
-			const others = onramps(t.address, a.amount).slice(1);
+			const others = all.slice(1);
 			console.log(
 				`other on-ramps: ${others.map((o) => `${o.name} ${o.url}`).join("  ·  ")}`,
 			);
