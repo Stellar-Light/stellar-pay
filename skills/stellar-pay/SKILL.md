@@ -28,7 +28,11 @@ or browse with it.
 - `curl({url, method, headers, body})` — make the request and handle the 402
   with a USDC payment inside the configured ceiling.
 - `get_balance()` — USDC and XLM balances of the active wallet.
-- `spend_report()` — what this session has paid so far.
+- `begin_task({task_id, budget_usd?})` / `end_task({task_id, succeeded?})` —
+  bracket a run of related paid calls. Inside a task, a repeat or still-fresh
+  request is replayed free, a failing provider is quarantined, and the task
+  holds to its budget; end_task labels each purchase contributed or wasted.
+- `spend_report()` — spent vs would-have-spent, saved, suppressed, waste rate.
 
 # Core Workflow
 
@@ -41,7 +45,9 @@ or browse with it.
 5. Before the first paid call, state a compact plan: endpoint, why it
    matches, expected calls, estimated spend, smallest useful request. Ask
    before multi-call exploration or anything likely to exceed the ceiling.
-6. Make the smallest useful request first; paid calls are sequential unless
+6. For a run of related calls, open begin_task first so a repeat buy is
+   replayed free instead of paid twice; end_task when the goal is done.
+7. Make the smallest useful request first; paid calls are sequential unless
    the user asks otherwise.
 7. Prices come from the live 402, never from the catalog; the catalog tells
    you what is alive and roughly what it costs.
