@@ -32,7 +32,7 @@ async function main() {
 	);
 	const a = Keypair.random();
 	const b = Keypair.random();
-	await addAccount("main", a.secret(), "stellar:pubnet", true);
+	await addAccount("main", a.secret(), "stellar:pubnet", { makeDefault: true });
 	await addAccount("alt", b.secret(), "stellar:testnet");
 	const list = listAccounts();
 	log(

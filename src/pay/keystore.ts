@@ -1,17 +1,20 @@
 /**
  * A local encrypted keystore so a wallet secret isn't pasted on every command.
  *
- * The secret is sealed with AES-256-GCM under a key derived from a passphrase
- * (scrypt) — Node built-ins only, no dependency, no plaintext key on disk. The
- * passphrase is the user's; this file never originates or logs it. `pay` uses
- * the OS keychain (Touch ID); an encrypted file is the cross-platform
- * equivalent that needs no native module.
+ * Two backends, same goal as pay.sh's gated payments — the key is never pasted
+ * per command and never sits in plaintext:
+ *   - file: sealed with AES-256-GCM under a scrypt-derived passphrase key (Node
+ *     built-ins, cross-platform, no dependency).
+ *   - keychain: the secret lives in the macOS Keychain, guarded by the OS, no
+ *     passphrase. (`--keychain`; a per-signature Touch ID prompt is the native
+ *     Security-framework upgrade.)
  *
  * Resolution order for a wallet secret, so existing setups keep working:
  *   1. STELLAR_SECRET_KEY in the environment (unchanged)
  *   2. the default keystore account, unlocked with STELLAR_PAY_PASSPHRASE
  *      (env, for agents/MCP) or an interactive prompt (a TTY).
  */
+import { execFileSync } from "node:child_process";
 import {
 	createCipheriv,
 	createDecipheriv,
@@ -26,7 +29,14 @@ import { Keypair } from "@stellar/stellar-sdk";
 import type { Network } from "./wallet.js";
 
 type Sealed = { salt: string; iv: string; tag: string; ciphertext: string };
-type Account = { publicKey: string; network: Network; sealed: Sealed };
+// A file account seals the secret under a passphrase; a keychain account keeps
+// the secret in the OS keychain (macOS Keychain today) and stores no ciphertext.
+type Account = {
+	publicKey: string;
+	network: Network;
+	backend?: "file" | "keychain";
+	sealed?: Sealed;
+};
 type Store = {
 	version: 1;
 	default: string | null;
@@ -52,6 +62,57 @@ function write(s: Store): void {
 	mkdirSync(dirname(FILE), { recursive: true });
 	writeFileSync(FILE, JSON.stringify(s, null, 2));
 	chmodSync(FILE, 0o600); // owner-only, even though the secret is encrypted
+}
+
+// --- OS keychain backend (macOS `security`; no native dependency) --------------
+// pay.sh's "gated payments" goal: the secret lives in the OS keychain, which
+// the OS guards, instead of a passphrase-encrypted file. A per-signature Touch
+// ID prompt needs a native Security-framework binding (roadmap); this gives
+// keychain storage and its access controls today, with no plaintext on disk.
+
+export const keychainAvailable = process.platform === "darwin";
+const KC_ACCOUNT = "stellar-pay";
+const kcService = (name: string) => `stellar-pay:${name}`;
+
+function keychainSet(name: string, secret: string): void {
+	if (!keychainAvailable)
+		throw new Error(
+			"the keychain backend is macOS-only; use the encrypted file (STELLAR_PAY_PASSPHRASE)",
+		);
+	// -U updates an existing item; the secret is passed as an argument, briefly
+	// visible to `ps` — acceptable for an alpha, and the native binding removes it.
+	execFileSync(
+		"security",
+		[
+			"add-generic-password",
+			"-a",
+			KC_ACCOUNT,
+			"-s",
+			kcService(name),
+			"-w",
+			secret,
+			"-U",
+		],
+		{ stdio: "ignore" },
+	);
+}
+function keychainGet(name: string): string {
+	return execFileSync(
+		"security",
+		["find-generic-password", "-a", KC_ACCOUNT, "-s", kcService(name), "-w"],
+		{ encoding: "utf8" },
+	).trim();
+}
+function keychainDelete(name: string): void {
+	try {
+		execFileSync(
+			"security",
+			["delete-generic-password", "-a", KC_ACCOUNT, "-s", kcService(name)],
+			{ stdio: "ignore" },
+		);
+	} catch {
+		// already gone
+	}
 }
 
 function seal(secret: string, passphrase: string): Sealed {
@@ -120,33 +181,45 @@ export async function addAccount(
 	name: string,
 	secret: string,
 	network: Network,
-	makeDefault?: boolean,
-): Promise<{ name: string; publicKey: string }> {
+	opts: { makeDefault?: boolean; backend?: "file" | "keychain" } = {},
+): Promise<{ name: string; publicKey: string; backend: "file" | "keychain" }> {
 	const kp = Keypair.fromSecret(secret); // validates
-	const s = read();
-	if (s.accounts[name]) throw new Error(`account "${name}" already exists`);
-	const pass = await passphrase(true);
-	s.accounts[name] = {
-		publicKey: kp.publicKey(),
-		network,
-		sealed: seal(secret, pass),
-	};
-	if (makeDefault || s.default === null) s.default = name;
-	write(s);
-	return { name, publicKey: kp.publicKey() };
+	const st = read();
+	if (st.accounts[name]) throw new Error(`account "${name}" already exists`);
+	const backend = opts.backend ?? "file";
+	if (backend === "keychain") {
+		keychainSet(name, secret); // OS keychain holds the secret; no ciphertext on disk
+		st.accounts[name] = { publicKey: kp.publicKey(), network, backend };
+	} else {
+		st.accounts[name] = {
+			publicKey: kp.publicKey(),
+			network,
+			backend,
+			sealed: seal(secret, await passphrase(true)),
+		};
+	}
+	if (opts.makeDefault || st.default === null) st.default = name;
+	write(st);
+	return { name, publicKey: kp.publicKey(), backend };
 }
 
 export function listAccounts(): {
 	default: string | null;
-	accounts: Array<{ name: string; publicKey: string; network: Network }>;
+	accounts: Array<{
+		name: string;
+		publicKey: string;
+		network: Network;
+		backend: "file" | "keychain";
+	}>;
 } {
-	const s = read();
+	const st = read();
 	return {
-		default: s.default,
-		accounts: Object.entries(s.accounts).map(([name, a]) => ({
+		default: st.default,
+		accounts: Object.entries(st.accounts).map(([name, a]) => ({
 			name,
 			publicKey: a.publicKey,
 			network: a.network,
+			backend: a.backend ?? "file",
 		})),
 	};
 }
@@ -159,19 +232,37 @@ export function setDefault(name: string): void {
 }
 
 export function removeAccount(name: string): void {
-	const s = read();
-	if (!s.accounts[name]) throw new Error(`no account "${name}"`);
-	delete s.accounts[name];
-	if (s.default === name) s.default = Object.keys(s.accounts)[0] ?? null;
-	write(s);
+	const st = read();
+	const acct = st.accounts[name];
+	if (!acct) throw new Error(`no account "${name}"`);
+	if (acct.backend === "keychain") keychainDelete(name);
+	delete st.accounts[name];
+	if (st.default === name) st.default = Object.keys(st.accounts)[0] ?? null;
+	write(st);
+}
+
+async function readSecret(acct: Account): Promise<string> {
+	if (acct.backend === "keychain") return keychainGet(nameOf(acct));
+	if (!acct.sealed) throw new Error("account has no stored secret");
+	return unseal(acct.sealed, await passphrase());
+}
+
+// keychain items key on the account name; recover it from the store.
+function nameOf(acct: Account): string {
+	const st = read();
+	const entry = Object.entries(st.accounts).find(
+		([, a]) => a === acct || a.publicKey === acct.publicKey,
+	);
+	if (!entry) throw new Error("account not found in keystore");
+	return entry[0];
 }
 
 export async function exportSecret(name?: string): Promise<string> {
-	const s = read();
-	const key = name ?? s.default;
-	if (!key || !s.accounts[key])
-		throw new Error(`no account "${key ?? "(default)"}"`);
-	return unseal(s.accounts[key].sealed, await passphrase());
+	const st = read();
+	const key = name ?? st.default;
+	const acct = key ? st.accounts[key] : undefined;
+	if (!acct) throw new Error(`no account "${key ?? "(default)"}"`);
+	return readSecret(acct);
 }
 
 /**
@@ -184,7 +275,7 @@ export async function ensureSecretLoaded(): Promise<boolean> {
 	const s = read();
 	const acct = s.default ? s.accounts[s.default] : undefined;
 	if (!acct) return false;
-	process.env.STELLAR_SECRET_KEY = unseal(acct.sealed, await passphrase());
+	process.env.STELLAR_SECRET_KEY = await readSecret(acct);
 	if (!process.env.STELLAR_NETWORK) process.env.STELLAR_NETWORK = acct.network;
 	return true;
 }

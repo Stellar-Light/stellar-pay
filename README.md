@@ -140,9 +140,11 @@ A wallet is `STELLAR_SECRET_KEY` in the environment, or a **local encrypted
 keystore** so the key isn't pasted every time. `setup --save <name>` and
 `account import --name <name>` seal a secret under a passphrase (AES-256-GCM,
 scrypt — Node built-ins, no plaintext on disk). `account list/default/remove/
-export` manage them. The default account unlocks with `STELLAR_PAY_PASSPHRASE`
-(for agents and the MCP) or an interactive prompt. `STELLAR_SECRET_KEY` always
-wins when set.
+export` manage them. On macOS, `--keychain` stores the secret in the **Keychain**
+instead — OS-guarded, no passphrase (pay.sh's gated-payments goal; a
+per-signature Touch ID prompt is the native upgrade). The default account
+unlocks with `STELLAR_PAY_PASSPHRASE` (for agents and the MCP) or an
+interactive prompt. `STELLAR_SECRET_KEY` always wins when set.
 
 `topup` on mainnet lists real ways to get USDC onto Stellar, pulled live from
 Stellar Light's partner directory — fiat on-ramps (MoneyGram cash→USDC,

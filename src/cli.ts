@@ -8,7 +8,8 @@
  *   send <G...address> --amount <USDC> [--yes]   send USDC to an address
  *   history                                recent USDC payments to/from the wallet
  *   topup [--buy] [--amount N]             fund this wallet: --buy opens an on-ramp + waits; else QR + address + ramps
- *   account <list|import|default|remove|export> [--name N]   manage saved (encrypted) wallets
+ *   account <list|import|default|remove|export> [--name N]   manage saved wallets (encrypted file or --keychain)
+ *   setup --save <name> [--keychain]       new wallet sealed in the encrypted file, or (macOS) the Keychain
  *   mcp                                    serve the MCP on stdio
  *   claude|codex [args…]                   launch the agent with the MCP mounted
  * Wallet: STELLAR_SECRET_KEY, network: STELLAR_NETWORK (default stellar:pubnet).
@@ -62,6 +63,7 @@ type Args = {
 	name?: string;
 	trustline: boolean;
 	buy: boolean;
+	keychain: boolean;
 };
 
 function parse(argv: string[]): Args {
@@ -75,6 +77,7 @@ function parse(argv: string[]): Args {
 		sandbox: false,
 		trustline: false,
 		buy: false,
+		keychain: false,
 	};
 	for (let i = 1; i < argv.length; i++) {
 		const t = argv[i] ?? "";
@@ -96,6 +99,7 @@ function parse(argv: string[]): Args {
 		else if (t === "--name" || t === "--save") a.name = next();
 		else if (t === "--trustline") a.trustline = true;
 		else if (t === "--buy") a.buy = true;
+		else if (t === "--keychain") a.keychain = true;
 		else if (!t.startsWith("-") && !a.url) a.url = t;
 	}
 	return a;
@@ -224,7 +228,10 @@ async function main() {
 		// --save <name> seals the new secret in the encrypted keystore instead
 		// of printing it; otherwise print once for the user to store.
 		if (a.name) {
-			const saved = await addAccount(a.name, r.secret, network, true);
+			const saved = await addAccount(a.name, r.secret, network, {
+				makeDefault: true,
+				backend: a.keychain ? "keychain" : "file",
+			});
 			console.log(
 				`saved to keystore as "${saved.name}" (default) — ${keystorePath}`,
 			);
@@ -264,7 +271,10 @@ async function main() {
 				return console.error(
 					"set STELLAR_SECRET_KEY to the S… secret you want to import, then re-run",
 				);
-			const r = await addAccount(a.name, secret, network, true);
+			const r = await addAccount(a.name, secret, network, {
+				makeDefault: true,
+				backend: a.keychain ? "keychain" : "file",
+			});
 			console.log(`imported "${r.name}" — ${r.publicKey}`);
 			return;
 		}
