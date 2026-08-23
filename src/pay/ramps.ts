@@ -95,3 +95,36 @@ export const BRIDGES: Array<{ name: string; url: string; note: string }> = [
 		note: "pay from USDC/USDT on Base, Solana, Ethereum… and settle to Stellar",
 	},
 ];
+
+/**
+ * Hosted card/PayPal on-ramps that deliver USDC to a Stellar address, for
+ * `topup --buy` — the browser flow pay.sh's topup uses. Where the provider
+ * accepts a wallet address in the URL it's pre-filled; otherwise the user
+ * pastes the address the command prints. Override the default with
+ * STELLAR_PAY_ONRAMP_URL (an `{ADDRESS}` / `{AMOUNT}` placeholder is filled).
+ */
+export function onramps(
+	address: string,
+	amount?: string,
+): Array<{ name: string; url: string }> {
+	const amt = amount && Number(amount) > 0 ? amount : "";
+	const list: Array<{ name: string; url: string }> = [];
+	const override = process.env.STELLAR_PAY_ONRAMP_URL;
+	if (override)
+		list.push({
+			name: "configured",
+			url: override.replace("{ADDRESS}", address).replace("{AMOUNT}", amt),
+		});
+	list.push(
+		// MoonPay — the same provider pay.sh uses; USDC, wallet address pre-filled.
+		{
+			name: "MoonPay",
+			url: `https://buy.moonpay.com?currencyCode=usdc&walletAddress=${address}${amt ? `&baseCurrencyAmount=${amt}` : ""}`,
+		},
+		// Lobstr — Stellar-native card on-ramp for USDC on Stellar.
+		{ name: "Lobstr", url: "https://lobstr.co/buy-usd-coin-stellar/" },
+		// Rozo — pay/checkout that can settle USDC on Stellar.
+		{ name: "Rozo", url: "https://rozo.ai" },
+	);
+	return list;
+}

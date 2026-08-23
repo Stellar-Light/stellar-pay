@@ -7,7 +7,7 @@
  *   setup [--trustline]                    new wallet (testnet: funded + trustline), or add trustline to STELLAR_SECRET_KEY
  *   send <G...address> --amount <USDC> [--yes]   send USDC to an address
  *   history                                recent USDC payments to/from the wallet
- *   topup                                  how to fund this wallet (testnet: auto-funds)
+ *   topup [--buy] [--amount N]             fund this wallet: --buy opens an on-ramp + waits; else QR + address + ramps
  *   account <list|import|default|remove|export> [--name N]   manage saved (encrypted) wallets
  *   mcp                                    serve the MCP on stdio
  *   claude|codex [args…]                   launch the agent with the MCP mounted
@@ -35,7 +35,7 @@ import {
 	offerUSD,
 	readOffers,
 } from "./pay/offers.js";
-import { BRIDGES, EXCHANGES, partnerRamps } from "./pay/ramps.js";
+import { BRIDGES, EXCHANGES, onramps, partnerRamps } from "./pay/ramps.js";
 import {
 	addTrustline,
 	history,
@@ -61,6 +61,7 @@ type Args = {
 	amount?: string;
 	name?: string;
 	trustline: boolean;
+	buy: boolean;
 };
 
 function parse(argv: string[]): Args {
@@ -73,6 +74,7 @@ function parse(argv: string[]): Args {
 		include: false,
 		sandbox: false,
 		trustline: false,
+		buy: false,
 	};
 	for (let i = 1; i < argv.length; i++) {
 		const t = argv[i] ?? "";
@@ -93,9 +95,21 @@ function parse(argv: string[]): Args {
 		else if (t === "--amount") a.amount = next();
 		else if (t === "--name" || t === "--save") a.name = next();
 		else if (t === "--trustline") a.trustline = true;
+		else if (t === "--buy") a.buy = true;
 		else if (!t.startsWith("-") && !a.url) a.url = t;
 	}
 	return a;
+}
+
+function openBrowser(url: string): void {
+	const cmd =
+		process.platform === "darwin"
+			? "open"
+			: process.platform === "win32"
+				? "cmd"
+				: "xdg-open";
+	const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+	spawn(cmd, args, { stdio: "ignore", detached: true }).unref();
 }
 
 const explorer = (network: string, hash: string) =>
@@ -286,6 +300,37 @@ async function main() {
 		const w = loadWallet();
 		const t = await topupInfo(w);
 		const uri = payUri(t.address, t.network, a.amount);
+		// `--buy`: open a hosted on-ramp in the browser and wait for the deposit,
+		// the way `pay topup` does. The address is pre-filled where the provider
+		// supports it; otherwise it's printed to paste.
+		if (a.buy && t.network === "stellar:pubnet") {
+			const [primary] = onramps(t.address, a.amount);
+			console.log(`address:   ${t.address}   (paste this if the page asks)`);
+			console.log(
+				`opening ${primary.name} on-ramp in your browser: ${primary.url}`,
+			);
+			openBrowser(primary.url);
+			const others = onramps(t.address, a.amount).slice(1);
+			console.log(
+				`other on-ramps: ${others.map((o) => `${o.name} ${o.url}`).join("  ·  ")}`,
+			);
+			if (!t.hasUsdcTrustline)
+				console.log(
+					"note: add a USDC trustline (`stellar-pay setup --trustline`) so the delivery can land",
+				);
+			console.error("\nwaiting for USDC to arrive (Ctrl-C to stop)…");
+			const got = await pollFunding(t.address, t.network, {
+				onTick: (ms) =>
+					process.stderr.write(`\r  ${Math.round(ms / 1000)}s…   `),
+			});
+			process.stderr.write("\r");
+			console.log(
+				got
+					? `✓ received ${got.received} USDC — balance now ${got.balance}`
+					: "▲ nothing arrived in 5m — re-run `stellar-pay topup --buy` to keep watching",
+			);
+			return;
+		}
 		console.log(`address:   ${t.address}`);
 		console.log(`network:   ${t.network}`);
 		console.log(

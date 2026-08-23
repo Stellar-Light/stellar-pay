@@ -128,7 +128,8 @@ stellar-pay curl <url> --yes --max-usd 0.05   # unattended, under a ceiling
 
 stellar-pay setup --save main                 # new wallet (testnet: funded + trustline), sealed in the encrypted keystore
 stellar-pay account list                      # saved wallets (never the secret); import / default / remove / export too
-stellar-pay topup [--amount 25]               # QR + address + real on-ramps (MoneyGram, exchanges, bridges); waits for the deposit
+stellar-pay topup                             # QR + address + real on-ramps (MoneyGram, exchanges, bridges); waits for the deposit
+stellar-pay topup --buy --amount 25           # opens a card on-ramp (MoonPay/Lobstr/Rozo) pre-filled, then waits for the USDC
 stellar-pay send <G...address> --amount 1.5   # send USDC to an address (confirms first)
 stellar-pay history                           # recent USDC payments to/from the wallet
 ```
