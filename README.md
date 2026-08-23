@@ -1,5 +1,5 @@
 <p align="center"><b>stellar-pay</b></p>
-<p align="center">Pay for any API from a Stellar wallet — and know, before you try, which ones will actually take it.</p>
+<p align="center"><b>The payments layer for agents on Stellar.</b><br>Find a paid API, pay it in USDC, get the data — from a CLI or an MCP.</p>
 <p align="center"><i>Inspired by Solana's <a href="https://github.com/solana-foundation/pay">pay.sh</a>: an HTTP client that settles 402s in stablecoins. Built on Stellar's rails, around a catalog that is probed instead of listed.</i></p>
 
 ---
