@@ -92,7 +92,7 @@ Private alpha — from source:
 
 ```sh
 git clone https://github.com/Stellar-Light/stellar-pay && cd stellar-pay
-npm install --legacy-peer-deps      # @x402/stellar and @stellar/mpp pin different stellar-sdk majors; both run on 16
+npm install                         # .npmrc sets legacy-peer-deps: @x402/stellar and @stellar/mpp pin different stellar-sdk majors; both run on 16
 ```
 
 ## Use
