@@ -4,9 +4,16 @@
  *   curl <url> [-X M] [-H "K: V"]… [-d body] [--yes] [--max-usd N] [--x402|--mpp] [-i]
  *   offers <url> [-X M] [-H …] [-d body]     show what the 402 asks for; pay nothing
  *   balance | whoami
+ *   mcp                                    serve the MCP on stdio
+ *   claude [args…]                         launch Claude Code with the MCP mounted (like `pay claude`)
  * Wallet: STELLAR_SECRET_KEY, network: STELLAR_NETWORK (default stellar:pubnet).
  */
+import { spawn } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { fileURLToPath } from "node:url";
 import { payFetch } from "./pay/curl.js";
 import {
 	describeOffer,
@@ -85,6 +92,35 @@ async function main() {
 		signal: AbortSignal.timeout(60_000),
 	};
 
+	if (a.cmd === "mcp") {
+		const { serveStdio } = await import("./mcp.js");
+		await serveStdio();
+		return;
+	}
+	if (a.cmd === "claude") {
+		// What `pay claude` does: mount the MCP and hand over. The server runs
+		// from this checkout with the environment it inherits — the wallet key
+		// never touches the config file.
+		const here = fileURLToPath(new URL(".", import.meta.url));
+		const tsx = join(here, "..", "node_modules", "tsx", "dist", "cli.mjs");
+		const cfg = {
+			mcpServers: {
+				"stellar-pay": {
+					command: process.execPath,
+					args: [tsx, join(here, "cli.ts"), "mcp"],
+				},
+			},
+		};
+		const file = join(mkdtempSync(join(tmpdir(), "stellar-pay-")), "mcp.json");
+		writeFileSync(file, JSON.stringify(cfg));
+		const child = spawn(
+			"claude",
+			["--mcp-config", file, ...process.argv.slice(3)],
+			{ stdio: "inherit" },
+		);
+		child.on("exit", (code) => process.exit(code ?? 0));
+		return;
+	}
 	if (a.cmd === "whoami") {
 		const w = loadWallet();
 		console.log(`${w.publicKey}  ${w.network}`);

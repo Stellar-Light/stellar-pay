@@ -38,10 +38,25 @@ mpp-router. If it is in the catalog, a Stellar wallet can pay for it right now.
 
 ### 🤖 AI-Native with MCP
 
-An MCP server gives agents the same loop through the same approval policy:
-find a paid API for the task, see the price, pay within a ceiling you set,
-get the data. `stellar-pay claude` launches Claude Code with it mounted.
-*(Phase C — in progress.)*
+`stellar-pay` ships an MCP server, so any MCP client — Claude Code, Claude
+Desktop, Cursor, Codex — gets the same loop under a spending policy you set:
+`search_catalog` a task, see the price, `curl` it, get the data, with the
+settlement hash in the result.
+
+```sh
+npm run pay -- claude            # launch Claude Code with stellar-pay mounted (what `pay claude` does)
+npm run mcp                      # or serve it on stdio for any other client
+```
+
+Tools: `search_catalog`, `get_catalog_entry`, `list_catalog`, `curl`,
+`get_balance`, `spend_report`. Policy: `STELLAR_PAY_MAX_USD_PER_CALL`
+(default 0.05) and `STELLAR_PAY_SESSION_BUDGET_USD` (default 1.00); only USDC
+is auto-approved on mainnet. `npm run test:mcp` drives every tool over stdio
+and ends with a paid call on testnet. The agent-facing playbook is
+[`skills/stellar-pay/SKILL.md`](skills/stellar-pay/SKILL.md).
+
+Using the catalog needs no secret: the daily job publishes a snapshot to the
+`catalog` branch of this repo and the MCP/CLI read it through your `gh` auth.
 
 ### 🔐 Approval Before Signing
 
@@ -87,8 +102,9 @@ npm run pay -- curl <url> --yes --max-usd 0.05
 ## The catalog job
 
 `npm run probe` discovers candidates from the x402 Bazaar and mpp-router and
-re-probes everything already indexed; `npm run probe:execute` writes. It runs
-daily in CI and needs one secret, `DATABASE_URI`.
+re-probes everything already indexed; `npm run probe:execute` writes and
+`npm run export` snapshots. CI runs both daily and publishes the snapshot to
+the `catalog` branch; the job is the only thing that needs `DATABASE_URI`.
 
 ## Status
 

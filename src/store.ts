@@ -22,6 +22,8 @@ export type EndpointRow = {
 	title: string | null;
 	description: string | null;
 	protocol: "x402" | "mpp" | "x402+mpp" | "unknown";
+	/** the method that produced the 402 */
+	method?: "GET" | "POST" | null;
 	acceptsStellar: boolean;
 	accepts: Accept[];
 	priceUSD: number | null;

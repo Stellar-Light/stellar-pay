@@ -137,6 +137,7 @@ async function fromMppRouter(): Promise<Candidate[]> {
 /** Read a payment challenge. GET first; a paywall commonly sits behind POST. */
 async function probe(url: string): Promise<{
 	status: string;
+	method: "GET" | "POST";
 	protocol: EndpointRow["protocol"];
 	accepts: Accept[];
 }> {
@@ -166,9 +167,13 @@ async function probe(url: string): Promise<{
 		}
 	};
 	let res = await attempt("GET");
+	let method: "GET" | "POST" = "GET";
 	if (res.status !== "402") {
 		const post = await attempt("POST");
-		if (post.status === "402") res = post;
+		if (post.status === "402") {
+			res = post;
+			method = "POST";
+		}
 	}
 	const accepts: Accept[] = [];
 	let x402 = false;
@@ -224,6 +229,7 @@ async function probe(url: string): Promise<{
 	}
 	return {
 		status: res.status,
+		method,
 		protocol:
 			x402 && mpp ? "x402+mpp" : x402 ? "x402" : mpp ? "mpp" : "unknown",
 		accepts,
@@ -336,6 +342,7 @@ async function main() {
 			const set: Partial<EndpointRow> = {
 				host,
 				protocol: r.protocol,
+				method: r.method,
 				acceptsStellar,
 				accepts: r.accepts,
 				priceUSD,
