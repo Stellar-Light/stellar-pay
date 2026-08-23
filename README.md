@@ -137,6 +137,8 @@ stellar-pay history                           # recent USDC payments to/from the
   on-chain. No USDC touched.
 - `npm run test:mcp` — drives every MCP tool over stdio and ends with a paid
   call plus a deduped replay through the governance layer.
+- `npm run test:wallet` — mints a testnet asset and proves setup, a real send
+  A→B, the over-spend and no-trustline guards, and history.
 
 ## The catalog job
 
