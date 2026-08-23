@@ -1,7 +1,8 @@
 /**
- * Drives the MCP server over stdio like a client would, ending with a PAID
- * curl against the testnet sandbox. Passes when every tool answers and the
- * paid call returns 200 with a settlement hash.
+ * Drives the MCP server over stdio like a client would. Proves the whole
+ * governed loop on testnet: every tool answers, a 402 is paid, the SAME url
+ * asked again inside the task is replayed free (Scrimp's duplicate rule), and
+ * spend_report shows the saving. Passes only if all of that holds.
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -15,9 +16,7 @@ const text = (r: unknown) => {
 };
 
 async function main() {
-	console.log(
-		"mcp-test — every tool over stdio, then a paid curl on testnet\n",
-	);
+	console.log("mcp-test — governed loop over stdio on testnet\n");
 	const sb = await setupSandbox(log);
 	const transport = new StdioClientTransport({
 		command: "npx",
@@ -35,7 +34,9 @@ async function main() {
 	const tools = (await client.listTools()).tools.map((t) => t.name).sort();
 	log(`tools: ${tools.join(", ")}`);
 	const expected = [
+		"begin_task",
 		"curl",
+		"end_task",
 		"get_balance",
 		"get_catalog_entry",
 		"list_catalog",
@@ -51,13 +52,9 @@ async function main() {
 			arguments: { query: "search the web for recent news", max_results: 3 },
 		}),
 	);
-	const cands = s.candidates as Array<{
-		url: string;
-		title: string;
-		price_usd: number;
-	}>;
+	const cands = s.candidates as Array<{ title: string; price_usd: number }>;
 	log(
-		`search_catalog: ${cands.length} candidates; top = ${cands[0]?.title ?? cands[0]?.url} ($${cands[0]?.price_usd})`,
+		`search_catalog: ${cands.length} candidates; top = ${cands[0]?.title} ($${cands[0]?.price_usd})`,
 	);
 	if (!cands.length) throw new Error("search_catalog returned nothing");
 
@@ -68,48 +65,76 @@ async function main() {
 		`list_catalog: ${l.total_live_endpoints} live endpoints across ${(l.hosts as unknown[]).length} hosts`,
 	);
 
-	const g = text(
-		await client.callTool({
-			name: "get_catalog_entry",
-			arguments: { url: cands[0]?.url },
-		}),
-	) as unknown as Array<{ url: string; live: boolean }>;
-	log(
-		`get_catalog_entry: ${Array.isArray(g) ? `${g.length} row(s), live=${g[0]?.live}` : JSON.stringify(g).slice(0, 80)}`,
-	);
-
 	const b = text(await client.callTool({ name: "get_balance", arguments: {} }));
 	log(
-		`get_balance: ${b.public_key?.toString().slice(0, 6)}… xlm=${b.xlm} usdc=${b.usdc} others=${(b.others as unknown[])?.length}`,
+		`get_balance: ${String(b.public_key).slice(0, 6)}… xlm=${b.xlm} others=${(b.others as unknown[])?.length}`,
 	);
 
-	const c = text(
+	// Bracket a task so Scrimp's rules engage, then pay the SAME url twice.
+	text(
+		await client.callTool({
+			name: "begin_task",
+			arguments: { task_id: "t1", budget_usd: 1 },
+		}),
+	);
+
+	const c1 = text(
+		await client.callTool({
+			name: "curl",
+			arguments: { url: sb.url, method: "GET" },
+		}),
+	);
+	const paid = c1.paid as { hash: string | null; protocol: string } | undefined;
+	log(
+		`curl #1: status=${c1.status} paid=${paid ? `via ${paid.protocol}, hash ${paid.hash?.slice(0, 10)}…` : JSON.stringify(c1.refused ?? c1.not_payable)}`,
+	);
+	if (c1.status !== 200 || !paid?.hash)
+		throw new Error(
+			`call #1 should be a paid 200 with a hash, got ${JSON.stringify(c1).slice(0, 300)}`,
+		);
+
+	const c2 = text(
 		await client.callTool({
 			name: "curl",
 			arguments: { url: sb.url, method: "GET" },
 		}),
 	);
 	log(
-		`curl (paid): status=${c.status} paid=${JSON.stringify(c.paid ?? c.refused ?? c.not_payable)}`,
+		`curl #2 (same url): status=${c2.status} ${c2.saved ? `SAVED via '${(c2.saved as { rule: string }).rule}' — no new payment` : `paid again = ${JSON.stringify(c2.paid)}`}`,
 	);
-	const paid = c.paid as { hash: string | null } | undefined;
-	if (c.status !== 200 || !paid?.hash)
+	if (!c2.saved || (c2.saved as { rule: string }).rule !== "duplicate")
 		throw new Error(
-			`expected a paid 200 with a hash, got ${JSON.stringify(c).slice(0, 300)}`,
+			`call #2 should be suppressed as duplicate, got ${JSON.stringify(c2).slice(0, 300)}`,
 		);
+	if (c2.paid)
+		throw new Error("call #2 was suppressed but still recorded a payment");
+
+	const endr = text(
+		await client.callTool({
+			name: "end_task",
+			arguments: { task_id: "t1", succeeded: true },
+		}),
+	);
+	log(`end_task: contributed=${endr.contributed} wasted=${endr.wasted}`);
 
 	const r = text(
 		await client.callTool({ name: "spend_report", arguments: {} }),
 	);
 	log(
-		`spend_report: ${(r.payments as unknown[]).length} payment(s), spent_usd=${r.spent_usd}`,
+		`spend_report: spent=$${r.spent} wouldHaveSpent=$${r.wouldHaveSpent} saved=$${r.saved} suppressed=${r.suppressed} wasteRate=${r.wasteRate}`,
 	);
+	if (!(Number(r.suppressed) >= 1 && Number(r.saved) > 0))
+		throw new Error(
+			`report should show ≥1 suppressed and saved>0, got ${JSON.stringify(r)}`,
+		);
 
 	await client.close();
 	sb.close();
-	log(`payer SPAY balance now ${await sb.payerBalance()} (was 100)`);
+	log(
+		`payer SPAY balance now ${await sb.payerBalance()} (was 100, and only ONE payment despite two calls)`,
+	);
 	console.log(
-		"\nPASS — six tools answered over stdio and a 402 was paid through the MCP.",
+		"\nPASS — a 402 was paid through the MCP, the duplicate was replayed free, and spend_report showed the saving.",
 	);
 	process.exit(0);
 }

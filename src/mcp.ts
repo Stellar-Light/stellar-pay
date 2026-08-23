@@ -1,38 +1,39 @@
 /**
- * The MCP server: the same loop for agents, under a spending policy instead
+ * The MCP server: the same 402 loop for agents, under spend governance instead
  * of a prompt. Tools mirror pay.sh's (search_catalog, get_catalog_entry,
- * list_catalog, curl, get_balance) plus spend_report.
+ * list_catalog, curl, get_balance) plus begin_task/end_task and spend_report.
  *
- * Policy (env): STELLAR_PAY_MAX_USD_PER_CALL (default 0.05) and
- * STELLAR_PAY_SESSION_BUDGET_USD (default 1.00). Only USDC is auto-approved
- * on mainnet — an unknown asset has no price the policy can reason about.
- * Testnet approves anything: testnet tokens have no value.
+ * Two layers of control, and they compose:
+ *
+ *  - The approve gate always runs, task or not: on mainnet a payment must be
+ *    USDC and within STELLAR_PAY_MAX_USD_PER_CALL. This is the hard floor.
+ *  - Scrimp (vendored from kaankacar/scrimp) runs inside a task and adds what a
+ *    ceiling can't: it replays a purchase already made in this task (duplicate)
+ *    or one still inside its freshness window (fresh), refuses a provider that
+ *    just failed repeatedly (quarantined), holds the task to its budget, and
+ *    watches whether each response body was ever read to label spend wasted.
+ *
+ * So curl works with no task open (paid, floor-gated, never deduped); wrapping
+ * work in begin_task/end_task unlocks the smart rules and the saved/waste
+ * numbers in spend_report.
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { SUPPRESSION_HEADER } from "../vendor/scrimp/index.js";
 import {
 	daysAlive,
+	type Entry,
 	groupByHost,
 	loadCatalog,
 	searchCatalog,
 } from "./catalog.js";
-import { payFetch } from "./pay/curl.js";
-import { describeOffer, type Offer, offerUSD } from "./pay/offers.js";
+import { buildGoverned, type Governed } from "./pay/governed.js";
+import { type Offer, offerUSD } from "./pay/offers.js";
 import { balances, loadWallet, type Wallet } from "./pay/wallet.js";
 
 const MAX_PER_CALL = Number(process.env.STELLAR_PAY_MAX_USD_PER_CALL ?? 0.05);
 const SESSION_BUDGET = Number(process.env.STELLAR_PAY_SESSION_BUDGET_USD ?? 1);
-const spend: {
-	payments: Array<{
-		at: string;
-		url: string;
-		usd: number | null;
-		protocol: string;
-		hash: string | null;
-	}>;
-	usd: number;
-} = { payments: [], usd: 0 };
 
 const json = (v: unknown) => ({
 	content: [{ type: "text" as const, text: JSON.stringify(v, null, 1) }],
@@ -46,26 +47,46 @@ const getWallet = () => {
 	return wallet;
 };
 
-function policy(w: Wallet, url: string) {
-	return async (o: Offer): Promise<boolean> => {
-		if (w.network === "stellar:testnet") return true;
+/** The approve gate — the hard floor, on every payment whether or not a task is open. */
+function approveGate(w: Wallet): (o: Offer) => Promise<boolean> {
+	return async (o) => {
+		if (w.network === "stellar:testnet") return true; // testnet tokens have no value
 		const usd = offerUSD(o);
-		if (usd == null) return false;
-		if (usd > MAX_PER_CALL) return false;
-		if (spend.usd + usd > SESSION_BUDGET) return false;
-		return true;
+		return usd != null && usd <= MAX_PER_CALL;
 	};
 }
-
-function refusal(w: Wallet, o: Offer) {
+function gateRefusal(w: Wallet, o: Offer) {
 	const usd = offerUSD(o);
-	if (w.network !== "stellar:testnet" && usd == null)
-		return `the offer is not USDC (${o.asset ?? "unknown asset"}); only USDC is auto-approved`;
-	if (usd != null && usd > MAX_PER_CALL)
-		return `$${usd.toFixed(4)} exceeds the per-call ceiling of $${MAX_PER_CALL} (STELLAR_PAY_MAX_USD_PER_CALL)`;
-	if (usd != null && spend.usd + usd > SESSION_BUDGET)
-		return `$${usd.toFixed(4)} would exceed the session budget of $${SESSION_BUDGET} (spent $${spend.usd.toFixed(4)})`;
-	return "refused by policy";
+	if (usd == null)
+		return `the offer is not USDC (${o.asset ?? "unknown asset"}); only USDC is auto-approved on mainnet`;
+	return `$${usd.toFixed(4)} exceeds the per-call ceiling of $${MAX_PER_CALL} (STELLAR_PAY_MAX_USD_PER_CALL)`;
+}
+
+const payments: Array<{
+	at: string;
+	url: string;
+	usd: number | null;
+	protocol: string;
+	hash: string | null;
+	task: string | null;
+}> = [];
+
+/** One governed client per session, built once the wallet and catalog are known. */
+let governed: Governed | null = null;
+let openTask: string | null = null;
+async function getGoverned(prefer?: "x402" | "mpp"): Promise<Governed> {
+	if (governed) return governed;
+	const w = getWallet();
+	const catalog: Entry[] = await loadCatalog({ all: true });
+	governed = buildGoverned({
+		wallet: w,
+		catalog,
+		approve: approveGate(w),
+		refusalReason: (offer) => gateRefusal(w, offer),
+		prefer,
+		budgetPerCall: MAX_PER_CALL,
+	});
+	return governed;
 }
 
 export function buildServer() {
@@ -103,7 +124,7 @@ Every candidate answered a real HTTP 402 naming stellar:pubnet within the last d
 				selection_guidance: [
 					"Prefer a narrow provider built for the task over a broad one with a partial match.",
 					"Make the smallest useful request first; paid calls are sequential.",
-					"State endpoint, expected calls and estimated spend before the first paid curl.",
+					"Bracket related calls in begin_task/end_task so a repeat buy is replayed free, not paid twice.",
 				],
 				next_step: hits.length
 					? "Call curl with the chosen url (and method/body); the 402 is paid within the configured ceiling."
@@ -175,10 +196,67 @@ Use this first for feasibility questions ("can stellar-pay do X?", "what can it 
 	);
 
 	server.registerTool(
+		"begin_task",
+		{
+			description: `Open a spend task before a run of related paid calls. Inside a task, curl gains the smart rules: an identical request already bought is replayed free, one re-fetched inside its freshness window is replayed free, a provider that just failed repeatedly is refused, and the task is held to its budget. end_task closes it and labels each purchase contributed or wasted (a body never read, or a failed task, is waste). Use one task per user goal.`,
+			inputSchema: {
+				task_id: z.string().describe("a stable id for this run of work"),
+				budget_usd: z
+					.number()
+					.positive()
+					.optional()
+					.describe(
+						`ceiling for the whole task; defaults to $${SESSION_BUDGET}`,
+					),
+			},
+		},
+		async ({ task_id, budget_usd }) => {
+			const g = await getGoverned();
+			if (openTask)
+				return json({
+					error: `task "${openTask}" is already open; end it before beginning another`,
+				});
+			try {
+				g.client.beginTask(task_id, { budget: budget_usd ?? SESSION_BUDGET });
+				openTask = task_id;
+				return json({
+					task: task_id,
+					budget_usd: budget_usd ?? SESSION_BUDGET,
+					note: "paid calls in this task are now deduped, freshness-cached, quarantine-guarded and budget-bounded",
+				});
+			} catch (e) {
+				return json({ error: (e as Error).message });
+			}
+		},
+	);
+
+	server.registerTool(
+		"end_task",
+		{
+			description:
+				"Close the open spend task and run attribution. Returns how many purchases contributed to the outcome versus were wasted. Call with succeeded:false if the task failed — its purchases then count as waste.",
+			inputSchema: {
+				task_id: z.string(),
+				succeeded: z.boolean().optional(),
+			},
+		},
+		async ({ task_id, succeeded }) => {
+			const g = await getGoverned();
+			try {
+				const r = g.client.endTask(task_id, { succeeded: succeeded ?? true });
+				if (openTask === task_id) openTask = null;
+				return json({ ...r, report: g.client.report({ taskId: task_id }) });
+			} catch (e) {
+				return json({ error: (e as Error).message });
+			}
+		},
+	);
+
+	server.registerTool(
 		"curl",
 		{
 			description: `Make an HTTP request with 402 Payment Required handling: if the endpoint asks for payment, the challenge is read, the offer is checked against the spending policy, paid in USDC from the active Stellar wallet (x402 or MPP, fees usually sponsored by the server — no XLM needed), and the request is retried with the proof.
-Copy urls from search_catalog exactly; do not call upstream hosts directly. body may be a string or a JSON value; JSON gets Content-Type: application/json. Returns the response status and body plus the payment made (protocol, amount, settlement hash) or the reason a payment was refused.`,
+Copy urls from search_catalog exactly; do not call upstream hosts directly. body may be a string or a JSON value; JSON gets Content-Type: application/json. Inside a task (see begin_task) a repeat or still-fresh request is replayed free instead of paid again. Returns the response status and body plus the payment made (protocol, amount, settlement hash), a replay note, or the reason a payment was refused.`,
 			inputSchema: {
 				url: z.string().url(),
 				method: z.string().optional(),
@@ -195,6 +273,7 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 		},
 		async ({ url, method, headers, body, prefer }) => {
 			const w = getWallet();
+			const g = await getGoverned(prefer);
 			const isJson = body != null && typeof body !== "string";
 			const init: RequestInit = {
 				method: (method ?? (body != null ? "POST" : "GET")).toUpperCase(),
@@ -206,49 +285,47 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 				body: body == null ? undefined : isJson ? JSON.stringify(body) : body,
 				signal: AbortSignal.timeout(60_000),
 			};
-			let refused: Offer | null = null;
-			const approve = policy(w, url);
-			const r = await payFetch(url, init, {
-				wallet: w,
-				prefer,
-				approve: async (o) => {
-					const ok = await approve(o);
-					if (!ok) refused = o;
-					return ok;
-				},
-			});
-			const text = await r.res.text();
+
+			const res = await g.client.fetch(url, init);
+			const text = await res.text();
 			const out: Record<string, unknown> = {
-				status: r.res.status,
-				content_type: r.res.headers.get("content-type"),
+				status: res.status,
+				content_type: res.headers.get("content-type"),
 				body: text.slice(0, 20_000),
 				truncated: text.length > 20_000,
 			};
-			if (r.paid) {
-				const usd = offerUSD(r.paid.offer);
-				spend.payments.push({
+
+			const suppressed = res.headers.get(SUPPRESSION_HEADER);
+			const paid = g.paymentFor(res);
+			const refused = g.refusalFor(res);
+			if (suppressed) {
+				out.saved = {
+					rule: suppressed,
+					note:
+						suppressed === "duplicate" || suppressed === "fresh"
+							? "already paid for in this task — replayed free, no new payment"
+							: `refused by the ${suppressed} rule — no payment made`,
+				};
+			} else if (paid) {
+				payments.push({
 					at: new Date().toISOString(),
 					url,
-					usd,
-					protocol: r.paid.protocol,
-					hash: r.paid.hash,
+					usd: paid.usd,
+					protocol: paid.protocol,
+					hash: paid.hash,
+					task: openTask,
 				});
-				if (usd != null) spend.usd += usd;
 				out.paid = {
-					protocol: r.paid.protocol,
-					offer: describeOffer(r.paid.offer),
-					usd,
-					hash: r.paid.hash,
-					explorer: r.paid.hash ? explorer(w.network, r.paid.hash) : null,
+					protocol: paid.protocol,
+					offer: paid.offer,
+					usd: paid.usd,
+					hash: paid.hash,
+					explorer: paid.hash ? explorer(w.network, paid.hash) : null,
 				};
 			} else if (refused) {
-				out.refused = {
-					offer: describeOffer(refused),
-					reason: refusal(w, refused),
-				};
-			} else if (r.res.status === 402) {
+				out.refused = { reason: refused.reason };
+			} else if (res.status === 402) {
 				out.not_payable = {
-					accepts: r.offers.map((o) => o.network),
 					reason: `no offer payable from a ${w.network} wallet`,
 				};
 			}
@@ -274,17 +351,29 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 		"spend_report",
 		{
 			description:
-				"What this session has paid so far, and the remaining budget under the configured policy.",
+				"What this session paid, and what the governance saved: spent versus what an ungoverned client would have paid, the number of suppressed (deduped/fresh/quarantined) calls, and the waste rate of attributed purchases.",
 			inputSchema: {},
 		},
-		async () =>
-			json({
-				payments: spend.payments,
-				spent_usd: spend.usd,
+		async () => {
+			const report = governed
+				? governed.client.report()
+				: {
+						spent: 0,
+						wouldHaveSpent: 0,
+						saved: 0,
+						savedPct: 0,
+						purchases: 0,
+						suppressed: 0,
+						wasteRate: 0,
+					};
+			return json({
+				...report,
 				per_call_ceiling_usd: MAX_PER_CALL,
-				session_budget_usd: SESSION_BUDGET,
-				remaining_usd: Math.max(0, SESSION_BUDGET - spend.usd),
-			}),
+				default_task_budget_usd: SESSION_BUDGET,
+				open_task: openTask,
+				payments,
+			});
+		},
 	);
 
 	return server;
