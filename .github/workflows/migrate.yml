@@ -1,0 +1,37 @@
+name: Migrate legacy rows (one-off)
+
+# Carries the rows written while the index briefly lived inside stellarlight
+# into this repo's collection, preserving each endpoint's firstSeen/lastPaid.
+# Re-probing instead would silently reset every clock to today, which is the
+# one signal this index cannot regenerate. Safe to re-run: $setOnInsert only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      write:
+        description: "Actually migrate. Unchecked = dry run."
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22", cache: npm }
+      - run: npm ci
+      - name: Migrate
+        env:
+          DATABASE_URI: ${{ secrets.DATABASE_URI }}
+        run: |
+          if [ "${{ inputs.write }}" = "true" ]; then
+            npx tsx src/migrate.ts --write
+          else
+            npx tsx src/migrate.ts
+          fi

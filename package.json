@@ -12,7 +12,9 @@
 		"probe": "tsx --env-file=.env src/probe.ts",
 		"probe:write": "tsx --env-file=.env src/probe.ts --write",
 		"typecheck": "tsc --noEmit",
-		"check": "biome check --write . && tsc --noEmit"
+		"check": "biome check --write . && tsc --noEmit",
+		"migrate": "tsx --env-file=.env src/migrate.ts",
+		"migrate:write": "tsx --env-file=.env src/migrate.ts --write"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.3.2",
