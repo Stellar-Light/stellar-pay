@@ -21,7 +21,8 @@
 		"test:wallet": "tsx src/sandbox/wallet-test.ts",
 		"test:keystore": "tsx src/sandbox/keystore-test.ts",
 		"spike:vault": "tsx src/sandbox/vault-spike.ts",
-		"test:proxy": "tsx src/sandbox/proxy-test.ts"
+		"test:proxy": "tsx src/sandbox/proxy-test.ts",
+		"test:parity": "tsx src/sandbox/parity-test.ts"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.3.2",
