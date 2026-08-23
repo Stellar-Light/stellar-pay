@@ -1,7 +1,20 @@
 # Smart-account vault — integration notes
 
-Findings from reading `@x402/stellar` and `stellar/smart-account-kit`, and how
-to close the two caveats.
+**Framing (important): stellar-pay is a CLI + MCP that runs in the user's own
+environment. We never deploy or custody anything. The user provisions their
+own smart-account vault once — in their browser, with their own passkey, the
+normal way anyone makes a wallet — and our tool *consumes* it: the agent signs
+with the ed25519 key the user scoped to that vault, and every payment is capped
+on-chain. So the two "caveats" split cleanly:**
+
+| Caveat | Whose problem | Status |
+|--------|---------------|--------|
+| Headless deploy needs a browser passkey | **the user's**, once, at setup — not ours | not a blocker; it's normal wallet setup |
+| The kit is unaudited | the user's risk call | a disclosure, not our bug |
+| Pay a 402 *from* the vault (contract-account auth) | **ours** — the client fix | designed below; built against a provisioned vault |
+
+Everything below is the *ours* row: what stellar-pay builds so an agent can use
+a vault the user already set up.
 
 ## Caveat 1 — paying a 402 *from* a smart account. **Fixable, client-side.**
 
@@ -26,8 +39,11 @@ x402 client
   → on settle: __check_auth runs → spending-limit policy checks the amount
 ```
 
-`computeEntryAuthDigest` and `Ed25519Signer` are both exported from
-`smart-account-kit`, so the adapter is a small bridge we own. The facilitator
+`@x402/stellar`'s `ExactStellarScheme` takes any `ClientStellarSigner`
+(`{ address, signAuthEntry, signTransaction? }`) — so the plug point is exact:
+build a `ClientStellarSigner` whose `address` is the vault C-address and whose
+`signAuthEntry` produces the smart-account authorization (digest via
+`computeEntryAuthDigest`, signed by the agent's `Ed25519Signer`). No fork. The facilitator
 only has to submit the transaction as-is (it already does verify+settle
 address-agnostically); a facilitator that assumes classic G-address payers is
 the one external dependency, and mpp-router / a self-hosted OZ Channels
@@ -36,7 +52,7 @@ facilitator can be checked against a real C-address payer.
 **Status:** designed, not yet built — it needs a deployed smart account to
 test end to end (see caveat 2), so it lands with the vault, not before.
 
-## Caveat 2 — headless deploy. **Blocked by the kit's trust model, by design.**
+## The setup step is the user's, in a browser (not a blocker for us)
 
 `buildDeployTransaction(deps, credentialId, publicKey, policies)` hardcodes the
 **WebAuthn verifier** and takes a passkey credential id + secp256r1 public key.
@@ -45,9 +61,11 @@ Every smart account is therefore born with a **passkey at its root**; ed25519
 transaction. `createWallet` is passkey-first for the same reason (it takes
 WebAuthn `authenticatorSelection` and calls `navigator.credentials`).
 
-There is **no headless creation path** — the root of trust is always a
-WebAuthn passkey, which needs a browser. This is a deliberate security choice,
-not a missing feature.
+There is no headless creation path — the root of trust is always a WebAuthn
+passkey, which needs a browser. That is exactly right for a wallet: the human
+owner provisions it. **We don't deploy anything; we consume a vault the user
+made.** So this never blocks stellar-pay — it's the user's one-time setup, the
+same as creating any wallet.
 
 ### The vault flow that actually works
 
