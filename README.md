@@ -74,3 +74,35 @@ hosts**, none of them Stellar-ecosystem teams:
 
 That is the whole Stellar-payable surface today. It is the number the rest of
 the work is measured against.
+
+## The client (Phase B) — `curl` that pays
+
+pay.sh-shaped: a plain request; on 402 the offers are read from the live
+challenge (x402 `accepts[]` and MPP `WWW-Authenticate: Payment`), shown, and
+**approved before anything is signed**; then paid from a Stellar wallet and
+retried. Both protocols, fees sponsored when the server says so.
+
+```sh
+STELLAR_SECRET_KEY=S… npm run pay -- offers  https://apiserver.mpprouter.dev/v1/services/exa/search -X POST -d '{}'
+STELLAR_SECRET_KEY=S… npm run pay -- curl    https://apiserver.mpprouter.dev/v1/services/exa/search -X POST -d '{"query":"stellar x402"}'
+npm run pay -- balance | whoami            # --yes --max-usd 0.05 for agents, --x402|--mpp to pick a protocol
+npm run sandbox                            # automated end-to-end proof on testnet (below)
+```
+
+**Proof, automated (`npm run sandbox`):** mints its own SEP-41 asset on
+testnet (Circle's USDC faucet is captcha-only), deploys the asset's SAC, runs
+SDF's MPP charge server locally priced in it with fees sponsored, pays it via
+`payFetch`, and checks the settlement on-chain. Last pass 2026-08-23: 402 →
+approved → 200, settlement tx source = the fee payer, payer balance 100 →
+99.999. x402's client path is exercised on mainnet only (its server side needs
+the OZ Channels facilitator).
+
+Built on the official rails: `@x402/fetch` + `@x402/stellar` (exact-v2,
+auth-entry signing) and `@stellar/mpp` (draft-stellar-charge-00, SDF, Aug 2026).
+
+Traps met on the way, so nobody meets them twice: USDC is **7 decimals** on
+Stellar; Stellar challenges name USDC by its **SAC address**, not "USDC";
+x402 v2 says `amount` where v1 said `maxAmountRequired`; Soroban transactions
+carry **exactly one op** and must be simulation-prepared (a classic op bundled
+with `createStellarAssetContract` is `tx_malformed`); in MPP pull mode the
+client never sees the hash — the receipt comes back in `Payment-Receipt`.
