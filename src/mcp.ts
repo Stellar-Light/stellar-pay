@@ -446,5 +446,9 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 }
 
 export async function serveStdio() {
+	// Unlock a keystore wallet up front if one is configured (env passphrase
+	// for a headless agent); tools that need a wallet then just work.
+	const { ensureSecretLoaded } = await import("./pay/keystore.js");
+	await ensureSecretLoaded().catch(() => {});
 	await buildServer().connect(new StdioServerTransport());
 }

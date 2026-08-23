@@ -93,6 +93,7 @@ An MCP server gives agents the whole loop under that governance:
 
 ```sh
 stellar-pay claude            # Claude Code with stellar-pay mounted
+stellar-pay codex             # Codex with stellar-pay mounted
 stellar-pay mcp               # stdio server for Claude Desktop, Cursor, Codex, or your own client
 ```
 
@@ -125,10 +126,22 @@ stellar-pay offers  https://apiserver.mpprouter.dev/v1/services/exa/search -X PO
 stellar-pay curl    https://apiserver.mpprouter.dev/v1/services/exa/search -X POST -d '{"query":"stellar x402"}'
 stellar-pay curl <url> --yes --max-usd 0.05   # unattended, under a ceiling
 
-stellar-pay setup                             # new wallet (testnet: funded + USDC trustline)
+stellar-pay setup --save main                 # new wallet (testnet: funded + trustline), sealed in the encrypted keystore
+stellar-pay account list                      # saved wallets (never the secret); import / default / remove / export too
+stellar-pay topup                             # how to fund this wallet (testnet auto-funds)
 stellar-pay send <G...address> --amount 1.5   # send USDC to an address (confirms first)
 stellar-pay history                           # recent USDC payments to/from the wallet
 ```
+
+## Wallets
+
+A wallet is `STELLAR_SECRET_KEY` in the environment, or a **local encrypted
+keystore** so the key isn't pasted every time. `setup --save <name>` and
+`account import --name <name>` seal a secret under a passphrase (AES-256-GCM,
+scrypt — Node built-ins, no plaintext on disk). `account list/default/remove/
+export` manage them. The default account unlocks with `STELLAR_PAY_PASSPHRASE`
+(for agents and the MCP) or an interactive prompt. `STELLAR_SECRET_KEY` always
+wins when set.
 
 ## Proof you can run
 
@@ -139,6 +152,8 @@ stellar-pay history                           # recent USDC payments to/from the
   call plus a deduped replay through the governance layer.
 - `npm run test:wallet` — mints a testnet asset and proves setup, a real send
   A→B, the over-spend and no-trustline guards, and history.
+- `npm run test:keystore` — encrypted round-trip: seal, list without leaking
+  the secret, reject a wrong passphrase, unlock into the environment.
 
 ## The catalog job
 

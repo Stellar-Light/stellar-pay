@@ -174,7 +174,8 @@ export async function sendAsset(
 		throw new Error(`amount must be positive, got "${amount}"`);
 	const code = asset.getCode();
 	const issuer = asset.getIssuer();
-	if (!issuer) throw new Error("cannot send the native asset here; use a classic asset");
+	if (!issuer)
+		throw new Error("cannot send the native asset here; use a classic asset");
 	const me = await holds(wallet.publicKey, wallet.network, code, issuer);
 	if (!me.funded) throw new Error("this wallet is not funded");
 	if (!me.trusts) throw new Error(`this wallet has no ${code} trustline`);
@@ -254,4 +255,72 @@ export async function history(
 		});
 	}
 	return out;
+}
+
+export type TopupInfo = {
+	address: string;
+	network: Network;
+	funded: boolean;
+	hasUsdcTrustline: boolean;
+	fundedTx: string | null;
+	uri: string;
+	guidance: string;
+};
+
+/**
+ * What a wallet needs to receive USDC. On testnet, fund via friendbot and add
+ * the trustline so it is immediately ready. On mainnet we cannot fund an
+ * account, so we return the address, a SEP-7 pay URI a funding wallet can
+ * scan, and clear guidance.
+ */
+export async function topupInfo(wallet: Wallet): Promise<TopupInfo> {
+	const b = await balances(wallet.publicKey, wallet.network);
+	const issuer = USDC_ISSUER[wallet.network];
+	// SEP-7: a URI a sending wallet can act on to pay USDC to this address.
+	const uri = `web+stellar:pay?destination=${wallet.publicKey}&asset_code=USDC&asset_issuer=${issuer}`;
+	if (wallet.network === "stellar:testnet") {
+		let fundedTx: string | null = null;
+		if (!b.funded) {
+			const r = await fetch(
+				`https://friendbot.stellar.org?addr=${wallet.publicKey}`,
+				{
+					signal: AbortSignal.timeout(30_000),
+				},
+			);
+			if (!r.ok && r.status !== 400) throw new Error(`friendbot ${r.status}`);
+			fundedTx = "friendbot";
+		}
+		const tl = await addTrustline(wallet);
+		return {
+			address: wallet.publicKey,
+			network: wallet.network,
+			funded: true,
+			hasUsdcTrustline: true,
+			fundedTx: tl ?? fundedTx,
+			uri,
+			guidance:
+				"funded on testnet with a USDC trustline — get testnet USDC from the Circle faucet (web, captcha) at https://faucet.circle.com",
+		};
+	}
+	const parts: string[] = [];
+	if (!b.funded)
+		parts.push(
+			"account not yet activated — send it at least ~1 XLM first (an exchange withdrawal in XLM, or a friend)",
+		);
+	if (b.funded && b.usdc === null)
+		parts.push(
+			"no USDC trustline yet — run `stellar-pay setup --trustline` before receiving USDC",
+		);
+	parts.push(
+		"then fund USDC by withdrawing from an exchange (Coinbase, Kraken, …) or an on-ramp to this address on the Stellar network, or receive from any Stellar wallet",
+	);
+	return {
+		address: wallet.publicKey,
+		network: wallet.network,
+		funded: b.funded,
+		hasUsdcTrustline: b.funded && b.usdc !== null,
+		fundedTx: null,
+		uri,
+		guidance: parts.join("; "),
+	};
 }

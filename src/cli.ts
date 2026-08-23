@@ -7,8 +7,10 @@
  *   setup [--trustline]                    new wallet (testnet: funded + trustline), or add trustline to STELLAR_SECRET_KEY
  *   send <G...address> --amount <USDC> [--yes]   send USDC to an address
  *   history                                recent USDC payments to/from the wallet
+ *   topup                                  how to fund this wallet (testnet: auto-funds)
+ *   account <list|import|default|remove|export> [--name N]   manage saved (encrypted) wallets
  *   mcp                                    serve the MCP on stdio
- *   claude [args…]                         launch Claude Code with the MCP mounted (like `pay claude`)
+ *   claude|codex [args…]                   launch the agent with the MCP mounted
  * Wallet: STELLAR_SECRET_KEY, network: STELLAR_NETWORK (default stellar:pubnet).
  */
 import { spawn } from "node:child_process";
@@ -19,12 +21,27 @@ import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { payFetch } from "./pay/curl.js";
 import {
+	addAccount,
+	ensureSecretLoaded,
+	exportSecret,
+	keystorePath,
+	listAccounts,
+	removeAccount,
+	setDefault,
+} from "./pay/keystore.js";
+import {
 	describeOffer,
 	type Offer,
 	offerUSD,
 	readOffers,
 } from "./pay/offers.js";
-import { addTrustline, history, sendUSDC, setupWallet } from "./pay/send.js";
+import {
+	addTrustline,
+	history,
+	sendUSDC,
+	setupWallet,
+	topupInfo,
+} from "./pay/send.js";
 import { balances, loadWallet } from "./pay/wallet.js";
 
 type Args = {
@@ -39,6 +56,7 @@ type Args = {
 	include: boolean;
 	sandbox: boolean;
 	amount?: string;
+	name?: string;
 	trustline: boolean;
 };
 
@@ -70,6 +88,7 @@ function parse(argv: string[]): Args {
 		else if (t === "-i" || t === "--include") a.include = true;
 		else if (t === "--sandbox") a.sandbox = true;
 		else if (t === "--amount") a.amount = next();
+		else if (t === "--name" || t === "--save") a.name = next();
 		else if (t === "--trustline") a.trustline = true;
 		else if (!t.startsWith("-") && !a.url) a.url = t;
 	}
@@ -106,36 +125,55 @@ async function main() {
 		await serveStdio();
 		return;
 	}
-	if (a.cmd === "claude") {
-		// What `pay claude` does: mount the MCP and hand over. The server runs
-		// from this checkout with the environment it inherits — the wallet key
-		// never touches the config file.
+	if (a.cmd === "claude" || a.cmd === "codex") {
+		// Mount the MCP into the agent and hand over. The server runs from this
+		// checkout with the environment it inherits, so the wallet key never
+		// touches an agent config file. claude takes a --mcp-config file; codex
+		// takes per-invocation `-c mcp_servers.<name>.…` overrides (no global
+		// config is mutated either way).
 		const here = fileURLToPath(new URL(".", import.meta.url));
 		const tsx = join(here, "..", "node_modules", "tsx", "dist", "cli.mjs");
-		const cfg = {
-			mcpServers: {
-				"stellar-pay": {
-					command: process.execPath,
-					args: [tsx, join(here, "cli.ts"), "mcp"],
+		const server = [process.execPath, tsx, join(here, "cli.ts"), "mcp"];
+		const passthrough = process.argv.slice(3);
+		let child: ReturnType<typeof spawn>;
+		if (a.cmd === "claude") {
+			const cfg = {
+				mcpServers: {
+					"stellar-pay": { command: server[0], args: server.slice(1) },
 				},
-			},
-		};
-		const file = join(mkdtempSync(join(tmpdir(), "stellar-pay-")), "mcp.json");
-		writeFileSync(file, JSON.stringify(cfg));
-		const child = spawn(
-			"claude",
-			["--mcp-config", file, ...process.argv.slice(3)],
-			{ stdio: "inherit" },
-		);
+			};
+			const file = join(
+				mkdtempSync(join(tmpdir(), "stellar-pay-")),
+				"mcp.json",
+			);
+			writeFileSync(file, JSON.stringify(cfg));
+			child = spawn("claude", ["--mcp-config", file, ...passthrough], {
+				stdio: "inherit",
+			});
+		} else {
+			child = spawn(
+				"codex",
+				[
+					"-c",
+					`mcp_servers.stellar-pay.command=${JSON.stringify(server[0])}`,
+					"-c",
+					`mcp_servers.stellar-pay.args=${JSON.stringify(server.slice(1))}`,
+					...passthrough,
+				],
+				{ stdio: "inherit" },
+			);
+		}
 		child.on("exit", (code) => process.exit(code ?? 0));
 		return;
 	}
 	if (a.cmd === "whoami") {
+		await ensureSecretLoaded();
 		const w = loadWallet();
 		console.log(`${w.publicKey}  ${w.network}`);
 		return;
 	}
 	if (a.cmd === "balance") {
+		await ensureSecretLoaded();
 		const w = loadWallet();
 		const b = await balances(w.publicKey, w.network);
 		if (!b.funded)
@@ -151,6 +189,7 @@ async function main() {
 			| "stellar:testnet";
 		// `setup --trustline` adds the USDC trustline to an existing wallet.
 		if (a.trustline) {
+			await ensureSecretLoaded();
 			const w = loadWallet();
 			const tx = await addTrustline(w);
 			console.log(
@@ -162,17 +201,100 @@ async function main() {
 		}
 		const r = await setupWallet(network);
 		console.log(`address:  ${r.publicKey}`);
-		console.error(`secret:   ${r.secret}`); // to stderr so it isn't captured by a pipe
-		console.error(
-			"  ^ store this now — it is never shown again, and stellar-pay does not save it",
-		);
 		console.log(`network:  ${r.network}`);
 		if (r.trustlineTx)
 			console.log(`trustline: ${explorer(r.network, r.trustlineTx)}`);
+		// --save <name> seals the new secret in the encrypted keystore instead
+		// of printing it; otherwise print once for the user to store.
+		if (a.name) {
+			const saved = await addAccount(a.name, r.secret, network, true);
+			console.log(
+				`saved to keystore as "${saved.name}" (default) — ${keystorePath}`,
+			);
+		} else {
+			console.error(`secret:   ${r.secret}`); // stderr so a pipe doesn't capture it
+			console.error(
+				"  ^ store this now — it is never shown again. Or re-run with --save <name> to seal it in the keystore.",
+			);
+		}
 		console.log(r.note);
 		return;
 	}
+	if (a.cmd === "account" || a.cmd === "accounts") {
+		const sub = a.url ?? "list"; // first positional is the subcommand
+		const network = (process.env.STELLAR_NETWORK ?? "stellar:pubnet") as
+			| "stellar:pubnet"
+			| "stellar:testnet";
+		if (sub === "list" || sub === "ls") {
+			const { default: def, accounts } = listAccounts();
+			if (!accounts.length)
+				return console.log(
+					"no saved accounts — `stellar-pay setup --save <name>` or `account import <name>`",
+				);
+			for (const acc of accounts)
+				console.log(
+					`${acc.name === def ? "*" : " "} ${acc.name.padEnd(16)} ${acc.publicKey}  ${acc.network}`,
+				);
+			return;
+		}
+		if (sub === "import") {
+			if (!a.name)
+				return console.error(
+					"usage: STELLAR_SECRET_KEY=S… stellar-pay account import --name <name>",
+				);
+			const secret = process.env.STELLAR_SECRET_KEY;
+			if (!secret)
+				return console.error(
+					"set STELLAR_SECRET_KEY to the S… secret you want to import, then re-run",
+				);
+			const r = await addAccount(a.name, secret, network, true);
+			console.log(`imported "${r.name}" — ${r.publicKey}`);
+			return;
+		}
+		if (sub === "default") {
+			if (!a.name)
+				return console.error(
+					"usage: stellar-pay account default --name <name>",
+				);
+			setDefault(a.name);
+			console.log(`default is now "${a.name}"`);
+			return;
+		}
+		if (sub === "remove" || sub === "rm") {
+			if (!a.name)
+				return console.error("usage: stellar-pay account remove --name <name>");
+			removeAccount(a.name);
+			console.log(`removed "${a.name}"`);
+			return;
+		}
+		if (sub === "export") {
+			const secret = await exportSecret(a.name);
+			console.error(secret); // stderr, and only after the passphrase check inside exportSecret
+			return;
+		}
+		console.error(
+			"account subcommands: list | import --name N | default --name N | remove --name N | export [--name N]",
+		);
+		process.exitCode = 1;
+		return;
+	}
+	if (a.cmd === "topup") {
+		await ensureSecretLoaded();
+		const w = loadWallet();
+		const t = await topupInfo(w);
+		console.log(`address:   ${t.address}`);
+		console.log(`network:   ${t.network}`);
+		console.log(
+			`funded:    ${t.funded}   USDC trustline: ${t.hasUsdcTrustline}`,
+		);
+		console.log(`pay URI:   ${t.uri}`);
+		if (t.fundedTx && t.fundedTx !== "friendbot")
+			console.log(`trustline: ${explorer(t.network, t.fundedTx)}`);
+		console.log(t.guidance);
+		return;
+	}
 	if (a.cmd === "send") {
+		await ensureSecretLoaded();
 		const w = loadWallet();
 		const to = a.url ?? ""; // first positional
 		const amount = a.amount ?? "";
@@ -194,6 +316,7 @@ async function main() {
 		return;
 	}
 	if (a.cmd === "history") {
+		await ensureSecretLoaded();
 		const w = loadWallet();
 		const rows = await history(w.publicKey, w.network, 20);
 		if (!rows.length) return console.log("no payments yet");
@@ -220,6 +343,7 @@ async function main() {
 	}
 	if (a.cmd === "curl") {
 		if (!a.url) throw new Error("curl <url>");
+		await ensureSecretLoaded();
 		const wallet = loadWallet();
 		const approve = async (o: Offer) => {
 			const usd = offerUSD(o);
