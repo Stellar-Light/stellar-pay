@@ -4,6 +4,9 @@
  *   curl <url> [-X M] [-H "K: V"]… [-d body] [--yes] [--max-usd N] [--x402|--mpp] [-i]
  *   offers <url> [-X M] [-H …] [-d body]     show what the 402 asks for; pay nothing
  *   balance | whoami
+ *   setup [--trustline]                    new wallet (testnet: funded + trustline), or add trustline to STELLAR_SECRET_KEY
+ *   send <G...address> --amount <USDC> [--yes]   send USDC to an address
+ *   history                                recent USDC payments to/from the wallet
  *   mcp                                    serve the MCP on stdio
  *   claude [args…]                         launch Claude Code with the MCP mounted (like `pay claude`)
  * Wallet: STELLAR_SECRET_KEY, network: STELLAR_NETWORK (default stellar:pubnet).
@@ -21,6 +24,7 @@ import {
 	offerUSD,
 	readOffers,
 } from "./pay/offers.js";
+import { addTrustline, history, sendUSDC, setupWallet } from "./pay/send.js";
 import { balances, loadWallet } from "./pay/wallet.js";
 
 type Args = {
@@ -34,6 +38,8 @@ type Args = {
 	prefer?: "x402" | "mpp";
 	include: boolean;
 	sandbox: boolean;
+	amount?: string;
+	trustline: boolean;
 };
 
 function parse(argv: string[]): Args {
@@ -45,6 +51,7 @@ function parse(argv: string[]): Args {
 		maxUsd: 0.1,
 		include: false,
 		sandbox: false,
+		trustline: false,
 	};
 	for (let i = 1; i < argv.length; i++) {
 		const t = argv[i] ?? "";
@@ -62,6 +69,8 @@ function parse(argv: string[]): Args {
 		else if (t === "--mpp") a.prefer = "mpp";
 		else if (t === "-i" || t === "--include") a.include = true;
 		else if (t === "--sandbox") a.sandbox = true;
+		else if (t === "--amount") a.amount = next();
+		else if (t === "--trustline") a.trustline = true;
 		else if (!t.startsWith("-") && !a.url) a.url = t;
 	}
 	return a;
@@ -134,6 +143,64 @@ async function main() {
 		console.log(
 			`USDC ${b.usdc ?? "(no trustline)"}  XLM ${b.xlm}${b.others.length ? `  +${b.others.length} other asset(s)` : ""}`,
 		);
+		return;
+	}
+	if (a.cmd === "setup") {
+		const network = (process.env.STELLAR_NETWORK ?? "stellar:pubnet") as
+			| "stellar:pubnet"
+			| "stellar:testnet";
+		// `setup --trustline` adds the USDC trustline to an existing wallet.
+		if (a.trustline) {
+			const w = loadWallet();
+			const tx = await addTrustline(w);
+			console.log(
+				tx
+					? `USDC trustline added — ${explorer(w.network, tx)}`
+					: "USDC trustline already present",
+			);
+			return;
+		}
+		const r = await setupWallet(network);
+		console.log(`address:  ${r.publicKey}`);
+		console.error(`secret:   ${r.secret}`); // to stderr so it isn't captured by a pipe
+		console.error(
+			"  ^ store this now — it is never shown again, and stellar-pay does not save it",
+		);
+		console.log(`network:  ${r.network}`);
+		if (r.trustlineTx)
+			console.log(`trustline: ${explorer(r.network, r.trustlineTx)}`);
+		console.log(r.note);
+		return;
+	}
+	if (a.cmd === "send") {
+		const w = loadWallet();
+		const to = a.url ?? ""; // first positional
+		const amount = a.amount ?? "";
+		if (!to || !amount) {
+			console.error(
+				"usage: stellar-pay send <G...address> --amount <USDC>  [--yes]",
+			);
+			process.exitCode = 1;
+			return;
+		}
+		const line = `send ${amount} USDC to ${to.slice(0, 6)}…${to.slice(-4)} on ${w.network}`;
+		if (!a.yes && !(await ask(line))) {
+			console.error("not sent");
+			process.exitCode = 2;
+			return;
+		}
+		const r = await sendUSDC(w, to, amount);
+		console.log(`sent ${r.amount} USDC · ${explorer(w.network, r.hash)}`);
+		return;
+	}
+	if (a.cmd === "history") {
+		const w = loadWallet();
+		const rows = await history(w.publicKey, w.network, 20);
+		if (!rows.length) return console.log("no payments yet");
+		for (const h of rows)
+			console.log(
+				`${h.at.slice(0, 10)}  ${h.direction === "sent" ? "→" : "←"} ${h.amount.padStart(12)} ${h.asset.padEnd(5)} ${h.direction === "sent" ? "to" : "from"} ${h.counterparty.slice(0, 6)}…${h.counterparty.slice(-4)}`,
+			);
 		return;
 	}
 	if (a.cmd === "offers") {

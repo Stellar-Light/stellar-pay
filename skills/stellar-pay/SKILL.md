@@ -28,6 +28,10 @@ or browse with it.
 - `curl({url, method, headers, body})` — make the request and handle the 402
   with a USDC payment inside the configured ceiling.
 - `get_balance()` — USDC and XLM balances of the active wallet.
+- `send_usdc({to, amount, confirm?})` — send USDC to an address. Two-step:
+  call once to preview and get a confirm token, again with the token to
+  execute. Funds never move on a single call.
+- `get_history({limit?})` — recent USDC payments to and from the wallet.
 - `begin_task({task_id, budget_usd?})` / `end_task({task_id, succeeded?})` —
   bracket a run of related paid calls. Inside a task, a repeat or still-fresh
   request is replayed free, a failing provider is quarantined, and the task

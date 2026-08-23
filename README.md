@@ -97,7 +97,9 @@ stellar-pay mcp               # stdio server for Claude Desktop, Cursor, Codex, 
 ```
 
 Tools: `search_catalog`, `get_catalog_entry`, `list_catalog`, `curl`,
-`get_balance`, `begin_task` / `end_task`, `spend_report`. The agent-facing
+`get_balance`, `begin_task` / `end_task`, `spend_report`, plus the wallet
+basics `send_usdc` (two-step confirm so funds never move on one model call) and
+`get_history`. The agent-facing
 playbook is [`skills/stellar-pay/SKILL.md`](skills/stellar-pay/SKILL.md).
 
 **Raven.** [Raven](https://github.com/stellar-experimental/stellar-raven) is
@@ -122,6 +124,10 @@ stellar-pay balance
 stellar-pay offers  https://apiserver.mpprouter.dev/v1/services/exa/search -X POST -d '{}'   # what it asks — pays nothing
 stellar-pay curl    https://apiserver.mpprouter.dev/v1/services/exa/search -X POST -d '{"query":"stellar x402"}'
 stellar-pay curl <url> --yes --max-usd 0.05   # unattended, under a ceiling
+
+stellar-pay setup                             # new wallet (testnet: funded + USDC trustline)
+stellar-pay send <G...address> --amount 1.5   # send USDC to an address (confirms first)
+stellar-pay history                           # recent USDC payments to/from the wallet
 ```
 
 ## Proof you can run

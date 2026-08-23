@@ -30,6 +30,7 @@ import {
 } from "./catalog.js";
 import { buildGoverned, type Governed } from "./pay/governed.js";
 import { type Offer, offerUSD } from "./pay/offers.js";
+import { history, sendUSDC } from "./pay/send.js";
 import { balances, loadWallet, type Wallet } from "./pay/wallet.js";
 
 const MAX_PER_CALL = Number(process.env.STELLAR_PAY_MAX_USD_PER_CALL ?? 0.05);
@@ -330,6 +331,71 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 				};
 			}
 			return json(out);
+		},
+	);
+
+	server.registerTool(
+		"send_usdc",
+		{
+			description: `Send USDC directly to a Stellar account — a plain transfer, not a paid API call. Two-step by design so funds never move on a single model decision: call once with just to+amount to get a confirmation token and a summary; call again with that token to execute. The recipient must already hold a USDC trustline or the send is refused before submission. Unlike paying a 402, a direct send is not fee-sponsored, so the wallet needs a little XLM.`,
+			inputSchema: {
+				to: z.string().describe("recipient Stellar account (G…)"),
+				amount: z.string().describe('USDC amount, e.g. "1.5"'),
+				confirm: z
+					.string()
+					.optional()
+					.describe(
+						"the confirmation token from the first call; omit to preview",
+					),
+			},
+		},
+		async ({ to, amount, confirm }) => {
+			const w = getWallet();
+			if (!/^G[A-Z2-7]{55}$/.test(to))
+				return json({ error: `"${to}" is not a Stellar account (G…)` });
+			if (!(Number(amount) > 0))
+				return json({ error: `amount must be positive, got "${amount}"` });
+			// The token binds to exactly this recipient+amount on this network,
+			// so a confirmation can't be replayed for a different transfer.
+			const token = `send:${w.network}:${to}:${amount}`;
+			if (confirm !== token) {
+				return json({
+					preview: `send ${amount} USDC to ${to.slice(0, 6)}…${to.slice(-4)} on ${w.network}`,
+					confirm_token: token,
+					next_step:
+						"call send_usdc again with this exact confirm token to execute; nothing has moved",
+				});
+			}
+			try {
+				const r = await sendUSDC(w, to, amount);
+				return json({
+					sent: {
+						to: r.to,
+						amount: r.amount,
+						asset: r.asset,
+						hash: r.hash,
+						explorer: explorer(w.network, r.hash),
+					},
+				});
+			} catch (e) {
+				return json({ error: (e as Error).message });
+			}
+		},
+	);
+
+	server.registerTool(
+		"get_history",
+		{
+			description:
+				"Recent USDC payments to and from the active wallet (direction, counterparty, amount, tx hash), newest first. Use to see what the wallet has already paid or received.",
+			inputSchema: { limit: z.number().int().min(1).max(50).optional() },
+		},
+		async ({ limit }) => {
+			const w = getWallet();
+			return json({
+				network: w.network,
+				payments: await history(w.publicKey, w.network, limit ?? 20),
+			});
 		},
 	);
 
