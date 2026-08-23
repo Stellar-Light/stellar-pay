@@ -119,6 +119,11 @@ const tokens = (s: string) =>
 		.toLowerCase()
 		.split(/[^a-z0-9]+/)
 		.filter((t) => t.length > 1 && !STOP.has(t));
+const stem = (w: string) =>
+	w
+		.replace(/ies$/, "y")
+		.replace(/(sses|xes|ches|shes)$/, (m) => m.slice(0, -2))
+		.replace(/([^s])s$/, "$1");
 
 /** Keyword rank — the catalog is hundreds of rows, not millions. */
 export function searchCatalog(
@@ -129,23 +134,27 @@ export function searchCatalog(
 	const q = tokens(query);
 	if (!q.length) return [];
 	const scored = entries.map((e) => {
-		const title = (e.title ?? "").toLowerCase();
-		const desc = (e.description ?? "").toLowerCase();
+		// Whole words only — "web" must not hit "webhook" — with plurals folded.
+		const titleWords = new Set(tokens(e.title ?? "").map(stem));
+		const descWords = new Set(tokens(e.description ?? "").map(stem));
 		// URL words match whole: "web" must not hit "webhook". Titles and
 		// descriptions are prose, so substring is fine there.
-		const pathWords = new Set(tokens(e.url.replace(/^https?:\/\/[^/]+/, "")));
+		const pathWords = new Set(
+			tokens(e.url.replace(/^https?:\/\/[^/]+/, "")).map(stem),
+		);
 		let score = 0;
 		const reasons: string[] = [];
-		for (const t of q) {
-			if (title.includes(t)) {
+		for (const raw of q) {
+			const t = stem(raw);
+			if (titleWords.has(t)) {
 				score += 3;
-				reasons.push(`title:${t}`);
-			} else if (desc.includes(t)) {
+				reasons.push(`title:${raw}`);
+			} else if (descWords.has(t)) {
 				score += 2;
-				reasons.push(`description:${t}`);
+				reasons.push(`description:${raw}`);
 			} else if (pathWords.has(t)) {
 				score += 1;
-				reasons.push(`url:${t}`);
+				reasons.push(`url:${raw}`);
 			}
 		}
 		if (reasons.length > 1) score += reasons.length; // several terms agreeing beats one strong hit
