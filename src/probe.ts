@@ -1,92 +1,217 @@
 /**
- * Probe every candidate endpoint and write the index.
+ * Discover and re-probe the paid HTTP endpoints an agent can pay for on
+ * Stellar.
  *
- *   pnpm probe          # dry run — prints the table, writes nothing
- *   pnpm probe:write    # updates data/endpoints.json
+ *   npm run probe            # DRY RUN
+ *   npm run probe:execute
  *
- * The probe IS the product. Registries list endpoints that stopped answering
- * months ago; the only evidence that something is payable is that we asked it
- * and it answered. And the only way to know a Stellar wallet can pay is to
- * read the challenge, because x402 and MPP are shared standards — "supports
- * x402" tells a Stellar holder nothing.
+ * DISCOVER — candidate URLs from the registries: Coinbase's x402 Bazaar (the
+ * cross-chain index; Stellar is 3 hosts of ~1,600), Sextant, and mpp-router
+ * (Rozo; the only Stellar-native router — ~670 upstream services behind one
+ * host). Registries are DISCOVERY ONLY: every one lists endpoints that
+ * stopped answering months ago.
+ *
+ * PROBE — request each URL and read the challenge it actually returns. That
+ * is the only evidence an endpoint is payable, and the only way to know WHICH
+ * networks it takes: x402 and MPP are shared standards, so "supports x402"
+ * tells a Stellar wallet nothing. `accepts` is recorded verbatim.
  *
  * Never asserts a negative. No challenge read means we could not see the
- * terms (auth wall, wrong method, transport failure), not "unpaid". An
- * endpoint that stops answering keeps its history and gains a miss streak,
- * because going dark is the most useful thing this index can report.
+ * terms — auth wall, wrong method, transport failure — not "unpaid". A row
+ * that stops answering keeps its history and gains a failure streak.
  */
+import type { AnyBulkWriteOperation } from "mongodb";
+import { type Accept, type EndpointRow, open } from "./store.js";
 
-import {
-	type Candidate,
-	fromBazaar,
-	fromSextant,
-	isReservedDemo,
-} from "./discover.js";
-import { open as openStore } from "./store.js";
-import type { Accept, Endpoint, ProbeOutcome } from "./types.js";
+const EXECUTE = process.argv.includes("--execute");
+const UA = "stellar-pay-probe/1.0";
 
-const WRITE = process.argv.includes("--write");
-const UA =
-	"stellar-x402-index/0.1 (+https://github.com/theboycoder/stellar-x402-index)";
+type Candidate = {
+	url: string;
+	title?: string;
+	description?: string;
+	source: EndpointRow["source"];
+	sourceUrl?: string;
+};
 
 const isStellar = (n?: string | null) =>
 	!!n && n.toLowerCase().startsWith("stellar");
 
-function classify(status: string): ProbeOutcome {
-	if (status === "402") return "paid";
-	if (status.startsWith("2")) return "open";
-	if (status === "401" || status === "403") return "walled";
-	if (status === "404" || status === "410") return "absent";
-	return "unreachable";
-}
+/** USDC Stellar Asset Contract ids — pubnet and testnet (from @x402/stellar). */
+const USDC_SAC = new Set([
+	"CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
+	"CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+]);
 
-async function request(url: string, method: "GET" | "POST") {
+/** RFC 2606 / RFC 6761 names can never resolve; registries seed demos with them. */
+function isReservedDemo(url: string): boolean {
 	try {
-		const r = await fetch(url, {
-			method,
-			headers: {
-				"User-Agent": UA,
-				accept: "application/json",
-				...(method === "POST" ? { "content-type": "application/json" } : {}),
-			},
-			body: method === "POST" ? "{}" : undefined,
-			signal: AbortSignal.timeout(20_000),
-		});
-		return {
-			status: String(r.status),
-			body: await r.text(),
-			headers: r.headers,
-		};
-	} catch (e) {
-		return {
-			status: `ERR_${(e as Error).name}`,
-			body: "",
-			headers: new Headers(),
-		};
+		const h = new URL(url).hostname.toLowerCase();
+		return (
+			/(^|\.)(example|test|invalid|localhost)$/.test(h) ||
+			/(^|\.)example\.(com|net|org)$/.test(h)
+		);
+	} catch {
+		return true;
 	}
 }
 
-function readChallenge(body: string, headers: Headers) {
+async function jsonOrNull<T>(
+	url: string,
+	timeoutMs: number,
+): Promise<T | null> {
+	try {
+		const r = await fetch(url, {
+			headers: { "User-Agent": UA, accept: "application/json" },
+			signal: AbortSignal.timeout(timeoutMs),
+		});
+		if (!r.ok) return null;
+		return (await r.json()) as T;
+	} catch {
+		return null;
+	}
+}
+
+/** Coinbase's Bazaar — every resource, kept when any accept names Stellar. */
+async function fromBazaar(): Promise<Candidate[]> {
+	const out: Candidate[] = [];
+	for (let offset = 0; offset < 20_000; offset += 100) {
+		const page = await jsonOrNull<{
+			items?: Array<{
+				resource?: string;
+				accepts?: Accept[];
+				metadata?: Record<string, unknown>;
+			}>;
+			pagination?: { total?: number };
+		}>(
+			`https://api.cdp.coinbase.com/platform/v2/x402/discovery/resources?limit=100&offset=${offset}`,
+			30_000,
+		);
+		const items = page?.items ?? [];
+		if (!items.length) break;
+		for (const it of items) {
+			if (!it.resource?.startsWith("http")) continue;
+			if (!(it.accepts ?? []).some((a) => isStellar(a.network))) continue;
+			out.push({
+				url: it.resource,
+				title: String((it.metadata as { name?: string })?.name ?? ""),
+				source: "bazaar",
+				sourceUrl: "https://x402.org/bazaar",
+			});
+		}
+		const total = page?.pagination?.total;
+		if (total && offset + 100 >= total) break;
+	}
+	return out;
+}
+
+/** Sextant — Stellar-native discovery (seeded demo rows so far; the probe decides). */
+async function fromSextant(): Promise<Candidate[]> {
+	const d = await jsonOrNull<{
+		resources?: Array<Record<string, unknown>>;
+		items?: Array<Record<string, unknown>>;
+	}>("https://sextants.dev/discovery/resources", 20_000);
+	const out: Candidate[] = [];
+	for (const r of d?.resources ?? d?.items ?? []) {
+		const url = String(r.resource ?? r.url ?? "");
+		if (!url.startsWith("http")) continue;
+		out.push({
+			url,
+			title: String(r.title ?? r.name ?? ""),
+			description: String(r.description ?? ""),
+			source: "sextant",
+			sourceUrl: "https://sextants.dev",
+		});
+	}
+	return out;
+}
+
+/**
+ * mpp-router (Rozo) — every 402 answered with stellar:pubnet USDC, fees
+ * sponsored, in both x402 and MPP. Its catalog is a LISTING; each entry still
+ * goes through the probe. Templated paths ({id}) cannot be probed as-is.
+ */
+async function fromMppRouter(): Promise<Candidate[]> {
+	const d = await jsonOrNull<{
+		base_url?: string;
+		services?: Array<Record<string, unknown>>;
+	}>("https://apiserver.mpprouter.dev/v1/services/catalog", 20_000);
+	const base = String(d?.base_url ?? "https://apiserver.mpprouter.dev").replace(
+		/\/$/,
+		"",
+	);
+	const out: Candidate[] = [];
+	for (const svc of d?.services ?? []) {
+		const path = String(svc.public_path ?? "");
+		if (!path.startsWith("/") || path.includes("{")) continue;
+		out.push({
+			url: base + path,
+			title: String(svc.name ?? ""),
+			description: String(svc.description ?? ""),
+			source: "mpp-router",
+			sourceUrl: "https://apiserver.mpprouter.dev/v1/services/catalog",
+		});
+	}
+	return out;
+}
+
+/** Read a payment challenge. GET first; a paywall commonly sits behind POST. */
+async function probe(url: string): Promise<{
+	status: string;
+	protocol: EndpointRow["protocol"];
+	accepts: Accept[];
+}> {
+	const attempt = async (method: "GET" | "POST") => {
+		try {
+			const r = await fetch(url, {
+				method,
+				headers: {
+					"User-Agent": UA,
+					accept: "application/json",
+					...(method === "POST" ? { "content-type": "application/json" } : {}),
+				},
+				body: method === "POST" ? "{}" : undefined,
+				signal: AbortSignal.timeout(20_000),
+			});
+			return {
+				status: String(r.status),
+				body: await r.text(),
+				headers: r.headers,
+			};
+		} catch (e) {
+			return {
+				status: `ERR ${(e as Error).name}`,
+				body: "",
+				headers: new Headers(),
+			};
+		}
+	};
+	let res = await attempt("GET");
+	if (res.status !== "402") {
+		const post = await attempt("POST");
+		if (post.status === "402") res = post;
+	}
 	const accepts: Accept[] = [];
 	let x402 = false;
 	let mpp = false;
-	const push = (a: {
+	type Raw = {
 		network?: string;
 		asset?: string;
-		maxAmountRequired?: string;
 		amount?: string;
+		maxAmountRequired?: string;
 		scheme?: string;
-	}) =>
+	};
+	// v1 says maxAmountRequired, v2 says amount
+	const push = (a: Raw) =>
 		accepts.push({
 			network: a.network ?? null,
 			asset: a.asset ?? null,
 			amount: a.maxAmountRequired ?? a.amount ?? null,
 			scheme: a.scheme ?? null,
 		});
-
 	try {
-		const j = JSON.parse(body.slice(0, 40_000)) as {
-			accepts?: Parameters<typeof push>[0][];
+		const j = JSON.parse(res.body.slice(0, 20_000)) as {
+			accepts?: Raw[];
 			x402Version?: number;
 		};
 		for (const a of j.accepts ?? []) {
@@ -94,28 +219,20 @@ function readChallenge(body: string, headers: Headers) {
 			x402 = true;
 		}
 		if (j.x402Version) x402 = true;
-	} catch {
-		// Not JSON, or truncated — the header path below may still carry it.
-	}
-
-	// x402 also base64s the challenge into a header.
-	const hdr = headers.get("payment-required");
+	} catch {}
+	const hdr = res.headers.get("payment-required");
 	if (hdr) {
 		try {
-			const j = JSON.parse(Buffer.from(hdr, "base64").toString("utf8")) as {
-				accepts?: Parameters<typeof push>[0][];
-			};
-			for (const a of j.accepts ?? []) {
+			for (const a of (
+				JSON.parse(Buffer.from(hdr, "base64").toString("utf8")) as {
+					accepts?: Raw[];
+				}
+			).accepts ?? [])
 				push(a);
-				x402 = true;
-			}
-		} catch {
-			// A malformed header is not evidence of anything.
-		}
+			x402 = true;
+		} catch {}
 	}
-
-	// MPP announces itself in WWW-Authenticate and names its method.
-	const wa = headers.get("www-authenticate") ?? "";
+	const wa = res.headers.get("www-authenticate") ?? "";
 	if (/payment/i.test(wa)) {
 		mpp = true;
 		for (const m of wa.matchAll(/method="?([A-Za-z0-9_:-]+)"?/g))
@@ -126,29 +243,20 @@ function readChallenge(body: string, headers: Headers) {
 				scheme: "mpp",
 			});
 	}
-
-	const protocol: Endpoint["protocol"] =
-		x402 && mpp ? "x402+mpp" : x402 ? "x402" : mpp ? "mpp" : "none";
-	return { accepts, protocol };
-}
-
-async function probe(url: string) {
-	let res = await request(url, "GET");
-	// A paywall commonly sits behind POST on write-shaped routes.
-	if (res.status !== "402") {
-		const post = await request(url, "POST");
-		if (post.status === "402") res = post;
-	}
-	const { accepts, protocol } = readChallenge(res.body, res.headers);
-	return { status: res.status, accepts, protocol };
+	return {
+		status: res.status,
+		protocol:
+			x402 && mpp ? "x402+mpp" : x402 ? "x402" : mpp ? "mpp" : "unknown",
+		accepts,
+	};
 }
 
 async function mapLimited<T, R>(
 	items: T[],
 	limit: number,
 	fn: (t: T) => Promise<R>,
-) {
-	const out: R[] = new Array(items.length);
+): Promise<R[]> {
+	const out: R[] = [];
 	let i = 0;
 	await Promise.all(
 		Array.from({ length: Math.min(limit, items.length) }, async () => {
@@ -162,126 +270,138 @@ async function mapLimited<T, R>(
 }
 
 async function main() {
-	const now = new Date().toISOString();
-	const { col, close } = await openStore();
-	const [bazaar, sextant] = await Promise.all([fromBazaar(), fromSextant()]);
-	const existing = new Map(
-		(await col.find({}).toArray()).map((d) => [d.url, d as Endpoint]),
-	);
 	console.log(
-		`discovered — bazaar (stellar-accepting) ${bazaar.length} · sextant ${sextant.length} · already indexed ${existing.size}`,
+		`paid-endpoint index — ${EXECUTE ? "EXECUTE" : "DRY RUN (no writes)"}\n`,
 	);
+	const { col, close } = await open();
+	try {
+		const [bazaar, sextant, mppRouter] = await Promise.all([
+			fromBazaar(),
+			fromSextant(),
+			fromMppRouter(),
+		]);
+		console.log(
+			`discovered — bazaar (stellar-accepting): ${bazaar.length} · sextant: ${sextant.length} · mpp-router: ${mppRouter.length}`,
+		);
 
-	const seen = new Map<string, Candidate>();
-	let demoSkipped = 0;
-	for (const c of [...bazaar, ...sextant]) {
-		if (isReservedDemo(c.url)) {
-			demoSkipped++;
-			continue;
+		// Anything already indexed is re-probed too: liveness is the product.
+		const known = await col
+			.find(
+				{},
+				{
+					projection: {
+						url: 1,
+						source: 1,
+						sourceUrl: 1,
+						consecutiveFailures: 1,
+					},
+				},
+			)
+			.toArray();
+		const byUrl = new Map(known.map((d) => [d.url, d]));
+
+		const seen = new Map<string, Candidate>();
+		let demoSkipped = 0;
+		for (const c of [...bazaar, ...sextant, ...mppRouter]) {
+			if (isReservedDemo(c.url)) {
+				demoSkipped++;
+				continue;
+			}
+			if (!seen.has(c.url)) seen.set(c.url, c);
 		}
-		if (!seen.has(c.url)) seen.set(c.url, c);
-	}
-	if (demoSkipped)
-		console.log(
-			`skipped ${demoSkipped} reserved demo host(s) — RFC 2606, can never resolve`,
-		);
-	// Everything already indexed is re-probed: liveness is the product, and a
-	// row nobody re-checks is a dead link waiting to be served.
-	for (const [url, e] of existing)
-		if (!seen.has(url))
-			seen.set(url, {
-				url,
-				title: e.title,
-				source: e.source,
-				sourceUrl: e.sourceUrl,
-			});
+		if (demoSkipped)
+			console.log(
+				`skipped ${demoSkipped} reserved/demo host(s) (RFC 2606 — can never resolve)`,
+			);
+		for (const d of known)
+			if (!seen.has(d.url))
+				seen.set(d.url, {
+					url: d.url,
+					source: d.source ?? "curated",
+					sourceUrl: d.sourceUrl ?? undefined,
+				});
+		const candidates = [...seen.values()];
+		console.log(`probing ${candidates.length} endpoint(s)…\n`);
 
-	const candidates = [...seen.values()];
-	console.log(`probing ${candidates.length}…\n`);
-	const results = await mapLimited(candidates, 8, async (c) => ({
-		c,
-		r: await probe(c.url),
-	}));
-
-	const endpoints: Endpoint[] = results.map(({ c, r }) => {
-		const prev = existing.get(c.url);
-		const acceptsStellar = r.accepts.some(
-			(a) => isStellar(a.network) || a.network === "stellar",
-		);
-		const outcome = classify(r.status);
-		const usd = r.accepts.find((a) => /usd/i.test(a.asset ?? "") && a.amount);
-		return {
-			url: c.url,
-			host: (() => {
+		const results = await mapLimited(candidates, 8, async (c) => ({
+			c,
+			r: await probe(c.url),
+		}));
+		const now = new Date();
+		let paid = 0;
+		let stellarPayable = 0;
+		const ops: AnyBulkWriteOperation<EndpointRow>[] = [];
+		for (const { c, r } of results) {
+			const acceptsStellar = r.accepts.some(
+				(a) => isStellar(a.network) || a.network === "stellar",
+			);
+			if (r.status === "402") paid++;
+			if (acceptsStellar) stellarPayable++;
+			const prev = byUrl.get(c.url);
+			// On Stellar the asset is the USDC SAC address, not the string "USDC".
+			const usd = r.accepts.find(
+				(a) =>
+					(/usdc|usd/i.test(a.asset ?? "") || USDC_SAC.has(a.asset ?? "")) &&
+					a.amount,
+			);
+			// USDC is 7 decimals on Stellar (SAC), 6 on EVM and Solana.
+			const priceUSD = usd?.amount
+				? Number(usd.amount) / (isStellar(usd.network) ? 10_000_000 : 1_000_000)
+				: null;
+			const host = (() => {
 				try {
-					return new URL(c.url).hostname;
+					return new URL(c.url).host;
 				} catch {
-					return "";
+					return null;
 				}
-			})(),
-			title: c.title,
-			protocol: r.protocol,
-			acceptsStellar,
-			accepts: r.accepts,
-			priceUSD: usd?.amount ? Number(usd.amount) / 1_000_000 : null,
-			source: c.source,
-			sourceUrl: c.sourceUrl,
-			outcome,
-			status: r.status,
-			firstSeen: prev?.firstSeen ?? now,
-			lastChecked: now,
-			lastPaid: outcome === "paid" ? now : (prev?.lastPaid ?? null),
-			consecutiveMisses:
-				outcome === "paid" ? 0 : (prev?.consecutiveMisses ?? 0) + 1,
-		};
-	});
-	endpoints.sort((a, b) => a.url.localeCompare(b.url));
-
-	const paid = endpoints.filter((e) => e.outcome === "paid").length;
-	const stellar = endpoints.filter((e) => e.acceptsStellar).length;
-	const hosts = new Set(endpoints.map((e) => e.host));
-
-	const byHost = new Map<string, { n: number; paid: number }>();
-	for (const e of endpoints) {
-		const r = byHost.get(e.host) ?? { n: 0, paid: 0 };
-		r.n++;
-		if (e.outcome === "paid") r.paid++;
-		byHost.set(e.host, r);
-	}
-	console.log(
-		`${"host".padEnd(34)} ${"urls".padStart(5)} ${"paid".padStart(5)}`,
-	);
-	for (const [h, r] of [...byHost].sort((a, b) => b[1].paid - a[1].paid))
+			})();
+			const set: Partial<EndpointRow> = {
+				host,
+				protocol: r.protocol,
+				acceptsStellar,
+				accepts: r.accepts,
+				priceUSD,
+				source: c.source,
+				sourceUrl: c.sourceUrl ?? null,
+				lastStatus: r.status,
+				lastCheckedAt: now,
+				updatedAt: now,
+				...(c.title ? { title: c.title } : {}),
+				...(c.description ? { description: c.description } : {}),
+				// Only advance on a real challenge; a silent endpoint keeps the
+				// date it last proved itself.
+				...(r.status === "402"
+					? { lastPaidAt: now, consecutiveFailures: 0 }
+					: { consecutiveFailures: (prev?.consecutiveFailures ?? 0) + 1 }),
+			};
+			ops.push({
+				updateOne: {
+					filter: { url: c.url },
+					update: { $set: set, $setOnInsert: { url: c.url, createdAt: now } },
+					upsert: true,
+				},
+			});
+			console.log(
+				`  ${r.status.padEnd(5)} ${r.protocol.padEnd(9)} ${acceptsStellar ? "STELLAR" : "       "} ${priceUSD != null ? `$${priceUSD.toFixed(4)}` : "        "} ${c.url.slice(0, 60)}`,
+			);
+		}
 		console.log(
-			`${h.slice(0, 34).padEnd(34)} ${String(r.n).padStart(5)} ${String(r.paid).padStart(5)}`,
+			`\nprobed ${results.length} · answered 402: ${paid} · payable on Stellar: ${stellarPayable}`,
 		);
-	console.log(
-		`\nprobed ${endpoints.length} · answering a challenge ${paid} · payable on Stellar ${stellar} · hosts ${hosts.size}`,
-	);
-
-	if (!WRITE) {
-		console.log("\nDry run — nothing written. Re-run with --write.");
+		if (!EXECUTE) {
+			console.log("\nDRY RUN — nothing written. Re-run with --execute.");
+			return;
+		}
+		const w = await col.bulkWrite(ops, { ordered: false });
+		console.log(
+			`wrote ${w.upsertedCount} new, ${w.modifiedCount} updated — ${await col.countDocuments()} endpoints indexed`,
+		);
+	} finally {
 		await close();
-		return;
 	}
-	// Upsert on url. The stored firstSeen/lastPaid are preserved above, so a
-	// re-run never resets an endpoint's history.
-	const ops = endpoints.map((e) => ({
-		updateOne: {
-			filter: { url: e.url },
-			update: { $set: e },
-			upsert: true,
-		},
-	}));
-	const res = await col.bulkWrite(ops, { ordered: false });
-	const total = await col.countDocuments();
-	console.log(
-		`\nupserted ${res.upsertedCount} new, ${res.modifiedCount} updated — ${total} endpoints indexed`,
-	);
-	await close();
 }
 
 main().catch((e) => {
-	console.error("Fatal:", e);
+	console.error(e);
 	process.exit(1);
 });

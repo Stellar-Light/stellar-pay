@@ -1,5 +1,5 @@
 {
-	"name": "stellar-x402-index",
+	"name": "stellar-pay",
 	"version": "0.1.0",
 	"private": true,
 	"description": "Stellar payments layer for agents: a pay.sh-shaped client (curl that answers 402s with a Stellar wallet, x402 + MPP) over a probed catalog of Stellar-payable APIs. Private while the lane is new.",
@@ -9,12 +9,12 @@
 		"node": ">=22"
 	},
 	"scripts": {
-		"probe": "tsx --env-file=.env src/probe.ts",
-		"probe:write": "tsx --env-file=.env src/probe.ts --write",
+		"probe": "tsx --env-file-if-exists=.env src/probe.ts",
 		"typecheck": "tsc --noEmit",
 		"check": "biome check --write . && tsc --noEmit",
 		"pay": "tsx --env-file-if-exists=.env src/cli.ts",
-		"sandbox": "tsx src/sandbox/testnet.ts"
+		"sandbox": "tsx src/sandbox/testnet.ts",
+		"probe:execute": "tsx --env-file-if-exists=.env src/probe.ts --execute"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.3.2",
@@ -25,6 +25,7 @@
 		"typescript": "^5.7.2"
 	},
 	"dependencies": {
+		"@modelcontextprotocol/sdk": "^1.30.0",
 		"@stellar/mpp": "^0.7.1",
 		"@stellar/stellar-sdk": "^16.2.0",
 		"@x402/core": "^2.23.0",
@@ -33,6 +34,7 @@
 		"dotenv": "^17.4.2",
 		"mongodb": "^7.5.0",
 		"mppx": "^0.6.31",
-		"viem": "^2.55.19"
+		"viem": "^2.55.19",
+		"zod": "^4.4.3"
 	}
 }

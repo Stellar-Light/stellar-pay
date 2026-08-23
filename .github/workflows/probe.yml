@@ -3,15 +3,15 @@ name: Probe the index
 # Liveness is the product: agent endpoints are demos far more often than
 # products, so an index that is never re-probed becomes a list of dead links
 # within a quarter. ~210 plain HTTP requests against the endpoints
-# themselves; no rate-limited API.
+# themselves (~900 now, mpp-router included); no rate-limited API.
 
 on:
   schedule:
     - cron: "40 5 * * *"
   workflow_dispatch:
     inputs:
-      write:
-        description: "Actually upsert. Unchecked = dry run."
+      execute:
+        description: "Actually write. Unchecked = dry run."
         required: false
         type: boolean
         default: false
@@ -32,8 +32,8 @@ jobs:
         env:
           DATABASE_URI: ${{ secrets.DATABASE_URI }}
         run: |
-          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.write }}" = "true" ]; then
-            npx tsx src/probe.ts --write
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.execute }}" = "true" ]; then
+            npx tsx src/probe.ts --execute
           else
             npx tsx src/probe.ts
           fi
