@@ -27,7 +27,6 @@ export type EndpointRow = {
 	priceUSD: number | null;
 	source:
 		| "bazaar"
-		| "sextant"
 		| "mpp-router"
 		| "stellar-directory"
 		| "curated"

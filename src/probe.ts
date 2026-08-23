@@ -6,7 +6,7 @@
  *   npm run probe:execute
  *
  * DISCOVER — candidate URLs from the registries: Coinbase's x402 Bazaar (the
- * cross-chain index; Stellar is 3 hosts of ~1,600), Sextant, and mpp-router
+ * cross-chain index; Stellar is 3 hosts of ~1,600) and mpp-router
  * (Rozo; the only Stellar-native router — ~670 upstream services behind one
  * host). Registries are DISCOVERY ONLY: every one lists endpoints that
  * stopped answering months ago.
@@ -101,27 +101,6 @@ async function fromBazaar(): Promise<Candidate[]> {
 		}
 		const total = page?.pagination?.total;
 		if (total && offset + 100 >= total) break;
-	}
-	return out;
-}
-
-/** Sextant — Stellar-native discovery (seeded demo rows so far; the probe decides). */
-async function fromSextant(): Promise<Candidate[]> {
-	const d = await jsonOrNull<{
-		resources?: Array<Record<string, unknown>>;
-		items?: Array<Record<string, unknown>>;
-	}>("https://sextants.dev/discovery/resources", 20_000);
-	const out: Candidate[] = [];
-	for (const r of d?.resources ?? d?.items ?? []) {
-		const url = String(r.resource ?? r.url ?? "");
-		if (!url.startsWith("http")) continue;
-		out.push({
-			url,
-			title: String(r.title ?? r.name ?? ""),
-			description: String(r.description ?? ""),
-			source: "sextant",
-			sourceUrl: "https://sextants.dev",
-		});
 	}
 	return out;
 }
@@ -275,13 +254,12 @@ async function main() {
 	);
 	const { col, close } = await open();
 	try {
-		const [bazaar, sextant, mppRouter] = await Promise.all([
+		const [bazaar, mppRouter] = await Promise.all([
 			fromBazaar(),
-			fromSextant(),
 			fromMppRouter(),
 		]);
 		console.log(
-			`discovered — bazaar (stellar-accepting): ${bazaar.length} · sextant: ${sextant.length} · mpp-router: ${mppRouter.length}`,
+			`discovered — bazaar (stellar-accepting): ${bazaar.length} · mpp-router: ${mppRouter.length}`,
 		);
 
 		// Anything already indexed is re-probed too: liveness is the product.
@@ -302,7 +280,7 @@ async function main() {
 
 		const seen = new Map<string, Candidate>();
 		let demoSkipped = 0;
-		for (const c of [...bazaar, ...sextant, ...mppRouter]) {
+		for (const c of [...bazaar, ...mppRouter]) {
 			if (isReservedDemo(c.url)) {
 				demoSkipped++;
 				continue;
