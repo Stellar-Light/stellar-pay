@@ -73,10 +73,8 @@ your `gh` auth.
 ## Nothing is signed until you say so
 
 Interactive use asks per payment. Agents run under the policy above. The
-signer is pluggable: a raw key today; a policy-governed agent wallet with
-operator approvals and an audit log — Soneso's
-[stellar-agent-wallet](https://github.com/Soneso/stellar-agent-wallet) is the
-candidate — once one allows mainnet signing.
+key is a local secret today; keychain-backed signing with OS approval is the
+next step for the wallet.
 
 ## Proof you can run
 
