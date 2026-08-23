@@ -131,7 +131,9 @@ export function searchCatalog(
 	const scored = entries.map((e) => {
 		const title = (e.title ?? "").toLowerCase();
 		const desc = (e.description ?? "").toLowerCase();
-		const path = e.url.toLowerCase();
+		// URL words match whole: "web" must not hit "webhook". Titles and
+		// descriptions are prose, so substring is fine there.
+		const pathWords = new Set(tokens(e.url.replace(/^https?:\/\/[^/]+/, "")));
 		let score = 0;
 		const reasons: string[] = [];
 		for (const t of q) {
@@ -141,11 +143,12 @@ export function searchCatalog(
 			} else if (desc.includes(t)) {
 				score += 2;
 				reasons.push(`description:${t}`);
-			} else if (path.includes(t)) {
+			} else if (pathWords.has(t)) {
 				score += 1;
 				reasons.push(`url:${t}`);
 			}
 		}
+		if (reasons.length > 1) score += reasons.length; // several terms agreeing beats one strong hit
 		if (score && e.priceUSD != null) score += Math.max(0, 0.5 - e.priceUSD); // cheaper wins ties
 		return { ...e, score, reasons };
 	});
