@@ -38,6 +38,8 @@ import {
 import {
 	addTrustline,
 	history,
+	payUri,
+	pollFunding,
 	sendUSDC,
 	setupWallet,
 	topupInfo,
@@ -282,15 +284,44 @@ async function main() {
 		await ensureSecretLoaded();
 		const w = loadWallet();
 		const t = await topupInfo(w);
+		const uri = payUri(t.address, t.network, a.amount);
 		console.log(`address:   ${t.address}`);
 		console.log(`network:   ${t.network}`);
 		console.log(
 			`funded:    ${t.funded}   USDC trustline: ${t.hasUsdcTrustline}`,
 		);
-		console.log(`pay URI:   ${t.uri}`);
-		if (t.fundedTx && t.fundedTx !== "friendbot")
-			console.log(`trustline: ${explorer(t.network, t.fundedTx)}`);
+		// A scannable SEP-7 QR — a mobile Stellar wallet (Lobstr, Freighter)
+		// sends USDC to this address. Only on a TTY; otherwise the URI is enough.
+		if (process.stdout.isTTY) {
+			const QRCode = (await import("qrcode")).default;
+			console.log(
+				`\n${await QRCode.toString(uri, { type: "terminal", small: true })}`,
+			);
+		}
+		console.log(`pay URI:   ${uri}`);
 		console.log(t.guidance);
+		// Wait for the deposit and confirm it, like `pay topup` — interactively
+		// only, so an agent or a pipe never hangs.
+		if (process.stdout.isTTY && !t.hasUsdcTrustline) {
+			console.log(
+				"\nadd a USDC trustline first (`stellar-pay setup --trustline`) so this wallet can receive USDC",
+			);
+		} else if (process.stdout.isTTY) {
+			console.error("\nwaiting for USDC to arrive (Ctrl-C to stop)…");
+			const got = await pollFunding(t.address, t.network, {
+				onTick: (ms) =>
+					process.stderr.write(`\r  ${Math.round(ms / 1000)}s…   `),
+			});
+			process.stderr.write("\r");
+			if (got)
+				console.log(
+					`✓ received ${got.received} USDC — balance now ${got.balance}`,
+				);
+			else
+				console.log(
+					"▲ nothing arrived in 5m — re-run `stellar-pay topup` to keep watching",
+				);
+		}
 		return;
 	}
 	if (a.cmd === "send") {

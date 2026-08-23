@@ -273,11 +273,61 @@ export type TopupInfo = {
  * account, so we return the address, a SEP-7 pay URI a funding wallet can
  * scan, and clear guidance.
  */
+/** SEP-7 pay URI a mobile Stellar wallet (Lobstr, Freighter) can scan to send USDC here. */
+export function payUri(
+	address: string,
+	network: Network,
+	amount?: string,
+): string {
+	const issuer = USDC_ISSUER[network];
+	const q = new URLSearchParams({
+		destination: address,
+		asset_code: "USDC",
+		asset_issuer: issuer,
+	});
+	if (amount && Number(amount) > 0) q.set("amount", amount);
+	return `web+stellar:pay?${q.toString()}`;
+}
+
+/**
+ * Watch for USDC to arrive: poll the balance until it rises above the starting
+ * amount (or the account gets funded + a trustline appears), and return what
+ * landed. Resolves null on timeout so the caller can offer a refresh.
+ */
+export async function pollFunding(
+	publicKey: string,
+	network: Network,
+	opts: {
+		timeoutMs?: number;
+		intervalMs?: number;
+		onTick?: (elapsedMs: number) => void;
+	} = {},
+): Promise<{ received: string; balance: string } | null> {
+	const timeoutMs = opts.timeoutMs ?? 5 * 60_000;
+	const interval = opts.intervalMs ?? 2_000;
+	const start = await balances(publicKey, network);
+	const base = start.funded && start.usdc !== null ? Number(start.usdc) : 0;
+	const t0 = Date.now();
+	while (Date.now() - t0 < timeoutMs) {
+		await new Promise((r) => setTimeout(r, interval));
+		opts.onTick?.(Date.now() - t0);
+		let now: Awaited<ReturnType<typeof balances>>;
+		try {
+			now = await balances(publicKey, network);
+		} catch {
+			continue; // transient horizon error — keep polling
+		}
+		const cur = now.funded && now.usdc !== null ? Number(now.usdc) : 0;
+		if (cur > base)
+			return { received: (cur - base).toFixed(7), balance: cur.toFixed(7) };
+	}
+	return null;
+}
+
 export async function topupInfo(wallet: Wallet): Promise<TopupInfo> {
 	const b = await balances(wallet.publicKey, wallet.network);
-	const issuer = USDC_ISSUER[wallet.network];
 	// SEP-7: a URI a sending wallet can act on to pay USDC to this address.
-	const uri = `web+stellar:pay?destination=${wallet.publicKey}&asset_code=USDC&asset_issuer=${issuer}`;
+	const uri = payUri(wallet.publicKey, wallet.network);
 	if (wallet.network === "stellar:testnet") {
 		let fundedTx: string | null = null;
 		if (!b.funded) {

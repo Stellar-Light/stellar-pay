@@ -128,7 +128,7 @@ stellar-pay curl <url> --yes --max-usd 0.05   # unattended, under a ceiling
 
 stellar-pay setup --save main                 # new wallet (testnet: funded + trustline), sealed in the encrypted keystore
 stellar-pay account list                      # saved wallets (never the secret); import / default / remove / export too
-stellar-pay topup                             # how to fund this wallet (testnet auto-funds)
+stellar-pay topup [--amount 25]               # QR + address to fund this wallet; waits for the deposit and confirms it
 stellar-pay send <G...address> --amount 1.5   # send USDC to an address (confirms first)
 stellar-pay history                           # recent USDC payments to/from the wallet
 ```
