@@ -523,6 +523,11 @@ async function main() {
 			process.exitCode = 1;
 			return;
 		}
+		if (!URL.canParse(a.url) || !/^https?:$/.test(new URL(a.url).protocol)) {
+			console.error(`"${a.url}" is not a valid http(s) URL`);
+			process.exitCode = 1;
+			return;
+		}
 		const v = await verifyEndpoint(a.url, a.method, a.body);
 		for (const c of v.checks)
 			console.log(

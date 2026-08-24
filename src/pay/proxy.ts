@@ -183,6 +183,16 @@ export async function startProxy(o: ProxyOptions): Promise<{
 					url,
 					reason: `payment declined for ${r.offers[0].network}`,
 				});
+			else if (r.res.status === 402 && !r.paid)
+				// A 402 came back unpaid and wasn't declined: no offer this wallet
+				// can pay (e.g. a mainnet endpoint, a testnet wallet). Say so,
+				// rather than silently handing the tool a bare 402.
+				o.onRefused?.({
+					url,
+					reason: r.offers.length
+						? `402 not payable from a ${o.wallet.network} wallet; it accepts: ${r.offers.map((x) => x.network).join(", ")}`
+						: "402 with no readable payment offer",
+				});
 			const buf = Buffer.from(await r.res.arrayBuffer());
 			const out: Record<string, string | string[]> = {};
 			r.res.headers.forEach((v, k) => {

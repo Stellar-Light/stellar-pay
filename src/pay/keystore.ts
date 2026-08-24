@@ -241,28 +241,21 @@ export function removeAccount(name: string): void {
 	write(st);
 }
 
-async function readSecret(acct: Account): Promise<string> {
-	if (acct.backend === "keychain") return keychainGet(nameOf(acct));
+// The keychain item is keyed on the account NAME, so read it by name — not by
+// re-deriving the name from the public key (two accounts can share a secret and
+// resolve to the wrong keychain entry).
+async function readSecret(name: string, acct: Account): Promise<string> {
+	if (acct.backend === "keychain") return keychainGet(name);
 	if (!acct.sealed) throw new Error("account has no stored secret");
 	return unseal(acct.sealed, await passphrase());
-}
-
-// keychain items key on the account name; recover it from the store.
-function nameOf(acct: Account): string {
-	const st = read();
-	const entry = Object.entries(st.accounts).find(
-		([, a]) => a === acct || a.publicKey === acct.publicKey,
-	);
-	if (!entry) throw new Error("account not found in keystore");
-	return entry[0];
 }
 
 export async function exportSecret(name?: string): Promise<string> {
 	const st = read();
 	const key = name ?? st.default;
 	const acct = key ? st.accounts[key] : undefined;
-	if (!acct) throw new Error(`no account "${key ?? "(default)"}"`);
-	return readSecret(acct);
+	if (!key || !acct) throw new Error(`no account "${key ?? "(default)"}"`);
+	return readSecret(key, acct);
 }
 
 /**
@@ -274,8 +267,8 @@ export async function ensureSecretLoaded(): Promise<boolean> {
 	if (process.env.STELLAR_SECRET_KEY) return true;
 	const s = read();
 	const acct = s.default ? s.accounts[s.default] : undefined;
-	if (!acct) return false;
-	process.env.STELLAR_SECRET_KEY = await readSecret(acct);
+	if (!s.default || !acct) return false;
+	process.env.STELLAR_SECRET_KEY = await readSecret(s.default, acct);
 	if (!process.env.STELLAR_NETWORK) process.env.STELLAR_NETWORK = acct.network;
 	return true;
 }

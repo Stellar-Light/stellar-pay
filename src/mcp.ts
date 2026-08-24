@@ -351,8 +351,16 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 				return json({
 					error: `session budget exhausted ($${sessionSpentUsd.toFixed(4)} of $${SESSION_BUDGET} spent); open a new session to continue`,
 				});
-			const res = await g.client.fetch(url, init);
-			const text = await res.text();
+			let res: Response;
+			let text: string;
+			try {
+				res = await g.client.fetch(url, init);
+				text = await res.text();
+			} catch (e) {
+				// A transport/payment error must come back as a tool result, not
+				// an uncaught MCP protocol fault (matches the other tools).
+				return json({ error: `request failed: ${(e as Error).message}` });
+			}
 			const out: Record<string, unknown> = {
 				status: res.status,
 				content_type: res.headers.get("content-type"),
