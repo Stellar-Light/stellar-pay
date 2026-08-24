@@ -1,0 +1,23 @@
+# fly.io config for the sandbox seller.
+#   fly launch --no-deploy --copy-config --name stellar-pay-sandbox
+#   fly secrets set SELLER_SECRET_KEY=S...   # friendbot-funded testnet key
+#   fly deploy --dockerfile sandbox-server/Dockerfile
+app = "stellar-pay-sandbox"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8787"
+
+[http_service]
+  internal_port = 8787
+  force_https = true
+  auto_stop_machines = false   # challenges live in memory — keep one machine up
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
