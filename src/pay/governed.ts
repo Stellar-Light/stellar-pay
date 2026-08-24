@@ -16,7 +16,11 @@
  * both a fresh purchase and a replay, and the settlement hash doubles as
  * Scrimp's own txHashOf source.
  */
-import { MemoryStore, ScrimpClient } from "../../vendor/scrimp/index.js";
+import {
+	MemoryStore,
+	ScrimpClient,
+	SUPPRESSION_HEADER,
+} from "../../vendor/scrimp/index.js";
 import type { Entry } from "../catalog.js";
 import { payFetch } from "./curl.js";
 import { type Offer, offerUSD, type Protocol } from "./offers.js";
@@ -55,6 +59,8 @@ export function buildGoverned(o: {
 	catalog: Entry[];
 	approve: (offer: Offer, url: string) => Promise<boolean>;
 	refusalReason: (offer: Offer, url: string) => string;
+	/** re-checked on each redirect hop (SSRF / per-host policy) */
+	guard?: (url: string) => Promise<string | null> | string | null;
 	prefer?: "x402" | "mpp";
 	budgetPerCall: number;
 }): Governed {
@@ -64,18 +70,29 @@ export function buildGoverned(o: {
 		const r = await payFetch(url, init ?? {}, {
 			wallet: o.wallet,
 			approve: o.approve,
+			guard: o.guard,
 			prefer: (init as PreferInit | undefined)?.stellarPayPrefer ?? o.prefer,
 		});
 		// Rebuild the response with the payment facts as headers. Reading the
 		// body here is safe: payFetch hands back an unread body, and Scrimp
 		// would buffer it a moment later anyway.
+		// STRIP the governance namespace from the upstream response before we
+		// write our own. These headers are how payment facts and suppression
+		// reach the caller, so a seller that sets them on its OWN response could
+		// otherwise forge a settlement hash, write the session budget (a negative
+		// x-stellar-pay-usd un-caps it), or mark a real payment "suppressed" so it
+		// never counts. Only this function may author them.
 		const headers = new Headers(r.res.headers);
+		for (const h of [...Object.values(HDR), SUPPRESSION_HEADER])
+			headers.delete(h);
 		if (r.paid) {
 			const usd = offerUSD(r.paid.offer);
 			if (r.paid.hash) headers.set(HDR.hash, r.paid.hash);
 			headers.set(HDR.protocol, r.paid.protocol);
 			if (usd != null) headers.set(HDR.usd, String(usd));
 			headers.set(HDR.offer, describeSafe(r.paid.offer));
+		} else if (r.blocked) {
+			headers.set(HDR.refused, r.blocked.replace(/[^\x20-\x7e]/g, ""));
 		} else if (r.declined && r.offers[0]) {
 			// The reason embeds the challenge's asset string, which is
 			// attacker-controlled — strip anything a header can't carry so a

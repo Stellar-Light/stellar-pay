@@ -668,6 +668,11 @@ async function cmdCurl(a: Args, init: RequestInit): Promise<void> {
 	const r = await payFetch(a.url, init, {
 		wallet,
 		approve,
+		// A deny/allowlist rule is worthless if a 302 moves the payment to an
+		// unchecked host — re-run the host gate on every hop.
+		guard: (u) =>
+			resolveHost(u, { requested: a.maxUsd, requestedExplicit: a.maxUsdSet })
+				.blocked,
 		prefer: a.prefer,
 	});
 	const bodyText = await r.res.text();

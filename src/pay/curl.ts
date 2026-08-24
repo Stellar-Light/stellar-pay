@@ -43,12 +43,17 @@ function toBaseUnits7(human: string): bigint {
 	return BigInt(whole) * 10_000_000n + BigInt(frac.slice(0, 7).padEnd(7, "0"));
 }
 
+const isRedirect = (n: number) =>
+	n === 301 || n === 302 || n === 303 || n === 307 || n === 308;
+
 export type PayResult = {
 	res: Response;
 	/** every offer the 402 carried, payable from this wallet or not */
 	offers: Offer[];
 	paid: { protocol: Protocol; offer: Offer; hash: string | null } | null;
 	declined: boolean;
+	/** set when a redirect hop was refused by the caller's guard */
+	blocked?: string;
 };
 
 export async function payFetch(
@@ -57,12 +62,37 @@ export async function payFetch(
 	o: {
 		wallet: Wallet;
 		approve: (offer: Offer, url: string) => Promise<boolean>;
+		/** re-checked on every redirect hop (SSRF / per-host policy) */
+		guard?: (url: string) => Promise<string | null> | string | null;
 		prefer?: Protocol;
 		fetch?: typeof globalThis.fetch;
 	},
 ): Promise<PayResult> {
 	const f = o.fetch ?? globalThis.fetch;
-	const first = await f(url, init);
+	// Do NOT let fetch silently follow redirects: every gate (SSRF guard,
+	// per-host spend policy, approval) is evaluated against the URL the caller
+	// asked for, so a 302 would move the actual 402 — and its payTo — to a host
+	// that was never checked. Follow them ourselves, re-running the caller's
+	// guard on each hop.
+	let current = url;
+	let first = await f(current, { ...init, redirect: "manual" });
+	for (let hop = 0; hop < 5 && isRedirect(first.status); hop++) {
+		const loc = first.headers.get("location");
+		if (!loc) break;
+		const next = new URL(loc, current).toString();
+		const blocked = await o.guard?.(next);
+		if (blocked)
+			return {
+				res: first,
+				offers: [],
+				paid: null,
+				declined: true,
+				blocked,
+			};
+		current = next;
+		first = await f(current, { ...init, redirect: "manual" });
+	}
+	url = current;
 	if (first.status !== 402)
 		return { res: first, offers: [], paid: null, declined: false };
 
@@ -186,6 +216,15 @@ export async function payFetch(
 		o.wallet.network,
 		new ExactStellarScheme(
 			createEd25519Signer(o.wallet.keypair.secret(), o.wallet.network),
+			// @x402/stellar REFUSES to build a mainnet client without an explicit
+			// RPC url (testnet has a default), so every pubnet x402 payment threw
+			// before this. Overridable for operators who run their own node.
+			o.wallet.network === "stellar:pubnet"
+				? {
+						url:
+							process.env.STELLAR_RPC_URL ?? "https://mainnet.sorobanrpc.com",
+					}
+				: undefined,
 		),
 	);
 	const res = await wrapFetchWithPayment(f, client)(url, init);

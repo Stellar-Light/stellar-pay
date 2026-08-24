@@ -458,7 +458,15 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 							: `refused by the ${suppressed} rule — no payment made`,
 				};
 			} else if (paid) {
-				if (paid.usd != null && w.network !== "stellar:testnet")
+				// Belt and braces on top of the header strip in governed.ts: only
+				// ever move the session budget by a finite POSITIVE amount, so a
+				// negative or NaN value can never raise the remaining budget.
+				if (
+					paid.usd != null &&
+					Number.isFinite(paid.usd) &&
+					paid.usd > 0 &&
+					w.network !== "stellar:testnet"
+				)
 					sessionSpentUsd += paid.usd;
 				payments.push({
 					at: new Date().toISOString(),

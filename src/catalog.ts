@@ -56,6 +56,14 @@ export function toEntry(r: Record<string, unknown>): Entry {
 }
 
 export async function fromMongo(): Promise<Entry[]> {
+	// Only the probe/export jobs may talk to a database. A library consumer can
+	// easily have their OWN DATABASE_URI in the environment, and this used to
+	// connect to it and run createIndex on someone else's database. Require an
+	// explicit opt-in.
+	if (process.env.STELLAR_PAY_ALLOW_DB !== "1")
+		throw new Error(
+			"fromMongo() is for the probe/export jobs only — set STELLAR_PAY_ALLOW_DB=1 to permit a database connection",
+		);
 	// Imported lazily: the Mongo driver is only needed by the probe/export jobs,
 	// so a library consumer or a CLI user reading the catalog snapshot never
 	// loads it (and need not install it).
