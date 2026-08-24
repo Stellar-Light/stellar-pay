@@ -5,8 +5,14 @@
 payments on Stellar. Copied verbatim from its `src/scrimp/` (zero runtime
 dependencies).
 
-**Status: pending license.** The upstream repo carries no license at the time
-of vendoring. It is used here **only in this private repository** while a
-license / collaboration is arranged with the author. Do not redistribute this
-directory or publish stellar-pay publicly until that is resolved. Credit stays
-with Kaan Kacar regardless.
+**Permission:** the author granted use ("anyone can use it", Aug 2026). The
+upstream repo does not yet carry a formal license file, so for a fully clean
+public release it's worth asking Kaan to add one (MIT/Apache); the permission
+to use it here is explicit. Credit stays with Kaan Kacar.
+
+**Verified:** the author noted it was a one-hour workshop build and wasn't sure
+it worked. All four suppression rules — duplicate, fresh, quarantine, budget —
+plus consumption tracking, attribution, and the `report()` figures are exercised
+and pass in `.local/scrimp-exercise` against this vendored core. One nuance: the
+quarantine rule keys on the exact request, not the provider across different
+requests, so its comments read broader than the behaviour.

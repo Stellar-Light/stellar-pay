@@ -27,12 +27,13 @@ refuses a non-Stellar challenge. That's the strongest parity evidence there is.
 | Preview a 402 without paying | `--debugger` (inspect) | `offers` | ✓ |
 | Validate a provider's 402 (seller check) | `--debugger` | `verify` | ↑ neutral, no gateway |
 | Wrap **any** tool's 402s | `curl`,`wget`,`http`,`fetch` (4 cmds) | `run -- <anything>` | ↑ one command wraps them all |
-| Launch an agent with payments | `claude`,`codex`,`goose`,`acp`,`qodercli` | `claude`,`codex` (+ `run -- goose` etc.) | ✓ / ↑ `run` covers the rest |
+| Launch an agent with payments | `claude`,`codex`,`goose`,`acp`,`qodercli` | `claude`,`codex` mount the MCP | ✓ for those two; `run -- goose` is possible but untested and buffers bodies (no SSE streaming), so ○ for streaming agents |
 | MCP server for agents | `mcp` | `mcp` | ✓ |
 
 `run` is a local MITM proxy that pays 402s for **any** child process, so pay's
-per-tool wrappers collapse into one general command. Verified: real `curl` paid
-a live 402 through it.
+per-tool wrappers collapse into one general command. Reproduced by hand: real
+`curl` paid a live 402 through it and read a gzipped response back correctly; the
+checked-in `test:proxy` covers the plain-HTTP pay path end to end.
 
 ## Wallet
 
@@ -50,9 +51,9 @@ a live 402 through it.
 
 | Capability | pay.sh | stellar-pay | |
 |---|---|---|---|
-| Catalog of paid APIs | contributor-authored `PAY.md` | **probed daily** for live, Stellar-payable | ↑ liveness is the product |
+| Catalog of paid APIs | contributor `PAY.md`, CI-probed at PR/build time | **probed daily** (cron) for live, Stellar-payable | ↑ our edge is continuous liveness, not that pay never probes |
 | Catalog search / detail (MCP) | `search_catalog`,`list_catalog`,`get_catalog_entry` | same | ✓ |
-| Spend controls | budgets / caps | approve gate **+ Scrimp** (dedup / fresh / quarantine / outcome-attributed waste) | ↑ |
+| Spend controls | budgets / caps | approve gate **+ Scrimp** (dedup / fresh / quarantine / budget, all verified; outcome-attributed waste) | ↑ |
 | Balance / spend report (MCP) | `get_balance` | `get_balance`,`spend_report`,`begin_task`/`end_task` | ↑ |
 
 ## Deliberate non-goals & not-yet
@@ -60,7 +61,7 @@ a live 402 through it.
 | Capability | pay.sh | stellar-pay | |
 |---|---|---|---|
 | Sell / monetize an API (self-host paywall) | `gate`,`server` (YAML, self-host or Vercel) | — (use SDF's x402/MPP middleware) | covered upstream on Stellar |
-| Seller onboarding, neutral | — | `verify` + OpenAPI-discovery into the probed catalog | ↑ we help sellers get *discovered* without operating a gateway |
+| Seller onboarding, neutral | — | `verify` (checks a provider's 402 is correct + Stellar-payable) | ↑ neutral, no gateway |
 | Author a catalog listing | `skills`,`catalog scaffold`,`create_skill` | — | we probe instead of authoring |
 | High-frequency channels | `subscriptions` (session) | ○ | needs the (unaudited) one-way-channel contract + a channel-mode server — none exist yet |
 | Visual payment debugger | web UI | runnable sandboxes (`npm run test:*`) | different shape |
@@ -78,7 +79,9 @@ Behaviours the docs specify, and where we land:
 
 ## Bottom line
 
-At or ahead of pay.sh on everything in the client/catalog/governance lane;
-the only gaps are the seller side (a deliberate non-goal — we're neutral) and
-MPP session mode (blocked upstream). Built on Stellar's own rails
+Strong across the client/catalog/governance lane, and ahead on the probed
+catalog, `verify`, and outcome-attributed governance. Real gaps remain: no
+per-signature human/biometric auth in the MCP (it's policy-gated), macOS-only
+keychain, no ephemeral-sandbox wallets or auto-setup, partial curl arg
+fidelity, and no MPP session mode (blocked upstream). Built on Stellar's own rails
 (`@x402/stellar`, `@stellar/mpp`), and interop-tested against pay.sh itself.

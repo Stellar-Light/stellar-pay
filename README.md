@@ -22,9 +22,9 @@ x402 both settle real USDC today. What's missing sits one layer up:
   built it — from *its own* wallet has nowhere to go.
 - **No honest catalog.** Registries list endpoints that died months ago, and
   "supports x402" says nothing about Stellar: the same standard runs on Base,
-  Solana and Polygon, and most servers name only those. Of pay.sh's 38
-  providers, **none** take `stellar:pubnet`; of the x402 Bazaar's 1,611 hosts,
-  **three** do. A listing is not supply.
+  Solana and Polygon, and most servers name only those. Measured 2026-08 from the
+  x402 Bazaar: of its ~1,611 hosts, **three** name `stellar:pubnet`. A listing
+  is not supply.
 - **No spend governance.** Paying per HTTP call is new enough that nothing
   stops an agent buying the same thing twice, or paying into a provider that
   just failed.
@@ -49,7 +49,9 @@ on SDF's own rails, not a product competing with the suppliers it reads from.
 ## What happens on a 402
 
 The server's challenge carries the price, the token, the recipient and the
-network. `stellar-pay` reads it, shows it, and signs only after approval. On
+network. `stellar-pay` reads it and shows it; the CLI asks a human before it
+signs, and the MCP signs only within a spending policy (a per-call ceiling and a
+session budget). On
 Stellar the client signs **authorization entries**, not a whole transaction:
 the server (or its facilitator) assembles and submits, and pays the fee. Your
 wallet holds USDC and nothing else — no XLM, no sequence numbers, no RPC.
@@ -173,8 +175,8 @@ and a cross-chain bridge (Rozo).
 - `npm run sandbox` — mints its own SEP-41 asset on testnet, deploys its
   contract, runs a local MPP charge server, pays it, and checks the settlement
   on-chain. No USDC touched.
-- `npm run test:mcp` — drives every MCP tool over stdio and ends with a paid
-  call plus a deduped replay through the governance layer.
+- `npm run test:mcp` — over stdio, lists all tools, then pays a 402 through
+  `curl` and replays the duplicate free through the governance layer.
 - `npm run test:wallet` — mints a testnet asset and proves setup, a real send
   A→B, the over-spend and no-trustline guards, and history.
 - `npm run test:keystore` — encrypted round-trip: seal, list without leaking
@@ -192,8 +194,10 @@ Only this job needs `DATABASE_URI`.
 Private alpha. Built on `@x402/stellar` and `@stellar/mpp` — SDF's own rails —
 and on the measurement that made it necessary: the same x402 standard does not
 make an endpoint Stellar-payable, so the catalog probes instead of trusting.
-Spend governance vendors [Scrimp](https://github.com/kaankacar/scrimp)
-(license pending coordination with the author).
+Spend governance vendors [Scrimp](https://github.com/kaankacar/scrimp) (Kaan
+Kacar), used with the author's permission; all four of its rules
+(duplicate / fresh / quarantine / budget) are verified in
+`.local/scrimp-exercise` against the vendored core.
 
 ## License
 

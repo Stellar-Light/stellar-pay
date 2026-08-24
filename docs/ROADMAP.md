@@ -1,24 +1,12 @@
 # stellar-pay roadmap
 
 The neutral layer is built: a probed catalog, a 402-paying client (x402 + MPP),
-an MCP with spend governance, and a wallet (setup, encrypted keystore, send,
-topup with QR + on-ramps, history). Three bets remain, in rough priority.
+an MCP with spend governance, a wallet (setup, encrypted keystore + macOS
+Keychain, send, topup with QR + on-ramps, history), the `verify` seller check,
+and the **command-wrapping proxy** (`run` — wraps any tool behind a local MITM
+proxy that pays its 402s; ephemeral CA, per-run auth token). Two bets remain.
 
-## 1. Command-wrapping proxy — pay *any* tool's 402s
-
-pay.sh's headline: `pay curl`, `pay <anytool>` run the tool behind a local
-forward proxy that intercepts 402s, pays, and retries — so it pays for tools
-it didn't write. We pay our own `curl` and MCP calls only.
-
-- **Value:** wrap arbitrary CLIs (a user's own script, another agent's client).
-- **Cost:** a real forward proxy, and a local CA to read/modify HTTPS bodies —
-  heavy. For agents, the MCP already covers the need, so this is a
-  power-user/CLI feature, not an agent one.
-- **Shape if built:** a small Node HTTP/HTTPS proxy that classifies 402s with
-  the existing `readOffers`, pays with `payFetch`, retries; `HTTPS_PROXY` +
-  a generated local CA the wrapped process trusts for the session only.
-
-## 2. MPP session mode — high-frequency paying
+## 1. MPP session mode — high-frequency paying
 
 We do MPP **charge** (one on-chain settle per request). Session mode opens a
 one-way channel: deposit once, then sign off-chain cumulative commitments —
@@ -33,7 +21,7 @@ right for an agent making many small calls per task.
   channel per host and signs commitments; `spend_report` already has the
   vocabulary for it.
 
-## 3. Smart-account vault — spend caps enforced on-chain
+## 2. Smart-account vault — spend caps enforced on-chain
 
 Today the wallet is a classic ed25519 key; governance (Scrimp + the approve
 gate) is app-layer. A **smart account** (OpenZeppelin, via SDF's
