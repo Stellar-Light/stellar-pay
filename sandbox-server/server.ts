@@ -16,6 +16,7 @@
  *   PRICE_XLM          per-call price, default 0.001.
  */
 import * as stellarServer from "@stellar/mpp/charge/server";
+import { randomBytes } from "node:crypto";
 import { Asset, Keypair, Networks } from "@stellar/stellar-sdk";
 import express from "express";
 import { Mppx } from "mppx/express";
@@ -35,8 +36,21 @@ if (!secret) {
 }
 const seller = Keypair.fromSecret(secret);
 
+// The HMAC key proving "this server issued that challenge". A literal default
+// would be a PUBLIC signing key (it was, and an audit forged against it live),
+// so there is no fallback: generate one per boot if the operator didn't set it.
+// Per-boot rotation is fine here — challenges live 5 minutes.
+const credentialSecret =
+	process.env.CREDENTIAL_SECRET && process.env.CREDENTIAL_SECRET.length >= 16
+		? process.env.CREDENTIAL_SECRET
+		: randomBytes(32).toString("hex");
+if (!process.env.CREDENTIAL_SECRET)
+	console.warn(
+		"CREDENTIAL_SECRET unset — using a random per-boot key (challenges won't survive a restart)",
+	);
+
 const mppx = Mppx.create({
-	secretKey: process.env.CREDENTIAL_SECRET ?? "stellar-pay-sandbox",
+	secretKey: credentialSecret,
 	methods: [
 		stellarServer.stellar.charge({
 			recipient: seller.publicKey(),
@@ -51,6 +65,27 @@ const mppx = Mppx.create({
 });
 
 const app = express();
+
+// The challenge store is an unbounded Map upstream, and a rejected push-mode
+// credential claims a slot without releasing it — so an unauthenticated caller
+// could fill the machine's memory. Cap request rate per IP; cheap, and the
+// sandbox has no legitimate high-volume caller.
+const hits = new Map<string, { n: number; until: number }>();
+app.use((req, res, next) => {
+	const ip = req.ip ?? req.socket.remoteAddress ?? "?";
+	const now = Date.now();
+	const w = hits.get(ip);
+	if (!w || w.until < now) hits.set(ip, { n: 1, until: now + 60_000 });
+	else if (++w.n > 60) {
+		res.setHeader("retry-after", "60");
+		res.status(429).json({ error: "rate limited — this is a demo sandbox" });
+		return;
+	}
+	// keep the limiter's own map from becoming the leak it prevents
+	if (hits.size > 5_000)
+		for (const [k, v] of hits) if (v.until < now) hits.delete(k);
+	next();
+});
 
 /** Free: what this is and how to pay it. */
 app.get("/", (_req, res) => {
