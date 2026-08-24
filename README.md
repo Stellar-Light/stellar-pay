@@ -202,9 +202,21 @@ stellar-pay history                           # recent payments to/from the wall
 
 The key never sits in plaintext: the keystore seals it with AES-256-GCM under
 a passphrase (`STELLAR_PAY_PASSPHRASE` for agents and the MCP, an interactive
-prompt for humans), or `--keychain` keeps it in the macOS Keychain instead.
-Already have a wallet? `STELLAR_SECRET_KEY` in the environment always wins.
+prompt for humans), or `--keychain` keeps it in the macOS Keychain instead —
+written over stdin, so it never appears in the process table.
 `account list / import / default / remove / export` manage saved wallets.
+
+`STELLAR_SECRET_KEY` in the environment still wins when set, which is handy in
+CI and for a throwaway testnet key — but it leaves a raw secret in your shell
+and in every child process's environment, so prefer the keystore for anything
+funded. `run` and the agent launchers strip it from the commands they spawn.
+
+**Compared with [pay.sh](https://github.com/solana-foundation/pay):** they
+generate straight into the OS keystore and gate every mainnet signature behind
+Touch ID / Windows Hello. We match the storage, but **not** the per-signature
+biometric prompt — on mainnet the CLI asks in the terminal and the MCP relies
+on the spend policy. A native biometric gate is on the roadmap, not shipped;
+treat that as a real gap, not a footnote.
 
 `topup` shows a SEP-7 QR any mobile Stellar wallet scans (Lobstr, Freighter),
 and on mainnet lists live fiat on-ramps — MoneyGram cash→USDC and more,
@@ -250,8 +262,11 @@ library doesn't pull it.
 ## Quick start
 
 ```sh
-# 1. Point at a wallet holding USDC (or make one: stellar-pay setup --save main)
-export STELLAR_SECRET_KEY=S...   # STELLAR_NETWORK defaults to stellar:pubnet; --sandbox uses testnet
+# 1. Make a wallet, sealed in the local keystore (macOS: add --keychain to use
+#    the OS Keychain instead). The secret is never printed or exported.
+stellar-pay setup --save main
+#    Already have one? STELLAR_SECRET_KEY still works, but prefer
+#    `stellar-pay account import --name main` so it isn't left in your shell.
 
 # 2. See what a paid API asks — costs nothing
 stellar-pay offers https://apiserver.mpprouter.dev/v1/services/exa/search -X POST -d '{}'

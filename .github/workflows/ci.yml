@@ -28,6 +28,7 @@ jobs:
       - run: npm run test:ssrf
       - run: npm run test:scrimp
       - run: npm run test:keystore
+      - run: npm run test:keychain  # macOS-only; SKIPs on the linux runner
 
   secrets:
     runs-on: ubuntu-latest

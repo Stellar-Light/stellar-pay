@@ -79,8 +79,10 @@ function keychainSet(name: string, secret: string): void {
 		throw new Error(
 			"the keychain backend is macOS-only; use the encrypted file (STELLAR_PAY_PASSPHRASE)",
 		);
-	// -U updates an existing item; the secret is passed as an argument, briefly
-	// visible to `ps` — acceptable for an alpha, and the native binding removes it.
+	// The secret goes in on STDIN, never as an argument: an argv value is
+	// visible in the process table to everything on the machine and can surface
+	// in error text. `security` prompts twice ("password data" / "retype"), so
+	// send it twice. -U updates an existing item.
 	execFileSync(
 		"security",
 		[
@@ -89,11 +91,12 @@ function keychainSet(name: string, secret: string): void {
 			KC_ACCOUNT,
 			"-s",
 			kcService(name),
-			"-w",
-			secret,
+			// -U MUST precede -w: `-w` consumes the NEXT argv token as the
+			// password, so ["-w","-U"] silently stored the literal string "-U".
 			"-U",
+			"-w",
 		],
-		{ stdio: "ignore" },
+		{ input: `${secret}\n${secret}\n`, stdio: ["pipe", "ignore", "ignore"] },
 	);
 }
 function keychainGet(name: string): string {
