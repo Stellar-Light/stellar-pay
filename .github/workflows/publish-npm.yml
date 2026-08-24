@@ -24,7 +24,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: https://registry.npmjs.org
 
       # Trusted Publishing needs a recent npm; the runner's bundled one is older.
       - run: npm i -g npm@latest
@@ -59,5 +58,5 @@ jobs:
           if npm view "$NAME@$VER" version >/dev/null 2>&1; then
             echo "$NAME@$VER already published — nothing to do"
           else
-            npm publish --access public
+            npm publish --access public --provenance
           fi
