@@ -119,33 +119,26 @@ Using the catalog needs no secret: the daily job publishes a snapshot to the
 probe job (`npm run probe`, `probe:execute`, `export` — CI, daily) touches
 the database.
 
-## 🔐 Wallets
-
-A wallet is `STELLAR_SECRET_KEY` in the environment, or a **local encrypted
-keystore** so the key isn't pasted every time:
+## 🔐 Wallet
 
 ```sh
-stellar-pay setup --save main                 # new wallet (testnet: funded + trustline), sealed in the keystore
-stellar-pay account list                      # saved wallets (never the secret); import / default / remove / export too
-stellar-pay topup                             # QR + address + real on-ramps; waits for the deposit
-stellar-pay topup --buy --amount 25           # opens a card on-ramp pre-filled, then waits for the USDC
+stellar-pay setup --save main                 # new wallet, sealed in an encrypted local keystore
+stellar-pay topup                             # get USDC in: QR + address + live on-ramps; waits for the deposit
+stellar-pay balance                           # USDC + XLM at a glance
 stellar-pay send <G...address> --amount 1.5   # send USDC (confirms first)
 stellar-pay history                           # recent payments to/from the wallet
 ```
 
-- **Encrypted file** — AES-256-GCM under a scrypt passphrase, Node built-ins,
-  no plaintext on disk. The default account unlocks with
-  `STELLAR_PAY_PASSPHRASE` (for agents and the MCP) or an interactive prompt.
-- **macOS Keychain** — `--keychain` stores the secret in the OS keychain
-  instead: OS-guarded, no passphrase. A per-signature Touch ID prompt is the
-  native upgrade on the roadmap.
-- `STELLAR_SECRET_KEY` always wins when set.
+The key never sits in plaintext: the keystore seals it with AES-256-GCM under
+a passphrase (`STELLAR_PAY_PASSPHRASE` for agents and the MCP, an interactive
+prompt for humans), or `--keychain` keeps it in the macOS Keychain instead.
+Already have a wallet? `STELLAR_SECRET_KEY` in the environment always wins.
+`account list / import / default / remove / export` manage saved wallets.
 
-`topup` on mainnet lists real ways to get USDC onto Stellar, pulled live from
-Stellar Light's partner directory — fiat on-ramps (MoneyGram cash→USDC,
-FinClusive, regional anchors), the exchange withdraw path, and a cross-chain
-bridge. A scannable SEP-7 QR works with mobile Stellar wallets (Lobstr,
-Freighter).
+`topup` shows a SEP-7 QR any mobile Stellar wallet scans (Lobstr, Freighter),
+and on mainnet lists live fiat on-ramps — MoneyGram cash→USDC and more,
+pulled from Stellar Light's partner directory; `topup --buy` opens a card
+on-ramp pre-filled and waits for the USDC to land.
 
 ## Install
 
