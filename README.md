@@ -134,7 +134,11 @@ Private alpha — from source:
 ```sh
 git clone https://github.com/Stellar-Light/stellar-pay && cd stellar-pay
 npm install                    # .npmrc sets legacy-peer-deps: @x402/stellar and @stellar/mpp pin different stellar-sdk majors; both run on 16
+npm link                       # puts the `stellar-pay` command on your PATH (or run `npm run pay -- <args>`)
 ```
+
+Everything below is written as `stellar-pay …`; without `npm link`, the exact
+equivalent from the checkout is `npm run pay -- …`.
 
 ```sh
 export STELLAR_SECRET_KEY=S...  # a wallet holding USDC; STELLAR_NETWORK defaults to stellar:pubnet, --sandbox uses testnet
@@ -197,7 +201,7 @@ make an endpoint Stellar-payable, so the catalog probes instead of trusting.
 Spend governance vendors [Scrimp](https://github.com/kaankacar/scrimp) (Kaan
 Kacar), used with the author's permission; all four of its rules
 (duplicate / fresh / quarantine / budget) are verified in
-`.local/scrimp-exercise` against the vendored core.
+`npm run test:scrimp` against the vendored core.
 
 ## License
 

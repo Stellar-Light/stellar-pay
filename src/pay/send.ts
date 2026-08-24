@@ -61,7 +61,7 @@ async function submit(
 }
 
 /** True once the account holds a USDC trustline (so it can receive USDC). */
-export async function hasTrustline(
+async function hasTrustline(
 	publicKey: string,
 	network: Network,
 ): Promise<boolean> {

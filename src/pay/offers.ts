@@ -69,7 +69,7 @@ function x402Offers(j: unknown, out: Offer[]) {
 }
 
 /** `Payment id="…", realm="…", method="stellar", …` → one object per challenge. */
-export function parsePaymentChallenges(
+function parsePaymentChallenges(
 	wwwAuthenticate: string,
 ): Record<string, string>[] {
 	const out: Record<string, string>[] = [];

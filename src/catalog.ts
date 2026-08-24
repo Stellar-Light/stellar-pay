@@ -31,7 +31,7 @@ export type Entry = {
 	createdAt: string | null;
 };
 
-export const CATALOG_BRANCH = "catalog";
+const CATALOG_BRANCH = "catalog";
 export const CATALOG_REPO = "Stellar-Light/stellar-pay";
 
 const iso = (d: unknown) =>

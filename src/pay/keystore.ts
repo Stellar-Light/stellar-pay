@@ -70,7 +70,7 @@ function write(s: Store): void {
 // ID prompt needs a native Security-framework binding (roadmap); this gives
 // keychain storage and its access controls today, with no plaintext on disk.
 
-export const keychainAvailable = process.platform === "darwin";
+const keychainAvailable = process.platform === "darwin";
 const KC_ACCOUNT = "stellar-pay";
 const kcService = (name: string) => `stellar-pay:${name}`;
 

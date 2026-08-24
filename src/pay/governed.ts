@@ -140,5 +140,3 @@ function describeSafe(offer: Offer): string {
 		"",
 	);
 }
-
-export { offerUSD };

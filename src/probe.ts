@@ -203,7 +203,9 @@ async function probe(url: string): Promise<{
 			x402 = true;
 		}
 		if (j.x402Version) x402 = true;
-	} catch {}
+	} catch {
+		// not JSON, or truncated — the header path below may still carry it
+	}
 	const hdr = res.headers.get("payment-required");
 	if (hdr) {
 		try {
@@ -214,7 +216,9 @@ async function probe(url: string): Promise<{
 			).accepts ?? [])
 				push(a);
 			x402 = true;
-		} catch {}
+		} catch {
+			// a malformed header is not evidence of an offer
+		}
 	}
 	const wa = res.headers.get("www-authenticate") ?? "";
 	if (/payment/i.test(wa)) {

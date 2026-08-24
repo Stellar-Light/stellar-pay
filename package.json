@@ -23,7 +23,9 @@
 		"spike:vault": "tsx src/sandbox/vault-spike.ts",
 		"test:proxy": "tsx src/sandbox/proxy-test.ts",
 		"test:parity": "tsx src/sandbox/parity-test.ts",
-		"test:verify": "tsx src/sandbox/verify-test.ts"
+		"test:verify": "tsx src/sandbox/verify-test.ts",
+		"test:scrimp": "tsx src/sandbox/scrimp-test.ts",
+		"test:ssrf": "tsx src/sandbox/ssrf-test.ts"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.3.2",
@@ -50,5 +52,16 @@
 		"smart-account-kit": "^0.6.2",
 		"viem": "^2.55.19",
 		"zod": "^4.4.3"
-	}
+	},
+	"bin": {
+		"stellar-pay": "bin/stellar-pay.mjs"
+	},
+	"files": [
+		"src",
+		"bin",
+		"vendor",
+		"README.md",
+		"PARITY.md",
+		"docs"
+	]
 }
