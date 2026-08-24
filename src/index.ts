@@ -22,7 +22,9 @@ export {
 // The MCP server, for embedding in your own host.
 export { buildServer, serveStdio } from "./mcp.js";
 // The paid fetch: request → 402 → read offers → approve → pay → retry.
-export { type PayResult, payFetch } from "./pay/curl.js";
+// pinMismatch is the bait-and-switch rule — exported so a consumer building
+// its own flow gets the same protection instead of reimplementing it.
+export { type PayResult, payFetch, pinMismatch } from "./pay/curl.js";
 // Spend governance (dedupe / freshness / quarantine / budget + attribution).
 export {
 	buildGoverned,
