@@ -128,9 +128,9 @@ check(
 // --- autoApprove: the one spend decision ---
 const okUsdc = { ...usdcOffer }; // $0.01 USDC pubnet
 check(
-	"autoApprove: testnet approves anything",
+	"autoApprove: testnet approves any asset — ON A TESTNET OFFER",
 	autoApprove(
-		{ ...okUsdc, asset: "CXXXNOTUSDC" },
+		{ ...okUsdc, network: "stellar:testnet", asset: "CXXXNOTUSDC" },
 		{ network: "stellar:testnet", maxUsd: 0.05 },
 	).ok,
 );
@@ -157,6 +157,27 @@ check(
 	"autoApprove: zero/negative ceiling FAILS CLOSED",
 	!autoApprove(okUsdc, { network: "stellar:pubnet", maxUsd: 0 }).ok &&
 		!autoApprove(okUsdc, { network: "stellar:pubnet", maxUsd: -1 }).ok,
+);
+
+// --- network confusion: a testnet-looking offer must not pass a testnet wallet
+// gate if it is actually for another network, and vice versa (audit PC-01) ---
+check(
+	"network pin: pubnet offer refused by a testnet wallet",
+	!autoApprove(
+		{ ...usdcOffer, network: "stellar:pubnet" },
+		{ network: "stellar:testnet", maxUsd: 0.05 },
+	).ok,
+);
+check(
+	"network pin: testnet offer refused by a mainnet wallet",
+	!autoApprove(
+		{ ...usdcOffer, network: "stellar:testnet" },
+		{ network: "stellar:pubnet", maxUsd: 1 },
+	).ok,
+);
+check(
+	"network pin: matching networks still approve",
+	autoApprove(usdcOffer, { network: "stellar:pubnet", maxUsd: 0.05 }).ok,
 );
 
 console.log(

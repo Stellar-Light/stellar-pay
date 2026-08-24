@@ -21,6 +21,15 @@ export function autoApprove(
 	offer: Offer,
 	opts: { network: string; maxUsd: number },
 ): Verdict {
+	// The offer must be on the SAME network the wallet is configured for. A
+	// server that shows a testnet offer to this gate and a mainnet one to the
+	// paying fetch would otherwise get real value signed under a "no value"
+	// approval — the testnet branch below never checks asset or amount.
+	if (offer.network !== opts.network && offer.network !== "stellar")
+		return {
+			ok: false,
+			reason: `offer is on ${offer.network}, wallet is on ${opts.network} — refusing`,
+		};
 	if (opts.network === "stellar:testnet")
 		return { ok: true, reason: "testnet — tokens have no value" };
 	// A misconfigured ceiling (NaN from a typo'd env var, zero, negative) must

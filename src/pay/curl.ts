@@ -94,6 +94,26 @@ export async function payFetch(
 			// with an auto-paying wrapper, which in a long-lived process (the MCP,
 			// the run proxy) would pay every later 402 BEFORE the approval gate.
 			polyfill: false,
+			// The library re-fetches the 402 and signs THAT challenge. onProgress
+			// cannot see the network — and the network decides the RPC and the
+			// signing passphrase — so a server could show stellar:testnet to the
+			// approval probe and stellar:pubnet to this one, keeping amount/asset/
+			// recipient identical, and get a real mainnet transfer signed under a
+			// "testnet, no value" approval. Gate the raw challenge here, where the
+			// network IS visible, before any credential is created.
+			async onChallenge(challenge, helpers) {
+				const req = (
+					challenge as unknown as {
+						request?: { methodDetails?: { network?: string } };
+					}
+				).request;
+				const net = req?.methodDetails?.network;
+				if (net != null && offer.network !== "stellar" && net !== offer.network)
+					throw new Error(
+						`the endpoint switched network after approval (approved ${offer.network}, asked to sign ${net}) — refusing`,
+					);
+				return helpers.createCredential();
+			},
 			methods: [
 				mppCharge({
 					secretKey: o.wallet.keypair.secret(),
