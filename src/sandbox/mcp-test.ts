@@ -26,6 +26,7 @@ async function main() {
 			STELLAR_SECRET_KEY: sb.payer.secret(),
 			STELLAR_NETWORK: "stellar:testnet",
 			CATALOG_FILE: process.env.CATALOG_FILE ?? ".local/catalog.json",
+			STELLAR_PAY_ALLOW_PRIVATE: "1", // the sandbox charge server is on 127.0.0.1
 		} as Record<string, string>,
 		stderr: "pipe",
 	});

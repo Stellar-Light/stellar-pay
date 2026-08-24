@@ -53,6 +53,41 @@ function newSendToken(to: string, amount: string, network: string): string {
 	return t;
 }
 
+/**
+ * SSRF guard for the agent-driven `curl` tool: a prompt-injected agent must not
+ * be able to reach the loopback/private/link-local network (cloud metadata at
+ * 169.254.169.254, internal services) or a non-http(s) scheme. Returns a reason
+ * string when the target is blocked, or null when it's allowed. The sandbox and
+ * local dev opt in with STELLAR_PAY_ALLOW_PRIVATE=1.
+ */
+export function blockedTarget(raw: string): string | null {
+	if (process.env.STELLAR_PAY_ALLOW_PRIVATE === "1") return null;
+	let u: URL;
+	try {
+		u = new URL(raw);
+	} catch {
+		return `"${raw}" is not a valid URL`;
+	}
+	if (u.protocol !== "http:" && u.protocol !== "https:")
+		return `refused: ${u.protocol} is not an http(s) URL`;
+	const h = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+	const priv =
+		h === "localhost" ||
+		h === "::1" ||
+		h === "0.0.0.0" ||
+		/^127\./.test(h) ||
+		/^10\./.test(h) ||
+		/^192\.168\./.test(h) ||
+		/^172\.(1[6-9]|2\d|3[01])\./.test(h) ||
+		/^169\.254\./.test(h) || // link-local incl. cloud metadata
+		/^(fe80:|fc|fd)/.test(h) ||
+		h.endsWith(".local") ||
+		h.endsWith(".internal");
+	return priv
+		? `refused: ${h} is a loopback/private/link-local address — the paid catalog is public hosts only`
+		: null;
+}
+
 const json = (v: unknown) => ({
 	content: [{ type: "text" as const, text: JSON.stringify(v, null, 1) }],
 });
@@ -293,6 +328,8 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 			},
 		},
 		async ({ url, method, headers, body, prefer }) => {
+			const blocked = blockedTarget(url);
+			if (blocked) return json({ error: blocked });
 			const w = getWallet();
 			const g = await getGoverned(prefer);
 			const isJson = body != null && typeof body !== "string";
