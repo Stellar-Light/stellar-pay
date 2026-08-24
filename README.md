@@ -20,7 +20,8 @@ stellar-pay curl -X POST https://apiserver.mpprouter.dev/v1/services/exa/search 
 **Try it now — a real on-chain payment, with play money:**
 
 ```sh
-npx stellar-pay setup --sandbox                                        # funded testnet wallet, one command
+export STELLAR_PAY_PASSPHRASE=sandbox   # testnet play money; any value works
+npx stellar-pay setup --sandbox --save sandbox                 # funded testnet wallet, sealed locally
 npx stellar-pay curl https://stellar-pay-sandbox.fly.dev/data --yes --sandbox
 ```
 
