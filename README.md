@@ -1,5 +1,10 @@
 <p align="center"><b>stellar-pay</b></p>
 <p align="center"><b>The missing payment layer for HTTP on Stellar — x402 & MPP 402 challenges, paid in USDC from your own wallet.</b></p>
+<p align="center">
+  <a href="https://www.npmjs.com/package/stellar-pay"><img src="https://img.shields.io/npm/v/stellar-pay" alt="npm"></a>
+  <a href="https://github.com/Stellar-Light/stellar-pay/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT"></a>
+  <a href="https://github.com/Stellar-Light/stellar-pay/actions/workflows/probe.yml"><img src="https://img.shields.io/github/actions/workflow/status/Stellar-Light/stellar-pay/probe.yml?label=daily%20probe" alt="probe"></a>
+</p>
 <p align="center"><a href="#install">Install</a> · <a href="#quick-start">Quick Start</a> · <a href="#-for-agents-mcp-claude-code-raven">MCP</a> · <a href="#-a-catalog-thats-evidence-not-a-listing">Catalog</a></p>
 
 ---
@@ -77,6 +82,7 @@ Mount the MCP into an agent:
 ```sh
 stellar-pay claude            # Claude Code with stellar-pay mounted
 stellar-pay codex             # Codex with stellar-pay mounted
+stellar-pay goose             # goose with stellar-pay mounted (--with-extension)
 claude mcp add stellar-pay -- stellar-pay mcp   # or register it yourself
 stellar-pay mcp               # raw stdio server for Cursor, goose, or your own client
 ```

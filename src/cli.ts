@@ -19,7 +19,7 @@
 import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { daysAlive, loadCatalog, searchCatalog } from "./catalog.js";
@@ -262,16 +262,38 @@ async function cmdRun(a: Args): Promise<void> {
 
 async function cmdAgent(a: Args): Promise<void> {
 	// Mount the MCP into the agent and hand over. The server runs from this
-	// checkout with the environment it inherits, so the wallet key never
+	// install with the environment it inherits, so the wallet key never
 	// touches an agent config file. claude takes a --mcp-config file; codex
-	// takes per-invocation `-c mcp_servers.<name>.…` overrides (no global
-	// config is mutated either way).
-	const here = fileURLToPath(new URL(".", import.meta.url));
-	const tsx = join(here, "..", "node_modules", "tsx", "dist", "cli.mjs");
-	const server = [process.execPath, tsx, join(here, "cli.ts"), "mcp"];
+	// takes per-invocation `-c mcp_servers.<name>.…` overrides; goose takes
+	// --with-extension (no global config is mutated in any case).
+	//
+	// The server command must work from BOTH a published install (this file is
+	// compiled dist/cli.js — plain node runs it) and a source checkout (this
+	// file is src/cli.ts — it needs the tsx loader).
+	const self = fileURLToPath(import.meta.url);
+	const server = self.endsWith(".ts")
+		? [
+				process.execPath,
+				join(dirname(self), "..", "node_modules", "tsx", "dist", "cli.mjs"),
+				self,
+				"mcp",
+			]
+		: [process.execPath, self, "mcp"];
 	const passthrough = process.argv.slice(3);
 	let child: ReturnType<typeof spawn>;
-	if (a.cmd === "claude") {
+	if (a.cmd === "goose") {
+		// goose mounts a stdio MCP per-invocation via --with-extension.
+		const ext = server
+			.map((x) => (x.includes(" ") ? JSON.stringify(x) : x))
+			.join(" ");
+		const sub =
+			passthrough[0] === "run" || passthrough[0] === "session"
+				? (passthrough.shift() as string)
+				: "session";
+		child = spawn("goose", [sub, "--with-extension", ext, ...passthrough], {
+			stdio: "inherit",
+		});
+	} else if (a.cmd === "claude") {
 		const cfg = {
 			mcpServers: {
 				"stellar-pay": { command: server[0], args: server.slice(1) },
@@ -829,6 +851,7 @@ const commands: Record<string, (a: Args, init: RequestInit) => Promise<void>> =
 		run: cmdRun,
 		claude: cmdAgent,
 		codex: cmdAgent,
+		goose: cmdAgent,
 		whoami: cmdWhoami,
 		balance: cmdBalance,
 		setup: cmdSetup,
@@ -865,7 +888,10 @@ async function main() {
 	// command belongs to the child, so `stellar-pay claude --help` must reach
 	// the agent, not print OUR help.
 	const passthrough =
-		a.cmd === "claude" || a.cmd === "codex" || a.cmd === "run";
+		a.cmd === "claude" ||
+		a.cmd === "codex" ||
+		a.cmd === "goose" ||
+		a.cmd === "run";
 	if (
 		a.cmd === "help" ||
 		(!passthrough &&

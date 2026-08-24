@@ -1,6 +1,6 @@
 {
 	"name": "stellar-pay",
-	"version": "0.1.1",
+	"version": "0.1.2",
 	"description": "Stellar payments layer for agents: a pay.sh-shaped client (curl that answers 402s with a Stellar wallet, x402 + MPP) over a probed catalog of Stellar-payable APIs. Private while the lane is new.",
 	"license": "MIT",
 	"type": "module",
@@ -60,13 +60,16 @@
 		"stellar-pay": "bin/stellar-pay.mjs"
 	},
 	"files": [
-		"dist",
-		"bin",
-		"vendor",
-		"README.md",
+		"CONTRIBUTING.md",
 		"PARITY.md",
+		"README.md",
+		"SECURITY.md",
+		"bin",
+		"dist",
 		"docs",
-		"skills"
+		"llms.txt",
+		"skills",
+		"vendor"
 	],
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",

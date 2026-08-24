@@ -1,0 +1,44 @@
+# stellar-pay
+
+> Pay HTTP 402s in USDC from a Stellar wallet — x402 (exact scheme) and MPP
+> (draft-stellar-charge-00) in one client, as a CLI, an MCP server, and an
+> importable TypeScript library. Probed catalog of live Stellar-payable
+> endpoints included.
+
+Install: `npm i -g stellar-pay` (or `npx stellar-pay …`). Wallet =
+STELLAR_SECRET_KEY or an encrypted keystore (`stellar-pay setup --save main`).
+
+## Core
+
+- CLI: `curl <url> [--yes --max-usd N] [--json]` pays a 402 and returns the
+  body; `offers <url>` reads the challenge paying nothing; `verify <url>` is
+  the seller-side correctness check; `search "<task>" --json` finds live paid
+  endpoints; `run -- <cmd>` wraps any tool behind a paying proxy;
+  `mcp` serves stdio; `claude|codex|goose` launch an agent with the MCP
+  mounted. Exit codes: 0 ok · 2 usage · 3 payment refused · 4 no wallet.
+- Library: `import { payFetch, readOffers, autoApprove, decide } from
+  "stellar-pay"` — the same 402 loop in-process.
+- MCP tools: search_catalog, list_catalog, get_catalog_entry, curl,
+  get_balance, begin_task/end_task, spend_report, send_usdc (two-step),
+  get_history.
+
+## Spend control
+
+Mainnet payments must be USDC, under STELLAR_PAY_MAX_USD_PER_CALL, inside
+STELLAR_PAY_SESSION_BUDGET_USD, and allowed by the per-host policy file
+(~/.config/stellar-pay/policy.json: per-host ceilings, deny, allowlist mode).
+Inside a task, duplicate/fresh requests replay free and failing providers are
+quarantined (Scrimp).
+
+## Catalog (public feed)
+
+https://raw.githubusercontent.com/Stellar-Light/stellar-pay/catalog/catalog.json
+Every row answered a real 402 naming stellar:pubnet within the last day
+(re-probed daily): url, method, priceUSD, protocol, lastCheckedAt.
+
+## Docs
+
+- README: https://github.com/Stellar-Light/stellar-pay#readme
+- Agent playbook: https://github.com/Stellar-Light/stellar-pay/blob/main/skills/stellar-pay/SKILL.md
+- pay.sh parity notes: https://github.com/Stellar-Light/stellar-pay/blob/main/PARITY.md
+- Security policy: https://github.com/Stellar-Light/stellar-pay/blob/main/SECURITY.md
