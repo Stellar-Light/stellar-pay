@@ -130,7 +130,15 @@ export function readOffers(headers: Headers, body: string): Offer[] {
 			description: req.description ?? null,
 		});
 	}
-	return out;
+	// A server commonly sends the same accept in both the body and the
+	// payment-required header — de-dupe so one offer isn't counted twice.
+	const seen = new Set<string>();
+	return out.filter((o) => {
+		const k = `${o.protocol}|${o.network}|${o.asset}|${o.amount}|${o.payTo}`;
+		if (seen.has(k)) return false;
+		seen.add(k);
+		return true;
+	});
 }
 
 /** USD value when the asset is USDC on Stellar (7 decimals); null otherwise. */

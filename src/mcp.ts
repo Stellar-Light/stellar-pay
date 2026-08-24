@@ -93,17 +93,20 @@ const payments: Array<{
 let governed: Governed | null = null;
 let openTask: string | null = null;
 async function getGoverned(prefer?: "x402" | "mpp"): Promise<Governed> {
-	if (governed) return governed;
-	const w = getWallet();
-	const catalog: Entry[] = await loadCatalog({ all: true });
-	governed = buildGoverned({
-		wallet: w,
-		catalog,
-		approve: approveGate(w),
-		refusalReason: (offer) => gateRefusal(offer),
-		prefer,
-		budgetPerCall: MAX_PER_CALL,
-	});
+	if (!governed) {
+		const w = getWallet();
+		const catalog: Entry[] = await loadCatalog({ all: true });
+		governed = buildGoverned({
+			wallet: w,
+			catalog,
+			approve: approveGate(w),
+			refusalReason: (offer) => gateRefusal(offer),
+			prefer,
+			budgetPerCall: MAX_PER_CALL,
+		});
+	}
+	// The client is memoized, so apply the per-call preference each time.
+	governed.setPrefer(prefer);
 	return governed;
 }
 

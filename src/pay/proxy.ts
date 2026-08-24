@@ -4,35 +4,30 @@
  * write pays for Stellar-gated APIs transparently.
  *
  * HTTPS 402s can't be read without terminating TLS, so the proxy is a MITM: it
- * generates a local root CA once, mints a leaf cert per host on the fly, and
- * the wrapped child trusts that CA (via env — never installed system-wide).
- * Every decrypted request is run through payFetch, which already does the
- * 402 → read offers → pay → retry loop, so all the payment logic is reused;
- * the proxy only decrypts and hands off.
+ * mints a fresh ephemeral root CA per run (signing key in memory only, never on
+ * disk), a leaf cert per host on the fly, and the wrapped child trusts that CA
+ * via env — never installed system-wide. Every decrypted request runs through
+ * payFetch, which already does the 402 → read offers → pay → retry loop, so all
+ * the payment logic is reused; the proxy only decrypts and hands off.
  *
- * Scope: localhost-only, alive only while the wrapped command runs, CA trusted
- * by the child alone. A per-request approve gate bounds spend the same way the
- * CLI/MCP do.
+ * Scope: loopback-only, alive only while the wrapped command runs, gated by a
+ * per-run bearer token so other local processes can't spend or MITM through it,
+ * CA trusted by the child alone. A per-request approve gate bounds spend the
+ * same way the CLI/MCP do.
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import * as http from "node:http";
 import * as https from "node:https";
 import type { AddressInfo } from "node:net";
 import { connect as netConnect } from "node:net";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as tls from "node:tls";
 import forge from "node-forge";
 import { payFetch } from "./curl.js";
 import { type Offer, offerUSD } from "./offers.js";
 import type { Wallet } from "./wallet.js";
-
-const CONFIG_DIR =
-	process.env.STELLAR_PAY_HOME ??
-	join(
-		process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"),
-		"stellar-pay",
-	);
 
 type CA = {
 	certPem: string;
@@ -41,34 +36,22 @@ type CA = {
 	key: forge.pki.PrivateKey;
 };
 
-/** Generate (once) and cache a local root CA. Its cert path is what the child trusts. */
-export function ensureCA(): { caPath: string; ca: CA } {
-	mkdirSync(CONFIG_DIR, { recursive: true });
-	const caPath = join(CONFIG_DIR, "proxy-ca.pem");
-	const keyPath = join(CONFIG_DIR, "proxy-ca-key.pem");
-	try {
-		const certPem = readFileSync(caPath, "utf8");
-		const keyPem = readFileSync(keyPath, "utf8");
-		return {
-			caPath,
-			ca: {
-				certPem,
-				keyPem,
-				cert: forge.pki.certificateFromPem(certPem),
-				key: forge.pki.privateKeyFromPem(keyPem),
-			},
-		};
-	} catch {
-		// mint a fresh CA
-	}
+/**
+ * Mint a fresh, EPHEMERAL root CA for one `run`. The signing key lives only in
+ * this process's memory and is never written to disk — so it can't be read by
+ * another same-user process to MITM future runs. Only the public cert is
+ * written, to a per-run temp file (the child's trust env needs a path), and
+ * that file is removed on close.
+ */
+function makeEphemeralCA(): { caPath: string; ca: CA; cleanup: () => void } {
 	const keys = forge.pki.rsa.generateKeyPair(2048);
 	const cert = forge.pki.createCertificate();
 	cert.publicKey = keys.publicKey;
-	cert.serialNumber = "01";
+	cert.serialNumber = randomBytes(8).toString("hex");
 	cert.validity.notBefore = new Date(Date.now() - 24 * 3600 * 1000);
-	cert.validity.notAfter = new Date(Date.now() + 5 * 365 * 24 * 3600 * 1000);
+	cert.validity.notAfter = new Date(Date.now() + 24 * 3600 * 1000); // one day is plenty
 	const attrs = [
-		{ name: "commonName", value: "stellar-pay local proxy CA" },
+		{ name: "commonName", value: "stellar-pay run proxy CA (ephemeral)" },
 		{ name: "organizationName", value: "stellar-pay" },
 	];
 	cert.setSubject(attrs);
@@ -79,10 +62,14 @@ export function ensureCA(): { caPath: string; ca: CA } {
 	]);
 	cert.sign(keys.privateKey, forge.md.sha256.create());
 	const certPem = forge.pki.certificateToPem(cert);
-	const keyPem = forge.pki.privateKeyToPem(keys.privateKey);
-	writeFileSync(caPath, certPem);
-	writeFileSync(keyPath, keyPem, { mode: 0o600 });
-	return { caPath, ca: { certPem, keyPem, cert, key: keys.privateKey } };
+	const dir = mkdtempSync(join(tmpdir(), "stellar-pay-ca-"));
+	const caPath = join(dir, "proxy-ca.pem");
+	writeFileSync(caPath, certPem, { mode: 0o600 });
+	return {
+		caPath,
+		ca: { certPem, keyPem: "", cert, key: keys.privateKey },
+		cleanup: () => rmSync(dir, { recursive: true, force: true }),
+	};
 }
 
 /** Mint a leaf cert for one host, signed by the CA. Cached per host. */
@@ -139,12 +126,23 @@ export type ProxyOptions = {
 	onRefused?: (info: { url: string; reason: string }) => void;
 };
 
-/** Start the wrapping proxy. Returns its port, the CA path, and a close(). */
-export async function startProxy(
-	o: ProxyOptions,
-): Promise<{ port: number; caPath: string; close: () => Promise<void> }> {
-	const { caPath, ca } = ensureCA();
+/** Start the wrapping proxy. Returns its port, a per-run token, the CA path, and close(). */
+export async function startProxy(o: ProxyOptions): Promise<{
+	port: number;
+	token: string;
+	caPath: string;
+	close: () => Promise<void>;
+}> {
+	const { caPath, ca, cleanup } = makeEphemeralCA();
 	const leaf = leafFactory(ca);
+	// The proxy binds loopback, but loopback is shared by every process on the
+	// host — without auth any of them could spend the wallet or route egress
+	// through the MITM. Require this per-run secret (carried in the proxy URL,
+	// so tools send it as Proxy-Authorization automatically).
+	const token = randomBytes(24).toString("hex");
+	const expected = `Basic ${Buffer.from(`stellar-pay:${token}`).toString("base64")}`;
+	const authed = (req: http.IncomingMessage): boolean =>
+		req.headers["proxy-authorization"] === expected;
 
 	// Every decrypted request runs through payFetch and its result is written back.
 	const handle = async (
@@ -221,9 +219,26 @@ export async function startProxy(
 	const tlsPort = (tlsServer.address() as AddressInfo).port;
 
 	// The proxy the child points at: plain-HTTP requests handled directly;
-	// CONNECT tunnels are redirected into our own TLS terminator above.
-	const proxy = http.createServer((req, res) => handle(req, res, "http"));
-	proxy.on("connect", (_req, clientSocket, head) => {
+	// CONNECT tunnels are redirected into our own TLS terminator above. Both
+	// are gated by the per-run token (the tunnelled HTTPS requests are already
+	// behind an authenticated CONNECT, so they aren't re-checked).
+	const proxy = http.createServer((req, res) => {
+		if (!authed(req)) {
+			res.writeHead(407, {
+				"proxy-authenticate": 'Basic realm="stellar-pay"',
+			});
+			res.end("stellar-pay proxy: authentication required");
+			return;
+		}
+		handle(req, res, "http");
+	});
+	proxy.on("connect", (req, clientSocket, head) => {
+		if (!authed(req)) {
+			clientSocket.end(
+				'HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="stellar-pay"\r\n\r\n',
+			);
+			return;
+		}
 		const upstream = netConnect(tlsPort, "127.0.0.1", () => {
 			clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
 			if (head?.length) upstream.write(head);
@@ -238,17 +253,28 @@ export async function startProxy(
 
 	return {
 		port,
+		token,
 		caPath,
 		close: () =>
 			new Promise<void>((resolve) => {
-				tlsServer.close(() => proxy.close(() => resolve()));
+				tlsServer.close(() =>
+					proxy.close(() => {
+						cleanup();
+						resolve();
+					}),
+				);
 			}),
 	};
 }
 
 /** Env that makes a child route through the proxy and trust its CA (Node, curl, python, etc.). */
-export function proxyEnv(port: number, caPath: string): Record<string, string> {
-	const url = `http://127.0.0.1:${port}`;
+export function proxyEnv(
+	port: number,
+	caPath: string,
+	token: string,
+): Record<string, string> {
+	// Credentials in the proxy URL → tools send Proxy-Authorization automatically.
+	const url = `http://stellar-pay:${token}@127.0.0.1:${port}`;
 	return {
 		HTTP_PROXY: url,
 		HTTPS_PROXY: url,

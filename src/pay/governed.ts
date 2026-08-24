@@ -35,6 +35,8 @@ export type Governed = {
 	paymentFor: (res: Response) => Payment | null;
 	/** the approve-gate refusal encoded on a response, if any */
 	refusalFor: (res: Response) => { reason: string } | null;
+	/** set the protocol preference for subsequent calls (the client is memoized) */
+	setPrefer: (p?: "x402" | "mpp") => void;
 };
 
 const HDR = {
@@ -54,12 +56,15 @@ export function buildGoverned(o: {
 	budgetPerCall: number;
 }): Governed {
 	const price = new Map(o.catalog.map((e) => [e.url, e.priceUSD] as const));
+	// Mutable so a per-call `prefer` reaches the payer even though the Scrimp
+	// client is built once and memoized.
+	let prefer = o.prefer;
 
 	const payer = async (url: string, init?: RequestInit): Promise<Response> => {
 		const r = await payFetch(url, init ?? {}, {
 			wallet: o.wallet,
 			approve: o.approve,
-			prefer: o.prefer,
+			prefer,
 		});
 		// Rebuild the response with the payment facts as headers. Reading the
 		// body here is safe: payFetch hands back an unread body, and Scrimp
@@ -72,7 +77,13 @@ export function buildGoverned(o: {
 			if (usd != null) headers.set(HDR.usd, String(usd));
 			headers.set(HDR.offer, describeSafe(r.paid.offer));
 		} else if (r.declined && r.offers[0]) {
-			headers.set(HDR.refused, o.refusalReason(r.offers[0]));
+			// The reason embeds the challenge's asset string, which is
+			// attacker-controlled — strip anything a header can't carry so a
+			// crafted 402 can't make Headers.set throw and abort the request.
+			headers.set(
+				HDR.refused,
+				o.refusalReason(r.offers[0]).replace(/[^\x20-\x7e]/g, ""),
+			);
 		}
 		const body = await r.res.arrayBuffer();
 		return new Response(body.byteLength ? body : null, {
@@ -109,6 +120,9 @@ export function buildGoverned(o: {
 		refusalFor: (res) => {
 			const r = res.headers.get(HDR.refused);
 			return r ? { reason: r } : null;
+		},
+		setPrefer: (p) => {
+			prefer = p;
 		},
 	};
 }

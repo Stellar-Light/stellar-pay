@@ -76,6 +76,11 @@ export async function payFetch(
 	if (!(await o.approve(offer)))
 		return { res: first, offers, paid: null, declined: true };
 
+	// Approval may have waited on a human prompt; give the paying fetch a fresh
+	// timeout so the caller's original (now-aged) signal can't abort a payment
+	// mid-settlement — an ambiguous abort there risks a double-pay on retry.
+	init = { ...init, signal: AbortSignal.timeout(120_000) };
+
 	if (offer.protocol === "mpp") {
 		let hash: string | null = null;
 		const mppx = Mppx.create({

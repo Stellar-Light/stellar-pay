@@ -322,16 +322,16 @@ async function main() {
 			if (r.status === "402") paid++;
 			if (acceptsStellar) stellarPayable++;
 			const prev = byUrl.get(c.url);
-			// On Stellar the asset is the USDC SAC address, not the string "USDC".
+			// Price from the STELLAR USDC accept specifically: on Stellar the
+			// asset is the USDC SAC contract id (not the string "USDC"), and a
+			// multi-network endpoint may also list a Base/Solana accept whose
+			// amount/decimals differ — pricing off the first "usd*"-ish match
+			// (which also caught USDT) gave the wrong number. USDC is 7 decimals
+			// on the Stellar SAC.
 			const usd = r.accepts.find(
-				(a) =>
-					(/usdc|usd/i.test(a.asset ?? "") || USDC_SAC.has(a.asset ?? "")) &&
-					a.amount,
+				(a) => isStellar(a.network) && USDC_SAC.has(a.asset ?? "") && a.amount,
 			);
-			// USDC is 7 decimals on Stellar (SAC), 6 on EVM and Solana.
-			const priceUSD = usd?.amount
-				? Number(usd.amount) / (isStellar(usd.network) ? 10_000_000 : 1_000_000)
-				: null;
+			const priceUSD = usd?.amount ? Number(usd.amount) / 10_000_000 : null;
 			const host = (() => {
 				try {
 					return new URL(c.url).host;

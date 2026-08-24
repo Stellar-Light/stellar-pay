@@ -211,7 +211,7 @@ async function main() {
 		} = process.env;
 		const child = spawn(command, cmdArgs, {
 			stdio: "inherit",
-			env: { ...childEnv, ...proxyEnv(proxy.port, proxy.caPath) },
+			env: { ...childEnv, ...proxyEnv(proxy.port, proxy.caPath, proxy.token) },
 		});
 		child.on("exit", async (code) => {
 			await proxy.close();

@@ -39,13 +39,14 @@ async function main() {
 	const target = new URL(sb.url);
 	const { status, body } = await new Promise<{ status: number; body: string }>(
 		(resolve, reject) => {
+			const auth = `Basic ${Buffer.from(`stellar-pay:${proxy.token}`).toString("base64")}`;
 			const r = httpRequest(
 				{
 					host: "127.0.0.1",
 					port: proxy.port,
 					method: "GET",
 					path: sb.url,
-					headers: { host: target.host },
+					headers: { host: target.host, "proxy-authorization": auth },
 				},
 				(resp) => {
 					const chunks: Buffer[] = [];
