@@ -37,6 +37,12 @@ function receiptHash(res: Response): string | null {
 	return null;
 }
 
+/** "0.0100000" → 100000n — the inverse of the MPP lib's fromBaseUnits(x, 7). */
+function toBaseUnits7(human: string): bigint {
+	const [whole = "0", frac = ""] = human.split(".");
+	return BigInt(whole) * 10_000_000n + BigInt(frac.slice(0, 7).padEnd(7, "0"));
+}
+
 export type PayResult = {
 	res: Response;
 	/** every offer the 402 carried, payable from this wallet or not */
@@ -84,11 +90,30 @@ export async function payFetch(
 		let hash: string | null = null;
 		const mppx = Mppx.create({
 			fetch: f,
+			// NEVER polyfill globalThis.fetch: the library defaults to replacing it
+			// with an auto-paying wrapper, which in a long-lived process (the MCP,
+			// the run proxy) would pay every later 402 BEFORE the approval gate.
+			polyfill: false,
 			methods: [
 				mppCharge({
 					secretKey: o.wallet.keypair.secret(),
 					mode: "pull",
 					onProgress(e) {
+						// The library re-fetches the 402 and signs THAT challenge. This
+						// event carries exactly what is about to be signed — pin it to
+						// the approved offer (amount, currency, recipient) and abort by
+						// throwing on any mismatch, mirroring the x402 selector below.
+						if (e.type === "challenge") {
+							const ok =
+								(offer.amount == null ||
+									toBaseUnits7(e.amount) === BigInt(offer.amount)) &&
+								(offer.asset == null || e.currency === offer.asset) &&
+								(offer.payTo == null || e.recipient === offer.payTo);
+							if (!ok)
+								throw new Error(
+									"the endpoint's payment requirement changed after approval — refusing to sign a different amount",
+								);
+						}
 						if (e.type === "paid") hash = e.hash;
 					},
 				}),
@@ -111,16 +136,27 @@ export async function payFetch(
 	// probe and a large one to the paying fetch. If the live requirement no
 	// longer matches what was approved, refuse rather than pay something else.
 	const client = new x402Client((_v, reqs) => {
-		const pick = reqs.find(
-			(r) =>
+		const pick = reqs.find((r) => {
+			const rr = r as {
+				amount?: string;
+				maxAmountRequired?: string;
+				payTo?: string;
+			};
+			// The v2 signer signs r.amount (v1: maxAmountRequired). Require EVERY
+			// amount field the challenge carries to equal the approved amount, so a
+			// challenge with maxAmountRequired=approved but amount=higher can't
+			// satisfy the pin while the signer signs the higher value.
+			const amounts = [rr.amount, rr.maxAmountRequired].filter(
+				(x): x is string => x != null,
+			);
+			return (
 				r.network === o.wallet.network &&
 				(offer.asset == null || r.asset === offer.asset) &&
-				String(
-					(r as { maxAmountRequired?: string }).maxAmountRequired ??
-						(r as { amount?: string }).amount ??
-						"",
-				) === (offer.amount ?? ""),
-		);
+				(offer.payTo == null || rr.payTo === offer.payTo) &&
+				amounts.length > 0 &&
+				amounts.every((x) => String(x) === (offer.amount ?? ""))
+			);
+		});
 		if (!pick)
 			throw new Error(
 				"the endpoint's payment requirement changed after approval — refusing to sign a different amount",

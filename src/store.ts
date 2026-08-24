@@ -27,12 +27,7 @@ export type EndpointRow = {
 	acceptsStellar: boolean;
 	accepts: Accept[];
 	priceUSD: number | null;
-	source:
-		| "bazaar"
-		| "mpp-router"
-		| "stellar-directory"
-		| "curated"
-		| "openapi-discovery";
+	source: "bazaar" | "mpp-router" | "stellar-directory" | "curated";
 	sourceUrl: string | null;
 	lastStatus: string;
 	lastCheckedAt: Date;

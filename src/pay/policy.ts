@@ -14,6 +14,14 @@ export function autoApprove(
 ): Verdict {
 	if (opts.network === "stellar:testnet")
 		return { ok: true, reason: "testnet — tokens have no value" };
+	// A misconfigured ceiling (NaN from a typo'd env var, zero, negative) must
+	// fail CLOSED: every `>` comparison against NaN is false, which would
+	// otherwise approve any amount.
+	if (!Number.isFinite(opts.maxUsd) || opts.maxUsd <= 0)
+		return {
+			ok: false,
+			reason: "spend ceiling is not a positive number — refusing",
+		};
 	const usd = offerUSD(offer);
 	if (usd == null)
 		return {

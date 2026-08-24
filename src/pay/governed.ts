@@ -19,7 +19,7 @@
 import { MemoryStore, ScrimpClient } from "../../vendor/scrimp/index.js";
 import type { Entry } from "../catalog.js";
 import { payFetch } from "./curl.js";
-import { type Offer, offerUSD } from "./offers.js";
+import { type Offer, offerUSD, type Protocol } from "./offers.js";
 import type { Wallet } from "./wallet.js";
 
 export type Payment = {
@@ -35,9 +35,12 @@ export type Governed = {
 	paymentFor: (res: Response) => Payment | null;
 	/** the approve-gate refusal encoded on a response, if any */
 	refusalFor: (res: Response) => { reason: string } | null;
-	/** set the protocol preference for subsequent calls (the client is memoized) */
-	setPrefer: (p?: "x402" | "mpp") => void;
 };
+
+/** Per-call protocol preference rides ON the init (Scrimp forwards it to the
+ * payer verbatim) — mutable client-level state would race between concurrently
+ * dispatched tool calls. */
+export type PreferInit = RequestInit & { stellarPayPrefer?: Protocol };
 
 const HDR = {
 	hash: "x-payment-tx-hash", // also what Scrimp's default txHashOf reads
@@ -56,15 +59,12 @@ export function buildGoverned(o: {
 	budgetPerCall: number;
 }): Governed {
 	const price = new Map(o.catalog.map((e) => [e.url, e.priceUSD] as const));
-	// Mutable so a per-call `prefer` reaches the payer even though the Scrimp
-	// client is built once and memoized.
-	let prefer = o.prefer;
 
 	const payer = async (url: string, init?: RequestInit): Promise<Response> => {
 		const r = await payFetch(url, init ?? {}, {
 			wallet: o.wallet,
 			approve: o.approve,
-			prefer,
+			prefer: (init as PreferInit | undefined)?.stellarPayPrefer ?? o.prefer,
 		});
 		// Rebuild the response with the payment facts as headers. Reading the
 		// body here is safe: payFetch hands back an unread body, and Scrimp
@@ -120,9 +120,6 @@ export function buildGoverned(o: {
 		refusalFor: (res) => {
 			const r = res.headers.get(HDR.refused);
 			return r ? { reason: r } : null;
-		},
-		setPrefer: (p) => {
-			prefer = p;
 		},
 	};
 }

@@ -1,6 +1,6 @@
 /**
  * Drives the MCP server over stdio like a client would. Proves the whole
- * governed loop on testnet: every tool answers, a 402 is paid, the SAME url
+ * governed loop on testnet: all 10 tools are registered, a 402 is paid, the SAME url
  * asked again inside the task is replayed free (Scrimp's duplicate rule), and
  * spend_report shows the saving. Passes only if all of that holds.
  */
@@ -35,13 +35,15 @@ async function main() {
 	const tools = (await client.listTools()).tools.map((t) => t.name).sort();
 	log(`tools: ${tools.join(", ")}`);
 	const expected = [
-		"begin_task",
-		"curl",
-		"end_task",
-		"get_balance",
-		"get_catalog_entry",
-		"list_catalog",
 		"search_catalog",
+		"list_catalog",
+		"get_catalog_entry",
+		"begin_task",
+		"end_task",
+		"curl",
+		"send_usdc",
+		"get_history",
+		"get_balance",
 		"spend_report",
 	];
 	if (expected.some((t) => !tools.includes(t)))

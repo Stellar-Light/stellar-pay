@@ -29,14 +29,33 @@ import {
 	loadCatalog,
 	searchCatalog,
 } from "./catalog.js";
-import { buildGoverned, type Governed } from "./pay/governed.js";
-import type { Offer } from "./pay/offers.js";
+import {
+	buildGoverned,
+	type Governed,
+	type PreferInit,
+} from "./pay/governed.js";
+import { type Offer, offerUSD } from "./pay/offers.js";
 import { autoApprove, explorer } from "./pay/policy.js";
 import { history, sendUSDC } from "./pay/send.js";
 import { balances, loadWallet, type Wallet } from "./pay/wallet.js";
 
-const MAX_PER_CALL = Number(process.env.STELLAR_PAY_MAX_USD_PER_CALL ?? 0.05);
-const SESSION_BUDGET = Number(process.env.STELLAR_PAY_SESSION_BUDGET_USD ?? 1);
+/** A spend cap from the environment must be a finite positive number — anything
+ * else (typo, empty string) falls back to the default instead of parsing to
+ * NaN, which every `>` comparison treats as "no cap at all" (fails OPEN). */
+function envCap(name: string, dflt: number): number {
+	const raw = process.env[name];
+	if (raw == null || raw === "") return dflt;
+	const n = Number(raw);
+	if (!Number.isFinite(n) || n <= 0) {
+		console.error(
+			`stellar-pay: ${name}="${raw}" is not a positive number — using the default ${dflt}`,
+		);
+		return dflt;
+	}
+	return n;
+}
+const MAX_PER_CALL = envCap("STELLAR_PAY_MAX_USD_PER_CALL", 0.05);
+const SESSION_BUDGET = envCap("STELLAR_PAY_SESSION_BUDGET_USD", 1);
 
 // Cumulative mainnet spend this process, enforced across curl AND send_usdc so
 // an agent can't drain the wallet in many under-ceiling calls (a bare per-call
@@ -49,6 +68,12 @@ const pendingSends = new Map<
 	{ to: string; amount: string; network: string; exp: number }
 >();
 function newSendToken(to: string, amount: string, network: string): string {
+	// Sweep expired entries and cap the map so unpaid preview calls can't grow
+	// it without bound; dropping the oldest only invalidates a stale preview.
+	for (const [k, v] of pendingSends)
+		if (v.exp < Date.now()) pendingSends.delete(k);
+	while (pendingSends.size >= 32)
+		pendingSends.delete(pendingSends.keys().next().value as string);
 	const t = randomUUID();
 	pendingSends.set(t, { to, amount, network, exp: Date.now() + 120_000 });
 	return t;
@@ -61,7 +86,36 @@ function newSendToken(to: string, amount: string, network: string): string {
  * string when the target is blocked, or null when it's allowed. The sandbox and
  * local dev opt in with STELLAR_PAY_ALLOW_PRIVATE=1.
  */
-export function blockedTarget(raw: string): string | null {
+function privateIp(h: string): boolean {
+	// IPv4-mapped IPv6: Node's URL canonicalizes to the HEX form
+	// ([::ffff:127.0.0.1] → ::ffff:7f00:1); unwrap either form and re-check
+	// the embedded IPv4.
+	const mapped =
+		/^::ffff:(?:([0-9a-f]{1,4}):([0-9a-f]{1,4})|(\d+\.\d+\.\d+\.\d+))$/.exec(h);
+	if (mapped) {
+		if (mapped[3]) return privateIp(mapped[3]);
+		const hi = Number.parseInt(mapped[1] as string, 16);
+		const lo = Number.parseInt(mapped[2] as string, 16);
+		return privateIp(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`);
+	}
+	return (
+		h === "localhost" ||
+		h === "::1" ||
+		h === "::" ||
+		h === "0.0.0.0" ||
+		/^127\./.test(h) ||
+		/^0\./.test(h) ||
+		/^10\./.test(h) ||
+		/^192\.168\./.test(h) ||
+		/^172\.(1[6-9]|2\d|3[01])\./.test(h) ||
+		/^169\.254\./.test(h) || // link-local incl. cloud metadata
+		/^(fe80:|fc|fd)/.test(h) ||
+		h.endsWith(".local") ||
+		h.endsWith(".internal")
+	);
+}
+
+export async function blockedTarget(raw: string): Promise<string | null> {
 	if (process.env.STELLAR_PAY_ALLOW_PRIVATE === "1") return null;
 	let u: URL;
 	try {
@@ -72,21 +126,24 @@ export function blockedTarget(raw: string): string | null {
 	if (u.protocol !== "http:" && u.protocol !== "https:")
 		return `refused: ${u.protocol} is not an http(s) URL`;
 	const h = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-	const priv =
-		h === "localhost" ||
-		h === "::1" ||
-		h === "0.0.0.0" ||
-		/^127\./.test(h) ||
-		/^10\./.test(h) ||
-		/^192\.168\./.test(h) ||
-		/^172\.(1[6-9]|2\d|3[01])\./.test(h) ||
-		/^169\.254\./.test(h) || // link-local incl. cloud metadata
-		/^(fe80:|fc|fd)/.test(h) ||
-		h.endsWith(".local") ||
-		h.endsWith(".internal");
-	return priv
-		? `refused: ${h} is a loopback/private/link-local address — the paid catalog is public hosts only`
-		: null;
+	if (privateIp(h))
+		return `refused: ${h} is a loopback/private/link-local address — the paid catalog is public hosts only`;
+	// A public NAME can still resolve to a private address (DNS rebinding).
+	// Resolve and re-check every address; an unresolvable host is left for the
+	// fetch itself to fail. The check-then-fetch gap is not fully closable
+	// without socket pinning, but this removes the plain rebinding path.
+	if (!/^[\d.]+$/.test(h) && !h.includes(":")) {
+		try {
+			const { lookup } = await import("node:dns/promises");
+			const addrs = await lookup(h, { all: true, verbatim: true });
+			for (const a of addrs)
+				if (privateIp(a.address.toLowerCase()))
+					return `refused: ${h} resolves to ${a.address}, a loopback/private/link-local address`;
+		} catch {
+			// unresolvable — let fetch report it
+		}
+	}
+	return null;
 }
 
 const json = (v: unknown) => ({
@@ -99,13 +156,27 @@ const getWallet = () => {
 	return wallet;
 };
 
-/** The approve gate — the shared spend decision, auto (no prompt in the MCP). */
+/** The approve gate — the shared spend decision, auto (no prompt in the MCP).
+ * The session budget is checked HERE, against the offer about to be paid, so
+ * the cap can never be overshot: the last call that would cross it is refused,
+ * not allowed through because the check ran before the price was known. */
+const overBudget = (o: Offer): boolean =>
+	sessionSpentUsd + (offerUSD(o) ?? MAX_PER_CALL) > SESSION_BUDGET;
 const approveGate =
 	(w: Wallet) =>
-	async (o: Offer): Promise<boolean> =>
-		autoApprove(o, { network: w.network, maxUsd: MAX_PER_CALL }).ok;
-const gateRefusal = (o: Offer) =>
-	autoApprove(o, { network: getWallet().network, maxUsd: MAX_PER_CALL }).reason;
+	async (o: Offer): Promise<boolean> => {
+		if (!autoApprove(o, { network: w.network, maxUsd: MAX_PER_CALL }).ok)
+			return false;
+		return w.network === "stellar:testnet" || !overBudget(o);
+	};
+const gateRefusal = (o: Offer) => {
+	const v = autoApprove(o, {
+		network: getWallet().network,
+		maxUsd: MAX_PER_CALL,
+	});
+	if (!v.ok) return v.reason;
+	return `would exceed the session budget ($${(SESSION_BUDGET - sessionSpentUsd).toFixed(4)} of $${SESSION_BUDGET} left)`;
+};
 
 const payments: Array<{
 	at: string;
@@ -116,11 +187,14 @@ const payments: Array<{
 	task: string | null;
 }> = [];
 
-/** One governed client per session, built once the wallet and catalog are known. */
+/** One governed client per session; the PROMISE is memoized so two concurrent
+ * first calls can't each build a client (last-write-wins duplicate state). A
+ * per-call protocol preference rides on the request init, never on the client. */
+let governedP: Promise<Governed> | null = null;
 let governed: Governed | null = null;
 let openTask: string | null = null;
-async function getGoverned(prefer?: "x402" | "mpp"): Promise<Governed> {
-	if (!governed) {
+function getGoverned(): Promise<Governed> {
+	governedP ??= (async () => {
 		const w = getWallet();
 		const catalog: Entry[] = await loadCatalog({ all: true });
 		governed = buildGoverned({
@@ -128,13 +202,11 @@ async function getGoverned(prefer?: "x402" | "mpp"): Promise<Governed> {
 			catalog,
 			approve: approveGate(w),
 			refusalReason: (offer) => gateRefusal(offer),
-			prefer,
 			budgetPerCall: MAX_PER_CALL,
 		});
-	}
-	// The client is memoized, so apply the per-call preference each time.
-	governed.setPrefer(prefer);
-	return governed;
+		return governed;
+	})();
+	return governedP;
 }
 
 export function buildServer() {
@@ -320,12 +392,13 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 			},
 		},
 		async ({ url, method, headers, body, prefer }) => {
-			const blocked = blockedTarget(url);
+			const blocked = await blockedTarget(url);
 			if (blocked) return json({ error: blocked });
 			const w = getWallet();
-			const g = await getGoverned(prefer);
+			const g = await getGoverned();
 			const isJson = body != null && typeof body !== "string";
-			const init: RequestInit = {
+			const init: PreferInit = {
+				stellarPayPrefer: prefer,
 				method: (method ?? (body != null ? "POST" : "GET")).toUpperCase(),
 				headers: {
 					"user-agent": "stellar-pay-mcp/0.1",

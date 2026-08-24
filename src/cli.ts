@@ -85,6 +85,9 @@ function parse(argv: string[]): Args {
 	};
 	for (let i = 1; i < argv.length; i++) {
 		const t = argv[i] ?? "";
+		// Everything after `--` belongs to the wrapped command (`run -- tool
+		// --yes` must not flip OUR approval flag).
+		if (t === "--") break;
 		const next = () => argv[++i] ?? "";
 		if (t === "-X") a.method = next().toUpperCase();
 		else if (t === "-H") {
@@ -189,11 +192,15 @@ async function cmdRun(a: Args): Promise<void> {
 	// The proxy (this parent) holds the wallet and does all signing, so the
 	// child needs NO key material. Never inherit the decrypted secret or
 	// the keystore passphrase into it.
-	const {
-		STELLAR_SECRET_KEY: _sk,
-		STELLAR_PAY_PASSPHRASE: _pp,
-		...childEnv
-	} = process.env;
+	// Strip case-insensitively: on win32, process.env READS are case-insensitive
+	// (a mis-cased var still satisfies loadWallet) but rest-spread keys are
+	// literal, so an exact-case destructure would leak `Stellar_Secret_Key`.
+	const childEnv = Object.fromEntries(
+		Object.entries(process.env).filter(
+			([k]) =>
+				!/^(STELLAR_SECRET_KEY|STELLAR_PAY_PASSPHRASE|DATABASE_URI)$/i.test(k),
+		),
+	);
 	const child = spawn(command, cmdArgs, {
 		stdio: "inherit",
 		env: { ...childEnv, ...proxyEnv(proxy.port, proxy.caPath, proxy.token) },

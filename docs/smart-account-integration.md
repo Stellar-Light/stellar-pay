@@ -11,7 +11,7 @@ on-chain. So the two "caveats" split cleanly:**
 |--------|---------------|--------|
 | Headless deploy needs a browser passkey | **the user's**, once, at setup — not ours | not a blocker; it's normal wallet setup |
 | The kit is unaudited | the user's risk call | a disclosure, not our bug |
-| Pay a 402 *from* the vault (contract-account auth) | **ours** — the client fix | designed below; built against a provisioned vault |
+| Pay a 402 *from* the vault (contract-account auth) | **ours** — the client fix | designed below; **not yet built** — needs a provisioned vault |
 
 Everything below is the *ours* row: what stellar-pay builds so an agent can use
 a vault the user already set up.

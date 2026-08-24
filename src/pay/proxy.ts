@@ -43,7 +43,12 @@ type CA = {
  * written, to a per-run temp file (the child's trust env needs a path), and
  * that file is removed on close.
  */
-function makeEphemeralCA(): { caPath: string; ca: CA; cleanup: () => void } {
+function makeEphemeralCA(): {
+	caPath: string;
+	dir: string;
+	ca: CA;
+	cleanup: () => void;
+} {
 	const keys = forge.pki.rsa.generateKeyPair(2048);
 	const cert = forge.pki.createCertificate();
 	cert.publicKey = keys.publicKey;
@@ -67,6 +72,7 @@ function makeEphemeralCA(): { caPath: string; ca: CA; cleanup: () => void } {
 	writeFileSync(caPath, certPem, { mode: 0o600 });
 	return {
 		caPath,
+		dir,
 		ca: { certPem, keyPem: "", cert, key: keys.privateKey },
 		cleanup: () => rmSync(dir, { recursive: true, force: true }),
 	};
@@ -102,6 +108,12 @@ function leafFactory(ca: CA) {
 }
 
 const HOP = new Set([
+	// Not hop-by-hop, but must not reach upstream: undici decodes only
+	// gzip/deflate/br. If the child advertises a coding undici can't decode
+	// (zstd), the upstream body would come back still compressed while the
+	// write-back below strips content-encoding — corrupting it. Let undici
+	// negotiate its own codings instead.
+	"accept-encoding",
 	"proxy-connection",
 	"connection",
 	"keep-alive",
@@ -133,7 +145,7 @@ export async function startProxy(o: ProxyOptions): Promise<{
 	caPath: string;
 	close: () => Promise<void>;
 }> {
-	const { caPath, ca, cleanup } = makeEphemeralCA();
+	const { caPath, dir, ca, cleanup } = makeEphemeralCA();
 	const leaf = leafFactory(ca);
 	// The proxy binds loopback, but loopback is shared by every process on the
 	// host — without auth any of them could spend the wallet or route egress
@@ -218,15 +230,16 @@ export async function startProxy(o: ProxyOptions): Promise<{
 		}
 	};
 
-	// TLS terminator for intercepted HTTPS (leaf cert chosen by SNI).
+	// TLS terminator for intercepted HTTPS (leaf cert chosen by SNI). It
+	// listens on a unix socket inside the run's 0700 temp dir — NOT a loopback
+	// TCP port — so no other local process can reach it and spend through the
+	// wallet by skipping the token-checked CONNECT handler below.
 	const tlsServer = https.createServer(
 		{ SNICallback: (name, cb) => cb(null, leaf(name)) },
 		(req, res) => handle(req, res, "https"),
 	);
-	await new Promise<void>((resolve) =>
-		tlsServer.listen(0, "127.0.0.1", resolve),
-	);
-	const tlsPort = (tlsServer.address() as AddressInfo).port;
+	const tlsSock = join(dir, "tls.sock");
+	await new Promise<void>((resolve) => tlsServer.listen(tlsSock, resolve));
 
 	// The proxy the child points at: plain-HTTP requests handled directly;
 	// CONNECT tunnels are redirected into our own TLS terminator above. Both
@@ -249,7 +262,7 @@ export async function startProxy(o: ProxyOptions): Promise<{
 			);
 			return;
 		}
-		const upstream = netConnect(tlsPort, "127.0.0.1", () => {
+		const upstream = netConnect(tlsSock, () => {
 			clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
 			if (head?.length) upstream.write(head);
 			upstream.pipe(clientSocket);

@@ -35,8 +35,6 @@ type Candidate = {
 	sourceUrl?: string;
 };
 
-const USDC_SAC = new Set(Object.values(USDC_SAC_MAP));
-
 /** RFC 2606 / RFC 6761 names can never resolve; registries seed demos with them. */
 function isReservedDemo(url: string): boolean {
 	try {
@@ -327,9 +325,14 @@ async function main() {
 			// (which also caught USDT) gave the wrong number. USDC is 7 decimals
 			// on the Stellar SAC.
 			const usd = r.accepts.find(
-				(a) => isStellar(a.network) && USDC_SAC.has(a.asset ?? "") && a.amount,
+				(a) =>
+					a.network != null && USDC_SAC_MAP[a.network] === a.asset && a.amount,
 			);
-			const priceUSD = usd?.amount ? Number(usd.amount) / 10_000_000 : null;
+			const parsed = usd?.amount ? Number(usd.amount) / 10_000_000 : null;
+			// A malformed amount string parses to NaN, which typeof==="number"
+			// checks downstream would happily pass through to ranking.
+			const priceUSD =
+				parsed != null && Number.isFinite(parsed) ? parsed : null;
 			const host = (() => {
 				try {
 					return new URL(c.url).host;
