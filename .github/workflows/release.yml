@@ -1,14 +1,24 @@
-# Cut a GitHub Release when a new version lands on the registry.
+# Cut a GitHub Release once a version is actually on the npm registry.
 #
-# Chains off the npm publish (not a tag push) so a Release can never point at
-# a version that failed to publish. Auto-generates notes from commits since
-# the previous tag; idempotent — skips if the tag already exists.
+# Gated on the REGISTRY, never on a tag push, so a Release can never point at
+# a version that failed to publish. Fires instantly when CI publishes, and a
+# 6-hourly sweep catches versions published by any other route (a manual
+# `npm publish`, a re-run). Idempotent — skips if the tag already exists.
 name: release
 
 on:
+  # Instant: the moment CI publishes.
   workflow_run:
     workflows: ["publish-npm"]
     types: [completed]
+  # Self-healing: catches versions published by ANY route (a manual
+  # `npm publish` from a laptop, a re-run, a fixed OIDC config) that never
+  # got a Release. Cheap — it exits in seconds when there is nothing to do.
+  schedule:
+    - cron: "17 */6 * * *"
+  push:
+    branches: [main]
+    paths: ["package.json"]
   workflow_dispatch: # manual re-cut
 
 permissions:
@@ -17,9 +27,10 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    # Only when the publish actually succeeded (or a manual dispatch).
+    # Every trigger is allowed EXCEPT a workflow_run whose publish failed
+    # (nothing new would be on the registry in that case).
     if: >
-      github.event_name == 'workflow_dispatch' ||
+      github.event_name != 'workflow_run' ||
       github.event.workflow_run.conclusion == 'success'
     steps:
       - uses: actions/checkout@v4
