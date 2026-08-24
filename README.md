@@ -1,207 +1,197 @@
 <p align="center"><b>stellar-pay</b></p>
-<p align="center"><b>The neutral payment layer for agents on Stellar.</b><br>Find a paid API, pay its 402 in USDC from your own wallet, get the data — from a CLI or an MCP, over a catalog probed daily for what a Stellar wallet can actually pay.</p>
-<p align="center"><i>Inspired by Solana's <a href="https://github.com/solana-foundation/pay">pay.sh</a>: an HTTP client that settles 402s in stablecoins. Built on Stellar's own rails.</i></p>
+<p align="center"><b>The missing payment layer for HTTP on Stellar — x402 & MPP 402 challenges, paid in USDC from your own wallet.</b></p>
+<p align="center"><a href="#install">Install</a> · <a href="#quick-start">Quick Start</a> · <a href="#-for-agents-mcp-claude-code-raven">MCP</a> · <a href="#-a-catalog-thats-evidence-not-a-listing">Catalog</a></p>
 
 ---
 
 ```sh
-# A paid API answers 402 Payment Required
+# Without stellar-pay — the API answers 402 Payment Required
 curl -X POST https://apiserver.mpprouter.dev/v1/services/exa/search -d '{"query":"stellar"}'
 
-# stellar-pay reads the terms from that 402, asks you, pays in USDC, returns the answer
+# With stellar-pay — it reads the terms from that 402, asks you, pays in USDC, returns the answer
 stellar-pay curl -X POST https://apiserver.mpprouter.dev/v1/services/exa/search -d '{"query":"stellar"}'
 ```
 
-## Why this exists
+Inspired by Solana's [pay.sh](https://github.com/solana-foundation/pay) — an
+HTTP client that settles 402s in stablecoins. Built on Stellar's own rails:
+[`@x402/stellar`](https://www.npmjs.com/package/@x402/stellar) and
+[`@stellar/mpp`](https://www.npmjs.com/package/@stellar/mpp).
 
-The rails for agent payments on Stellar are done — SDF's MPP charge spec and
-x402 both settle real USDC today. What's missing sits one layer up:
+## 💵 Pay for any API
 
-- **No neutral client.** The wallets that exist are tied to one router or one
-  gateway. An agent that wants to pay *any* paid API — whichever host, whoever
-  built it — from *its own* wallet has nowhere to go.
-- **No honest catalog.** Registries list endpoints that died months ago, and
-  "supports x402" says nothing about Stellar: the same standard runs on Base,
-  Solana and Polygon, and most servers name only those. Measured 2026-08 from the
-  x402 Bazaar: of its ~1,611 hosts, **three** name `stellar:pubnet`. A listing
-  is not supply.
-- **No spend governance.** Paying per HTTP call is new enough that nothing
-  stops an agent buying the same thing twice, or paying into a provider that
-  just failed.
+Both live Stellar payment standards, one client:
 
-stellar-pay is those three things, and nothing else: a **router-agnostic
-client**, a **probed catalog**, and **outcome-attributed spend control** — a
-neutral layer that consumes every supplier rather than being one.
+- **x402** — the `exact` scheme
+  ([spec](https://github.com/x402-foundation/x402/blob/main/specs/schemes/exact/scheme_exact_stellar.md)),
+  settled through a facilitator.
+- **MPP, Stellar charge method** —
+  [draft-stellar-charge-00](https://paymentauth.org/draft-stellar-charge-00),
+  SDF's spec. No facilitator; the server settles.
 
-## Neutral by design — it consumes routers, it isn't one
+On a 402, stellar-pay reads the price, token, recipient and network from the
+challenge and signs **authorization entries**, not a whole transaction — the
+server (or its facilitator) assembles, submits, and pays the fee. Your wallet
+holds USDC and nothing else: no XLM, no sequence numbers, no RPC.
 
-A router (like [mpp-router](https://www.mpprouter.dev/)) proxies many upstream
-APIs behind one gateway and takes the payment itself. That's real supply —
-and mpp-router is the single largest source in this catalog. But it's one
-gateway with one inventory and one operator.
+```sh
+stellar-pay offers <url>                      # what the 402 asks — pays nothing
+stellar-pay curl   <url>                      # asks you, pays, returns the answer
+stellar-pay curl   <url> --yes --max-usd 0.05 # unattended, under a ceiling
+stellar-pay verify <url>                      # seller check: is your 402 correct and Stellar-payable?
+```
 
-stellar-pay sits above all of them. It pays *any* host from the **user's own
-wallet** — mpp-router, the x402 Bazaar, a provider serving its own 402 —
-and indexes every source together. No gateway in the middle, no operator's
-cut, no lock-in. That neutrality is the point: it's public-good infrastructure
-on SDF's own rails, not a product competing with the suppliers it reads from.
+**Router-agnostic by design.** A router (like
+[mpp-router](https://www.mpprouter.dev/)) proxies many APIs behind one gateway
+and takes the payment itself — real supply, and the largest source in our
+catalog. stellar-pay sits above all of them: it pays *any* host from the
+**user's own wallet** — mpp-router, the x402 Bazaar, a provider serving its
+own 402 — with no gateway in the middle, no operator's cut, no lock-in.
 
-## What happens on a 402
+## 🛠️ Wrap any tool — `stellar-pay run`
 
-The server's challenge carries the price, the token, the recipient and the
-network. `stellar-pay` reads it and shows it; the CLI asks a human before it
-signs, and the MCP signs only within a spending policy (a per-call ceiling and a
-session budget). On
-Stellar the client signs **authorization entries**, not a whole transaction:
-the server (or its facilitator) assembles and submits, and pays the fee. Your
-wallet holds USDC and nothing else — no XLM, no sequence numbers, no RPC.
-
-Both live Stellar standards are handled:
-
-- **MPP, Stellar charge method** — [draft-stellar-charge-00](https://paymentauth.org/draft-stellar-charge-00), SDF's spec (Aug 2026). No facilitator; the server settles.
-- **x402 on Stellar** — the `exact` scheme, settled through the OpenZeppelin Channels facilitator.
-
-## The catalog is evidence, not a listing
-
-An entry is in the catalog because it **answered a real 402 naming
-`stellar:pubnet` within the last day** — re-probed daily, carrying its price,
-protocol, the method that produced the challenge, and how long it has been
-alive. About **390 endpoints** qualify today across the x402 Bazaar and
-mpp-router. If it's in the catalog, your wallet can pay for it right now; the
-live 402 is still the authority on price.
-
-Using the catalog needs no secret: the daily job publishes a snapshot to the
-`catalog` branch, and the client reads it through your own `gh` auth. The
-probe job is the only thing that touches the database.
-
-## Spend governance — pay for what's used, not what's asked
-
-Two layers, composed. An always-on **approve gate**: on mainnet a payment must
-be USDC and within a per-call ceiling. And, inside a task, **[Scrimp](https://github.com/kaankacar/scrimp)**
-(by Kaan Kacar) — outcome-attributed control that a budget cap can't match:
-
-- a request already bought in this task is **replayed free**, not paid twice;
-- one re-fetched inside its freshness window is replayed free;
-- a provider that just failed repeatedly is **quarantined**;
-- and every purchase is labelled **wasted** if its response body was never read.
-
-`spend_report` shows what was spent versus what an ungoverned client would
-have paid, and the waste rate. Proven on testnet: pay once, ask the same URL
-again in a task → replayed free, one on-chain payment for two calls.
-
-## Wrap any tool — `stellar-pay run`
-
-The MCP pays for calls an agent makes through it. `run` pays for calls a tool
-makes that we didn't write — `curl`, a Python script, another agent's client:
+`curl` pays for requests you make. `run` pays for requests made by a tool we
+didn't write — curl, a Python script, another agent's client:
 
 ```sh
 stellar-pay run --yes --max-usd 0.05 -- curl -X POST https://apiserver.mpprouter.dev/v1/services/exa/search -d '{"query":"stellar"}'
 stellar-pay run -- python my_script.py        # any command; its 402s get paid
 ```
 
-It starts a localhost proxy, points the child at it (`HTTPS_PROXY` + a local CA
-the child trusts, never installed system-wide), and routes every request
-through the same pay loop: on a 402 it reads the offer, pays in USDC, and
-retries — the tool just sees the 200. The proxy lives only while the command
-runs. HTTPS is intercepted with a per-host cert minted by the local CA.
+It starts a localhost proxy, points the child at it (`HTTPS_PROXY` + a local
+CA the child alone trusts, never installed system-wide), and routes every
+request through the same pay loop: on a 402 it reads the offer, pays in USDC,
+retries — the tool just sees the 200. The proxy is gated by a per-run auth
+token, its CA key lives only in memory, and it dies with the command.
 
-## For agents: MCP, Claude Code, Raven
-
-An MCP server gives agents the whole loop under that governance:
+## 🤖 For agents: MCP, Claude Code, Raven
 
 ```sh
 stellar-pay claude            # Claude Code with stellar-pay mounted
 stellar-pay codex             # Codex with stellar-pay mounted
-stellar-pay mcp               # stdio server for Claude Desktop, Cursor, Codex, or your own client
+stellar-pay mcp               # stdio server for Claude Desktop, Cursor, or your own client
 ```
 
 Tools: `search_catalog`, `get_catalog_entry`, `list_catalog`, `curl`,
-`get_balance`, `begin_task` / `end_task`, `spend_report`, plus the wallet
-basics `send_usdc` (two-step confirm so funds never move on one model call) and
-`get_history`. The agent-facing
-playbook is [`skills/stellar-pay/SKILL.md`](skills/stellar-pay/SKILL.md).
+`get_balance`, `begin_task` / `end_task`, `spend_report`, plus `send_usdc`
+(two-step confirm with a single-use server nonce, so funds never move on one
+model call) and `get_history`. The agent-facing playbook is
+[`skills/stellar-pay/SKILL.md`](skills/stellar-pay/SKILL.md).
+
+**Who approves what:** the CLI asks a human before it signs; the MCP signs
+only within a spending policy — on mainnet a payment must be USDC, under a
+per-call ceiling, and inside a session budget.
+
+**Spend governance — pay for what's used, not what's asked.** Inside a task,
+[Scrimp](https://github.com/kaankacar/scrimp) (by Kaan Kacar) adds
+outcome-attributed control a budget cap can't match:
+
+- a request already bought in this task is **replayed free**, not paid twice;
+- one re-fetched inside its freshness window is replayed free;
+- a provider that just failed repeatedly is **quarantined**;
+- every purchase is labelled **wasted** if its response was never read.
+
+`spend_report` shows spend versus what an ungoverned client would have paid,
+and the waste rate. Proven on testnet: two identical calls in a task → one
+on-chain payment.
 
 **Raven.** [Raven](https://github.com/stellar-experimental/stellar-raven) is
 the Stellar ecosystem's agent gateway — one MCP that routes an agent's
-question to the right Stellar service, already routing to Stellar Light's
-Scout. stellar-pay is built to mount the same way: catalog search through
-Raven's routing, paid calls through a wallet under the same spend governance.
+question to the right Stellar service. stellar-pay is built to mount the same
+way: catalog search through Raven's routing, paid calls through a wallet under
+the same spend governance.
 
-## Install & use
+## 🔍 A catalog that's evidence, not a listing
+
+Registries list endpoints that died months ago, and "supports x402" says
+nothing about Stellar: the same standard runs on Base, Solana and Polygon, and
+most servers name only those. Measured 2026-08 from the x402 Bazaar: of its
+~1,611 hosts, **three** name `stellar:pubnet`. A listing is not supply.
+
+So the catalog probes instead of trusting. An entry is in it because it
+**answered a real 402 naming `stellar:pubnet` within the last day** —
+re-probed daily, carrying its price, protocol, the method that produced the
+challenge, and how long it has been alive. About **390 endpoints** qualify
+today across the x402 Bazaar and mpp-router. If it's in the catalog, your
+wallet can pay it right now; the live 402 is still the authority on price.
+
+Using the catalog needs no secret: the daily job publishes a snapshot to the
+`catalog` branch and the client reads it through your own `gh` auth. Only the
+probe job (`npm run probe`, `probe:execute`, `export` — CI, daily) touches
+the database.
+
+## 🔐 Wallets
+
+A wallet is `STELLAR_SECRET_KEY` in the environment, or a **local encrypted
+keystore** so the key isn't pasted every time:
+
+```sh
+stellar-pay setup --save main                 # new wallet (testnet: funded + trustline), sealed in the keystore
+stellar-pay account list                      # saved wallets (never the secret); import / default / remove / export too
+stellar-pay topup                             # QR + address + real on-ramps; waits for the deposit
+stellar-pay topup --buy --amount 25           # opens a card on-ramp pre-filled, then waits for the USDC
+stellar-pay send <G...address> --amount 1.5   # send USDC (confirms first)
+stellar-pay history                           # recent payments to/from the wallet
+```
+
+- **Encrypted file** — AES-256-GCM under a scrypt passphrase, Node built-ins,
+  no plaintext on disk. The default account unlocks with
+  `STELLAR_PAY_PASSPHRASE` (for agents and the MCP) or an interactive prompt.
+- **macOS Keychain** — `--keychain` stores the secret in the OS keychain
+  instead: OS-guarded, no passphrase. A per-signature Touch ID prompt is the
+  native upgrade on the roadmap.
+- `STELLAR_SECRET_KEY` always wins when set.
+
+`topup` on mainnet lists real ways to get USDC onto Stellar, pulled live from
+Stellar Light's partner directory — fiat on-ramps (MoneyGram cash→USDC,
+FinClusive, regional anchors), the exchange withdraw path, and a cross-chain
+bridge. A scannable SEP-7 QR works with mobile Stellar wallets (Lobstr,
+Freighter).
+
+## Install
 
 Alpha. From source:
 
 ```sh
 git clone https://github.com/Stellar-Light/stellar-pay && cd stellar-pay
-npm install                    # .npmrc sets legacy-peer-deps: @x402/stellar and @stellar/mpp pin different stellar-sdk majors; both run on 16
-npm link                       # puts the `stellar-pay` command on your PATH (or run `npm run pay -- <args>`)
+npm install     # .npmrc sets legacy-peer-deps: @x402/stellar and @stellar/mpp pin different stellar-sdk majors; both run on 16
+npm link        # puts `stellar-pay` on your PATH (or use `npm run pay -- <args>`)
 ```
 
-Everything below is written as `stellar-pay …`; without `npm link`, the exact
-equivalent from the checkout is `npm run pay -- …`.
+## Quick start
 
 ```sh
-export STELLAR_SECRET_KEY=S...  # a wallet holding USDC; STELLAR_NETWORK defaults to stellar:pubnet, --sandbox uses testnet
-stellar-pay whoami
-stellar-pay balance
-stellar-pay offers  https://apiserver.mpprouter.dev/v1/services/exa/search -X POST -d '{}'   # what it asks — pays nothing
-stellar-pay curl    https://apiserver.mpprouter.dev/v1/services/exa/search -X POST -d '{"query":"stellar x402"}'
-stellar-pay curl <url> --yes --max-usd 0.05   # unattended, under a ceiling
-stellar-pay verify <url>                      # seller check: is this 402 correct and Stellar-payable?
+# 1. Point at a wallet holding USDC (or make one: stellar-pay setup --save main)
+export STELLAR_SECRET_KEY=S...   # STELLAR_NETWORK defaults to stellar:pubnet; --sandbox uses testnet
 
-stellar-pay setup --save main                 # new wallet (testnet: funded + trustline), sealed in the encrypted keystore
-stellar-pay account list                      # saved wallets (never the secret); import / default / remove / export too
-stellar-pay topup                             # QR + address + real on-ramps (MoneyGram, exchanges, bridges); waits for the deposit
-stellar-pay topup --buy --amount 25           # opens a card on-ramp (MoonPay/Lobstr/Rozo) pre-filled, then waits for the USDC
-stellar-pay send <G...address> --amount 1.5   # send USDC to an address (confirms first)
-stellar-pay history                           # recent USDC payments to/from the wallet
+# 2. See what a paid API asks — costs nothing
+stellar-pay offers https://apiserver.mpprouter.dev/v1/services/exa/search -X POST -d '{}'
+
+# 3. Pay it
+stellar-pay curl https://apiserver.mpprouter.dev/v1/services/exa/search -X POST -d '{"query":"stellar x402"}'
 ```
 
-## Wallets
+## 📚 Proof you can run
 
-A wallet is `STELLAR_SECRET_KEY` in the environment, or a **local encrypted
-keystore** so the key isn't pasted every time. `setup --save <name>` and
-`account import --name <name>` seal a secret under a passphrase (AES-256-GCM,
-scrypt — Node built-ins, no plaintext on disk). `account list` / `default` / `remove` / `export`
-manage them. On macOS, `--keychain` stores the secret in the **Keychain**
-instead — OS-guarded, no passphrase (pay.sh's gated-payments goal; a
-per-signature Touch ID prompt is the native upgrade). The default account
-unlocks with `STELLAR_PAY_PASSPHRASE` (for agents and the MCP) or an
-interactive prompt. `STELLAR_SECRET_KEY` always wins when set.
+Everything above is backed by a runnable check — no USDC touched:
 
-`topup` on mainnet lists real ways to get USDC onto Stellar, pulled live from
-Stellar Light's partner directory — fiat on-ramps (MoneyGram cash→USDC,
-FinClusive, and regional anchors), the exchange withdraw path (Coinbase's
-embedded Onramp does not reach Stellar, so it's buy-then-withdraw-on-Stellar),
-and a cross-chain bridge (Rozo).
-
-## Proof you can run
-
-- `npm run sandbox` — mints its own SEP-41 asset on testnet, deploys its
-  contract, runs a local MPP charge server, pays it, and checks the settlement
-  on-chain. No USDC touched.
-- `npm run test:mcp` — over stdio, lists all tools, then pays a 402 through
-  `curl` and replays the duplicate free through the governance layer.
-- `npm run test:wallet` — mints a testnet asset and proves setup, a real send
-  A→B, the over-spend and no-trustline guards, and history.
-- `npm run test:keystore` — encrypted round-trip: seal, list without leaking
-  the secret, reject a wrong passphrase, unlock into the environment.
-
-## The catalog job
-
-`npm run probe` discovers from the x402 Bazaar and mpp-router and re-probes
-everything indexed; `npm run probe:execute` writes; `npm run export`
-snapshots. CI runs all three daily and publishes the snapshot to `catalog`.
-Only this job needs `DATABASE_URI`.
+- `npm run sandbox` — mints a SEP-41 asset on testnet, runs a local MPP charge
+  server, pays it, checks the settlement on-chain.
+- `npm run test:mcp` — over stdio: pays a 402 through `curl`, replays the
+  duplicate free, reads `spend_report`.
+- `npm run test:wallet` — setup + trustline, a real testnet send A→B, the
+  over-spend and no-trustline guards, history.
+- `npm run test:proxy` — a plain request through `run`'s proxy: 402 → paid →
+  200, settlement on-chain.
+- `npm run test:keystore` · `test:scrimp` (all four rules) · `test:ssrf` ·
+  `test:parity` (reads pay.sh's reference MPP challenge) · `test:verify`.
 
 ## Status
 
-Alpha. Built on `@x402/stellar` and `@stellar/mpp` — SDF's own rails —
-and on the measurement that made it necessary: the same x402 standard does not
-make an endpoint Stellar-payable, so the catalog probes instead of trusting.
-Spend governance vendors [Scrimp](https://github.com/kaankacar/scrimp) (Kaan
-Kacar), used with the author's permission; all four of its rules
-(duplicate / fresh / quarantine / budget) are verified in
+Alpha. Built on `@x402/stellar` and `@stellar/mpp` — SDF's own rails — and on
+the measurement that made it necessary: the same x402 standard does not make
+an endpoint Stellar-payable, so the catalog probes instead of trusting. Spend
+governance vendors [Scrimp](https://github.com/kaankacar/scrimp) (Kaan Kacar),
+used with the author's permission; all four of its rules are verified in
 `npm run test:scrimp` against the vendored core.
 
 ## License
