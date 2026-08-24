@@ -12,6 +12,13 @@ curl -X POST https://apiserver.mpprouter.dev/v1/services/exa/search -d '{"query"
 stellar-pay curl -X POST https://apiserver.mpprouter.dev/v1/services/exa/search -d '{"query":"stellar"}'
 ```
 
+**Try it now — no install, no wallet, pays nothing:**
+
+```sh
+npx stellar-pay offers https://apiserver.mpprouter.dev/v1/services/exa/search -X POST -d '{"query":"stellar"}'
+npx stellar-pay claude "find a paid Stellar API and tell me what it costs"   # Claude Code with the payment tools mounted
+```
+
 Inspired by Solana's [pay.sh](https://github.com/solana-foundation/pay) — an
 HTTP client that settles 402s in stablecoins. Built on Stellar's own rails:
 [`@x402/stellar`](https://www.npmjs.com/package/@x402/stellar) and
@@ -151,10 +158,17 @@ challenge, and how long it has been alive. About **390 endpoints** qualify
 today across the x402 Bazaar and mpp-router. If it's in the catalog, your
 wallet can pay it right now; the live 402 is still the authority on price.
 
-Using the catalog needs no secret: the daily job publishes a snapshot to the
-`catalog` branch and the client reads it through your own `gh` auth. Only the
-probe job (`npm run probe`, `probe:execute`, `export` — CI, daily) touches
-the database.
+Using the catalog needs no secret — it's a public feed anyone can pull:
+
+```
+https://raw.githubusercontent.com/Stellar-Light/stellar-pay/catalog/catalog.json
+```
+
+The daily job publishes the snapshot to the `catalog` branch; the client reads
+the same file. Aggregators and other agents are welcome to ingest it — every
+row carries its evidence (price, protocol, method, `lastCheckedAt`, days
+alive). Only the probe job (`npm run probe`, `probe:execute`, `export` — CI,
+daily) touches the database.
 
 ## 🔐 Wallet
 

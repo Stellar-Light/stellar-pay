@@ -861,9 +861,15 @@ async function main() {
 	// `--help`/`-h` anywhere, `help`, or no command → the full reference on
 	// stdout, exit 0. An UNKNOWN command → error on stderr, exit 2 (so a typo in
 	// a scripted pipeline fails loudly instead of silently succeeding).
+	// EXCEPT the launchers (`claude`/`codex`) and `run`: everything after the
+	// command belongs to the child, so `stellar-pay claude --help` must reach
+	// the agent, not print OUR help.
+	const passthrough =
+		a.cmd === "claude" || a.cmd === "codex" || a.cmd === "run";
 	if (
 		a.cmd === "help" ||
-		process.argv.slice(2).some((t) => t === "-h" || t === "--help")
+		(!passthrough &&
+			process.argv.slice(2).some((t) => t === "-h" || t === "--help"))
 	) {
 		console.log(HELP);
 		return;
