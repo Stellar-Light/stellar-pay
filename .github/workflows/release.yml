@@ -1,0 +1,52 @@
+# Cut a GitHub Release when a new version lands on the registry.
+#
+# Chains off the npm publish (not a tag push) so a Release can never point at
+# a version that failed to publish. Auto-generates notes from commits since
+# the previous tag; idempotent — skips if the tag already exists.
+name: release
+
+on:
+  workflow_run:
+    workflows: ["publish-npm"]
+    types: [completed]
+  workflow_dispatch: # manual re-cut
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # Only when the publish actually succeeded (or a manual dispatch).
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags + full history for the notes range
+
+      - name: Read the version
+        id: v
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cut the release if the tag is new
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          TAG="v$VERSION"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "$TAG already released — nothing to do"
+            exit 0
+          fi
+          # Confirm the version is actually on the registry before tagging it.
+          if ! npm view "stellar-pay@$VERSION" version >/dev/null 2>&1; then
+            echo "stellar-pay@$VERSION is not on npm yet — not releasing"
+            exit 0
+          fi
+          git tag "$TAG"
+          git push origin "$TAG"
+          # --generate-notes auto-detects the previous tag as the range start.
+          gh release create "$TAG" --title "$TAG" --generate-notes --verify-tag
+          echo "released $TAG"
