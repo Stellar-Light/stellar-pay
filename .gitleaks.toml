@@ -1,0 +1,5 @@
+# Stellar/Soroban CONTRACT addresses (C…, 56 chars base32) are public
+# identifiers, not credentials — generic-api-key false-positives on them.
+# Real Stellar secrets start with S and are caught by the default rules.
+[allowlist]
+regexes = ['''C[A-Z2-7]{55}''']

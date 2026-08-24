@@ -129,7 +129,7 @@ Raven's routing, paid calls through a wallet under the same spend governance.
 
 ## Install & use
 
-Private alpha — from source:
+Alpha. From source:
 
 ```sh
 git clone https://github.com/Stellar-Light/stellar-pay && cd stellar-pay
@@ -147,6 +147,7 @@ stellar-pay balance
 stellar-pay offers  https://apiserver.mpprouter.dev/v1/services/exa/search -X POST -d '{}'   # what it asks — pays nothing
 stellar-pay curl    https://apiserver.mpprouter.dev/v1/services/exa/search -X POST -d '{"query":"stellar x402"}'
 stellar-pay curl <url> --yes --max-usd 0.05   # unattended, under a ceiling
+stellar-pay verify <url>                      # seller check: is this 402 correct and Stellar-payable?
 
 stellar-pay setup --save main                 # new wallet (testnet: funded + trustline), sealed in the encrypted keystore
 stellar-pay account list                      # saved wallets (never the secret); import / default / remove / export too
@@ -161,8 +162,8 @@ stellar-pay history                           # recent USDC payments to/from the
 A wallet is `STELLAR_SECRET_KEY` in the environment, or a **local encrypted
 keystore** so the key isn't pasted every time. `setup --save <name>` and
 `account import --name <name>` seal a secret under a passphrase (AES-256-GCM,
-scrypt — Node built-ins, no plaintext on disk). `account list/default/remove/
-export` manage them. On macOS, `--keychain` stores the secret in the **Keychain**
+scrypt — Node built-ins, no plaintext on disk). `account list` / `default` / `remove` / `export`
+manage them. On macOS, `--keychain` stores the secret in the **Keychain**
 instead — OS-guarded, no passphrase (pay.sh's gated-payments goal; a
 per-signature Touch ID prompt is the native upgrade). The default account
 unlocks with `STELLAR_PAY_PASSPHRASE` (for agents and the MCP) or an
@@ -195,7 +196,7 @@ Only this job needs `DATABASE_URI`.
 
 ## Status
 
-Private alpha. Built on `@x402/stellar` and `@stellar/mpp` — SDF's own rails —
+Alpha. Built on `@x402/stellar` and `@stellar/mpp` — SDF's own rails —
 and on the measurement that made it necessary: the same x402 standard does not
 make an endpoint Stellar-payable, so the catalog probes instead of trusting.
 Spend governance vendors [Scrimp](https://github.com/kaankacar/scrimp) (Kaan

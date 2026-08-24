@@ -53,3 +53,8 @@ uses SDF's smart-account-kit and OZ's audited contracts, and the proxy makes
 the neutral client wrap the whole ecosystem. The pitch stays: **the neutral
 supply-and-governance layer for agent payments, consuming every router, on
 Stellar's own rails.**
+
+- **x402 `upto` scheme** — the SCF facilitator RFP requires authoring
+  `scheme_upto_stellar.md` upstream. When it lands in `@x402/stellar`, we
+  inherit it by bumping the dependency; the catalog already records `scheme`
+  per endpoint, so no data-model change is needed.
