@@ -23,10 +23,12 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
-      # Trusted Publishing needs a recent npm; the runner's bundled one is older.
-      - run: npm i -g npm@latest
+      # Trusted Publishing needs npm >= 11.5.1; the bundled one is older.
+      - run: |
+          npm i -g npm@latest
+          echo "npm $(npm -v)"  # must be >= 11.5.1 for OIDC
 
       - run: npm ci
 
@@ -58,5 +60,5 @@ jobs:
           if npm view "$NAME@$VER" version >/dev/null 2>&1; then
             echo "$NAME@$VER already published — nothing to do"
           else
-            npm publish --access public --provenance
+            npm publish --access public --loglevel http
           fi
