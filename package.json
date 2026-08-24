@@ -66,8 +66,7 @@
 		"README.md",
 		"PARITY.md",
 		"docs",
-		"skills",
-		"specs"
+		"skills"
 	],
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
@@ -81,5 +80,24 @@
 			"import": "./dist/mcp.js"
 		},
 		"./package.json": "./package.json"
-	}
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Stellar-Light/stellar-pay.git"
+	},
+	"homepage": "https://github.com/Stellar-Light/stellar-pay#readme",
+	"bugs": {
+		"url": "https://github.com/Stellar-Light/stellar-pay/issues"
+	},
+	"keywords": [
+		"stellar",
+		"x402",
+		"mpp",
+		"agent",
+		"payments",
+		"usdc",
+		"mcp",
+		"402",
+		"micropayments"
+	]
 }

@@ -1,0 +1,63 @@
+# Publish stellar-pay to npm on a version bump.
+#
+# Auth is Trusted Publishing (OIDC), NOT a token: npm OTP-walls token publishes
+# on 2FA accounts, so NPM_TOKEN cannot work here. This needs a one-time
+# per-package trusted-publisher config on npmjs.com pointing at this repo and
+# this workflow filename. Provenance is free and automatic under OIDC.
+name: publish-npm
+
+on:
+  push:
+    branches: [main]
+    paths: ["package.json"]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required for Trusted Publishing
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # Trusted Publishing needs a recent npm; the runner's bundled one is older.
+      - run: npm i -g npm@latest
+
+      - run: npm ci
+
+      # Never publish something that doesn't compile or whose proofs fail.
+      - run: npm run build
+      - run: npm run typecheck
+      - run: npm run test:units
+      - run: npm run test:policy
+      - run: npm run test:ssrf
+      - run: npm run test:scrimp
+
+      # Guard: abort if this ever runs from the wrong package (a wrong-CWD
+      # publish once put an entire unrelated app on the registry).
+      - name: Guard package identity
+        run: |
+          node -e "
+          const p = require('./package.json');
+          if (p.name !== 'stellar-pay') { console.error('WRONG PACKAGE: ' + p.name); process.exit(1); }
+          if (p.private) { console.error('package is private'); process.exit(1); }
+          console.log('publishing ' + p.name + '@' + p.version);
+          "
+
+      # Skip silently if this version is already on the registry, so an
+      # unrelated package.json edit doesn't fail the run.
+      - name: Publish if the version is new
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          VER=$(node -p "require('./package.json').version")
+          if npm view "$NAME@$VER" version >/dev/null 2>&1; then
+            echo "$NAME@$VER already published — nothing to do"
+          else
+            npm publish --access public
+          fi

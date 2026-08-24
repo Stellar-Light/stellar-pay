@@ -5,10 +5,13 @@
 payments on Stellar. Copied verbatim from its `src/scrimp/` (zero runtime
 dependencies).
 
-**Permission:** the author granted use ("anyone can use it", Aug 2026). The
-upstream repo does not yet carry a formal license file, so for a fully clean
-public release it's worth asking Kaan to add one (MIT/Apache); the permission
-to use it here is explicit. Credit stays with Kaan Kacar.
+**Permission:** the author granted use ("anyone can use it", Aug 2026) and
+confirmed on 2026-08-24 that vendoring and redistributing this copy — including
+publishing it inside the `stellar-pay` npm package — is fine, with a formal
+MIT/Apache license to be added upstream afterwards. Until that license lands in
+`kaankacar/scrimp`, this NOTICE is the record of that grant. Credit stays with
+Kaan Kacar; this directory is his work, not ours, and is excluded from our own
+formatter and linter so it stays verbatim.
 
 **Verified:** the author noted it was a one-hour workshop build and wasn't sure
 it worked. All four suppression rules — duplicate, fresh, quarantine, budget —
