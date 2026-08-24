@@ -24,7 +24,8 @@ refuses a non-Stellar challenge. That's the strongest parity evidence there is.
 | Capability | pay.sh | stellar-pay | |
 |---|---|---|---|
 | Handle a 402, pay, retry | `curl` | `curl` | ✓ |
-| Preview a 402 without paying | — | `offers` | ↑ |
+| Preview a 402 without paying | `--debugger` (inspect) | `offers` | ✓ |
+| Validate a provider's 402 (seller check) | `--debugger` | `verify` | ↑ neutral, no gateway |
 | Wrap **any** tool's 402s | `curl`,`wget`,`http`,`fetch` (4 cmds) | `run -- <anything>` | ↑ one command wraps them all |
 | Launch an agent with payments | `claude`,`codex`,`goose`,`acp`,`qodercli` | `claude`,`codex` (+ `run -- goose` etc.) | ✓ / ↑ `run` covers the rest |
 | MCP server for agents | `mcp` | `mcp` | ✓ |
@@ -58,10 +59,22 @@ a live 402 through it.
 
 | Capability | pay.sh | stellar-pay | |
 |---|---|---|---|
-| Sell / monetize an API (paywall) | `gate`,`server` | — | neutral client, not a seller |
+| Sell / monetize an API (self-host paywall) | `gate`,`server` (YAML, self-host or Vercel) | — (use SDF's x402/MPP middleware) | covered upstream on Stellar |
+| Seller onboarding, neutral | — | `verify` + OpenAPI-discovery into the probed catalog | ↑ we help sellers get *discovered* without operating a gateway |
 | Author a catalog listing | `skills`,`catalog scaffold`,`create_skill` | — | we probe instead of authoring |
 | High-frequency channels | `subscriptions` (session) | ○ | needs the (unaudited) one-way-channel contract + a channel-mode server — none exist yet |
 | Visual payment debugger | web UI | runnable sandboxes (`npm run test:*`) | different shape |
+
+
+## Doc-level details (from pay.sh/docs)
+
+Behaviours the docs specify, and where we land:
+
+- **Pass-through mechanism** — pay "runs the tool, detects 402, builds a proof, retries with the same URL, method, headers, and body." Ours is identical, via the `run` MITM proxy. ✓
+- **`pay curl` (wrap a binary) vs `pay fetch` (internal client)** — we split the same way: `run -- curl` wraps the binary; `curl` is the internal client. ✓
+- **`--sandbox` / `--debugger`** — we have `--sandbox` (testnet) globally; pay's `--debugger` (inspect the exchange) maps to our `offers` (preview) and `verify` (validate). ✓
+- **`setup` → OS secure store** — ours stores in the macOS Keychain (`setup --keychain`). ✓
+- **Seller (`gate`/`server`)** — self-hosted YAML paywall. We don't host; on Stellar that role is SDF's x402/MPP middleware, and we add the neutral `verify` + catalog discovery instead.
 
 ## Bottom line
 

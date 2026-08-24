@@ -3,6 +3,7 @@
  * Working name: stellar-pay. Commands:
  *   curl <url> [-X M] [-H "K: V"]… [-d body] [--yes] [--max-usd N] [--x402|--mpp] [-i]
  *   offers <url> [-X M] [-H …] [-d body]     show what the 402 asks for; pay nothing
+ *   verify <url> [-X M] [-d body]          seller check: is this a correct, Stellar-payable 402?
  *   balance | whoami
  *   setup [--trustline]                    new wallet (testnet: funded + trustline), or add trustline to STELLAR_SECRET_KEY
  *   send <G...address> --amount <USDC> [--yes]   send USDC to an address
@@ -47,6 +48,7 @@ import {
 	setupWallet,
 	topupInfo,
 } from "./pay/send.js";
+import { verifyEndpoint } from "./pay/verify.js";
 import { balances, loadWallet } from "./pay/wallet.js";
 
 type Args = {
@@ -498,6 +500,25 @@ async function main() {
 			console.log(
 				`${h.at.slice(0, 10)}  ${h.direction === "sent" ? "→" : "←"} ${h.amount.padStart(12)} ${h.asset.padEnd(5)} ${h.direction === "sent" ? "to" : "from"} ${h.counterparty.slice(0, 6)}…${h.counterparty.slice(-4)}`,
 			);
+		return;
+	}
+	if (a.cmd === "verify") {
+		if (!a.url) {
+			console.error("usage: stellar-pay verify <url> [-X METHOD] [-d body]");
+			process.exitCode = 1;
+			return;
+		}
+		const v = await verifyEndpoint(a.url, a.method, a.body);
+		for (const c of v.checks)
+			console.log(
+				`  ${c.ok ? "\u2713" : "\u2717"} ${c.label.padEnd(24)} ${c.detail}`,
+			);
+		console.log(
+			v.payable
+				? "\n\u2713 PAYABLE — this endpoint answers a correct Stellar 402; the probe will index it and a stellar-pay client can pay it."
+				: "\n\u2717 NOT PAYABLE from a Stellar wallet yet — fix the \u2717 items above.",
+		);
+		if (!v.payable) process.exitCode = 1;
 		return;
 	}
 	if (a.cmd === "offers") {
