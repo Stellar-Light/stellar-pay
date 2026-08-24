@@ -7,7 +7,7 @@
  *   balance | whoami
  *   setup [--trustline]                    new wallet (testnet: funded + trustline), or add trustline to STELLAR_SECRET_KEY
  *   send <G...address> --amount <USDC> [--yes]   send USDC to an address
- *   history                                recent USDC payments to/from the wallet
+ *   history                                recent payments (any asset) to/from the wallet
  *   topup [--buy] [--amount N]             fund this wallet: --buy opens an on-ramp + waits; else QR + address + ramps
  *   account <list|import|default|remove|export> [--name N]   manage saved wallets (encrypted file or --keychain)
  *   setup --save <name> [--keychain]       new wallet sealed in the encrypted file, or (macOS) the Keychain
@@ -93,8 +93,14 @@ function parse(argv: string[]): Args {
 			a.body = next();
 			if (a.method === "GET") a.method = "POST";
 		} else if (t === "--yes" || t === "-y") a.yes = true;
-		else if (t === "--max-usd") a.maxUsd = Number(next());
-		else if (t === "--x402") a.prefer = "x402";
+		else if (t === "--max-usd") {
+			const n = Number(next());
+			if (Number.isFinite(n) && n > 0) a.maxUsd = n;
+			else {
+				console.error("--max-usd must be a positive number");
+				process.exit(1);
+			}
+		} else if (t === "--x402") a.prefer = "x402";
 		else if (t === "--mpp") a.prefer = "mpp";
 		else if (t === "-i" || t === "--include") a.include = true;
 		else if (t === "--sandbox") a.sandbox = true;
@@ -580,8 +586,8 @@ async function main() {
 			for (const [k, v] of r.res.headers) console.log(`${k}: ${v}`);
 			console.log();
 		}
-		process.stdout.write(await r.res.text());
-		if (!process.stdout.write("")) process.stdout.write("\n");
+		const bodyText = await r.res.text();
+		process.stdout.write(bodyText.endsWith("\n") ? bodyText : `${bodyText}\n`);
 		if (r.paid) {
 			const usd = offerUSD(r.paid.offer);
 			console.error(

@@ -1,5 +1,6 @@
 {
-	"$schema": "https://biomejs.dev/schemas/2.3.2/schema.json",
+	"$schema": "https://biomejs.dev/schemas/2.5.10/schema.json",
+	"files": { "includes": ["src/**", "*.json", "*.md", "!vendor", "!.local"] },
 	"formatter": { "enabled": true, "indentStyle": "tab", "lineWidth": 80 },
 	"linter": { "enabled": true, "rules": { "recommended": true } },
 	"assist": { "actions": { "source": { "organizeImports": "on" } } }

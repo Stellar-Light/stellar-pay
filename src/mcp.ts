@@ -483,7 +483,7 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 		"get_history",
 		{
 			description:
-				"Recent USDC payments to and from the active wallet (direction, counterparty, amount, tx hash), newest first. Use to see what the wallet has already paid or received.",
+				"Recent payments (any asset, labelled per row) to and from the active wallet (direction, counterparty, amount, tx hash), newest first. Use to see what the wallet has already paid or received.",
 			inputSchema: { limit: z.number().int().min(1).max(50).optional() },
 		},
 		async ({ limit }) => {

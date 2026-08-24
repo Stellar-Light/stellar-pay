@@ -10,8 +10,7 @@
  * correctness we did not write.
  */
 
-import * as stellarMpp from "@stellar/mpp/charge/client";
-import { Mppx } from "@stellar/mpp/charge/client";
+import { Mppx, charge as mppCharge } from "@stellar/mpp/charge/client";
 import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
 import { createEd25519Signer } from "@x402/stellar";
 import { ExactStellarScheme } from "@x402/stellar/exact/client";
@@ -86,7 +85,7 @@ export async function payFetch(
 		const mppx = Mppx.create({
 			fetch: f,
 			methods: [
-				stellarMpp.charge({
+				mppCharge({
 					secretKey: o.wallet.keypair.secret(),
 					mode: "pull",
 					onProgress(e) {

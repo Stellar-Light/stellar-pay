@@ -214,7 +214,7 @@ export type HistoryEntry = {
 	hash: string;
 };
 
-/** Recent USDC payments to or from this wallet, newest first. */
+/** Recent payments (any asset, each labelled) to or from this wallet, newest first. */
 export async function history(
 	publicKey: string,
 	network: Network,
@@ -243,6 +243,8 @@ export async function history(
 	const out: HistoryEntry[] = [];
 	for (const p of d._embedded?.records ?? []) {
 		if (p.type !== "payment") continue;
+		// Every asset, each row labelled with its code — "USDC" alone would be a
+		// lie for a wallet that also moves XLM, and the asset is shown anyway.
 		const asset = p.asset_code ?? "XLM";
 		const sent = p.from === publicKey;
 		out.push({

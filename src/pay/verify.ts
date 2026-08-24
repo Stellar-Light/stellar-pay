@@ -64,7 +64,9 @@ export async function verifyEndpoint(
 		"challenge is readable",
 		offers.length
 			? `parsed ${offers.length} offer(s)`
-			: "402 but no readable challenge — expose x402 `accepts[]` (JSON body or the payment-required header) or an MPP `WWW-Authenticate: Payment` header",
+			: res.status === 402
+				? "402 but no readable challenge — expose x402 `accepts[]` (JSON body or the payment-required header) or an MPP `WWW-Authenticate: Payment` header"
+				: "no challenge to read (the endpoint did not answer 402)",
 	);
 
 	const stellar = offers.find((o) => isStellar(o.network));
