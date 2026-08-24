@@ -17,7 +17,20 @@ curl -X POST https://apiserver.mpprouter.dev/v1/services/exa/search -d '{"query"
 stellar-pay curl -X POST https://apiserver.mpprouter.dev/v1/services/exa/search -d '{"query":"stellar"}'
 ```
 
-**Try it now — no install, no wallet, pays nothing:**
+**Try it now — a real on-chain payment, with play money:**
+
+```sh
+npx stellar-pay setup --sandbox                                        # funded testnet wallet, one command
+npx stellar-pay curl https://stellar-pay-sandbox.fly.dev/data --yes --sandbox
+```
+
+That settles on Stellar testnet for real — the output carries the
+stellar.expert link. No real funds, no signup, nothing installed. The
+[sandbox](https://stellar-pay-sandbox.fly.dev/) is our own paid endpoint,
+priced in native XLM so a friendbot-funded wallet can pay it immediately (no
+trustline, no faucet) with the seller sponsoring fees.
+
+Or look without paying anything, on mainnet:
 
 ```sh
 npx stellar-pay offers https://apiserver.mpprouter.dev/v1/services/exa/search -X POST -d '{"query":"stellar"}'

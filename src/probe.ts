@@ -64,6 +64,27 @@ async function jsonOrNull<T>(
 	}
 }
 
+/**
+ * Our own hosted testnet sandbox — the only deliberate non-pubnet row in the
+ * catalog. It exists so a newcomer can complete a real payment with play
+ * money before risking a cent; the probe re-checks it like any other row, so
+ * a broken sandbox shows up as a dead endpoint rather than a stale promise.
+ */
+const SANDBOX: Candidate[] = [
+	{
+		url: "https://stellar-pay-sandbox.fly.dev/data",
+		title: "stellar-pay sandbox — paid call (testnet)",
+		source: "curated",
+		sourceUrl: "https://stellar-pay-sandbox.fly.dev/",
+	},
+	{
+		url: "https://stellar-pay-sandbox.fly.dev/quote",
+		title: "stellar-pay sandbox — price quote (testnet)",
+		source: "curated",
+		sourceUrl: "https://stellar-pay-sandbox.fly.dev/",
+	},
+];
+
 /** Coinbase's Bazaar — every resource, kept when any accept names Stellar. */
 async function fromBazaar(): Promise<Candidate[]> {
 	const out: Candidate[] = [];
@@ -261,7 +282,7 @@ async function main() {
 			fromMppRouter(),
 		]);
 		console.log(
-			`discovered — bazaar (stellar-accepting): ${bazaar.length} · mpp-router: ${mppRouter.length}`,
+			`discovered — bazaar (stellar-accepting): ${bazaar.length} · mpp-router: ${mppRouter.length} · sandbox: ${SANDBOX.length}`,
 		);
 
 		// Anything already indexed is re-probed too: liveness is the product.
@@ -282,7 +303,7 @@ async function main() {
 
 		const seen = new Map<string, Candidate>();
 		let demoSkipped = 0;
-		for (const c of [...bazaar, ...mppRouter]) {
+		for (const c of [...SANDBOX, ...bazaar, ...mppRouter]) {
 			if (isReservedDemo(c.url)) {
 				demoSkipped++;
 				continue;
