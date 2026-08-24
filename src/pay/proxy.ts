@@ -185,12 +185,24 @@ export async function startProxy(
 					url,
 					reason: `payment declined for ${r.offers[0].network}`,
 				});
-			const out: Record<string, string> = {};
-			r.res.headers.forEach((v, k) => {
-				if (!HOP.has(k.toLowerCase())) out[k] = v;
-			});
-			res.writeHead(r.res.status, out);
 			const buf = Buffer.from(await r.res.arrayBuffer());
+			const out: Record<string, string | string[]> = {};
+			r.res.headers.forEach((v, k) => {
+				const lk = k.toLowerCase();
+				// undici already decompressed the body, so the upstream
+				// content-encoding/-length now describe bytes that no longer
+				// exist — forwarding them makes the child try to gunzip
+				// plaintext or truncate on a wrong length. Drop both; Node
+				// sets the real length from what we write.
+				if (HOP.has(lk) || lk === "content-encoding" || lk === "content-length")
+					return;
+				out[k] = v;
+			});
+			// Headers.forEach folds multiple Set-Cookie into one comma-joined
+			// value; re-split them into distinct header lines.
+			const cookies = r.res.headers.getSetCookie?.() ?? [];
+			if (cookies.length) out["set-cookie"] = cookies;
+			res.writeHead(r.res.status, out);
 			res.end(buf);
 		} catch (e) {
 			res.writeHead(502, { "content-type": "text/plain" });

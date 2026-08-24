@@ -17,6 +17,7 @@
  * work in begin_task/end_task unlocks the smart rules and the saved/waste
  * numbers in spend_report.
  */
+import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -35,6 +36,22 @@ import { balances, loadWallet, type Wallet } from "./pay/wallet.js";
 
 const MAX_PER_CALL = Number(process.env.STELLAR_PAY_MAX_USD_PER_CALL ?? 0.05);
 const SESSION_BUDGET = Number(process.env.STELLAR_PAY_SESSION_BUDGET_USD ?? 1);
+
+// Cumulative mainnet spend this process, enforced across curl AND send_usdc so
+// an agent can't drain the wallet in many under-ceiling calls (a bare per-call
+// cap is not a session cap).
+let sessionSpentUsd = 0;
+// Server-generated, single-use, expiring confirm tokens for send_usdc — so the
+// confirmation can't be forged from to+amount or replayed.
+const pendingSends = new Map<
+	string,
+	{ to: string; amount: string; network: string; exp: number }
+>();
+function newSendToken(to: string, amount: string, network: string): string {
+	const t = randomUUID();
+	pendingSends.set(t, { to, amount, network, exp: Date.now() + 120_000 });
+	return t;
+}
 
 const json = (v: unknown) => ({
 	content: [{ type: "text" as const, text: JSON.stringify(v, null, 1) }],
@@ -287,6 +304,13 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 				signal: AbortSignal.timeout(60_000),
 			};
 
+			// Process-wide session cap, enforced whether or not a task is open —
+			// Scrimp's budget only applies inside begin_task/end_task, so without
+			// this an agent that never opens a task is bounded only per-call.
+			if (w.network !== "stellar:testnet" && sessionSpentUsd >= SESSION_BUDGET)
+				return json({
+					error: `session budget exhausted ($${sessionSpentUsd.toFixed(4)} of $${SESSION_BUDGET} spent); open a new session to continue`,
+				});
 			const res = await g.client.fetch(url, init);
 			const text = await res.text();
 			const out: Record<string, unknown> = {
@@ -308,6 +332,8 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 							: `refused by the ${suppressed} rule — no payment made`,
 				};
 			} else if (paid) {
+				if (paid.usd != null && w.network !== "stellar:testnet")
+					sessionSpentUsd += paid.usd;
 				payments.push({
 					at: new Date().toISOString(),
 					url,
@@ -353,21 +379,51 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 			const w = getWallet();
 			if (!/^G[A-Z2-7]{55}$/.test(to))
 				return json({ error: `"${to}" is not a Stellar account (G…)` });
-			if (!(Number(amount) > 0))
+			const usd = Number(amount);
+			if (!(usd > 0))
 				return json({ error: `amount must be positive, got "${amount}"` });
-			// The token binds to exactly this recipient+amount on this network,
-			// so a confirmation can't be replayed for a different transfer.
-			const token = `send:${w.network}:${to}:${amount}`;
-			if (confirm !== token) {
+			// A direct transfer to an arbitrary address is the highest-risk agent
+			// action (exfiltration). On mainnet it is bounded by the same per-call
+			// ceiling and session budget as a paid call — larger sends go through
+			// the human-confirmed CLI, not an autonomous agent.
+			if (w.network !== "stellar:testnet") {
+				if (usd > MAX_PER_CALL)
+					return json({
+						error: `$${usd} exceeds the per-call ceiling of $${MAX_PER_CALL} (STELLAR_PAY_MAX_USD_PER_CALL). For a larger transfer use \`stellar-pay send\` in a terminal, where a human confirms it.`,
+					});
+				if (sessionSpentUsd + usd > SESSION_BUDGET)
+					return json({
+						error: `$${usd} would exceed the remaining session budget ($${(SESSION_BUDGET - sessionSpentUsd).toFixed(4)} of $${SESSION_BUDGET} left).`,
+					});
+			}
+			// The confirm token is SERVER-generated, single-use, and expires — so
+			// possessing to+amount is not enough to execute (an injected agent
+			// can't forge it), and it can't be replayed.
+			if (!confirm) {
+				const t = newSendToken(to, amount, w.network);
 				return json({
 					preview: `send ${amount} USDC to ${to.slice(0, 6)}…${to.slice(-4)} on ${w.network}`,
-					confirm_token: token,
+					confirm_token: t,
 					next_step:
-						"call send_usdc again with this exact confirm token to execute; nothing has moved",
+						"call send_usdc again with this exact confirm token within 2 minutes to execute; nothing has moved",
 				});
 			}
+			const pending = pendingSends.get(confirm);
+			pendingSends.delete(confirm); // single use, whatever the outcome
+			if (
+				!pending ||
+				pending.to !== to ||
+				pending.amount !== amount ||
+				pending.network !== w.network ||
+				pending.exp < Date.now()
+			)
+				return json({
+					error:
+						"invalid, expired, or already-used confirm token — call send_usdc with just to+amount to get a fresh one",
+				});
 			try {
 				const r = await sendUSDC(w, to, amount);
+				if (w.network !== "stellar:testnet") sessionSpentUsd += usd;
 				return json({
 					sent: {
 						to: r.to,

@@ -101,20 +101,33 @@ export async function payFetch(
 		};
 	}
 
+	// The library re-fetches the 402 and would sign whatever THAT challenge
+	// states. Pin it to the exact offer the caller approved — same network,
+	// asset, and amount — so a server can't show a small price to the approval
+	// probe and a large one to the paying fetch. If the live requirement no
+	// longer matches what was approved, refuse rather than pay something else.
 	const client = new x402Client((_v, reqs) => {
-		const pick = reqs.find((r) => r.network === o.wallet.network) ?? reqs[0];
-		if (!pick) throw new Error("402 carried no payment requirements");
+		const pick = reqs.find(
+			(r) =>
+				r.network === o.wallet.network &&
+				(offer.asset == null || r.asset === offer.asset) &&
+				String(
+					(r as { maxAmountRequired?: string }).maxAmountRequired ??
+						(r as { amount?: string }).amount ??
+						"",
+				) === (offer.amount ?? ""),
+		);
+		if (!pick)
+			throw new Error(
+				"the endpoint's payment requirement changed after approval — refusing to sign a different amount",
+			);
 		return pick;
-	})
-		.register(
-			o.wallet.network,
-			new ExactStellarScheme(
-				createEd25519Signer(o.wallet.keypair.secret(), o.wallet.network),
-			),
-		)
-		// The user just approved the exact amount; the library's own ceiling
-		// would second-guess them.
-		.setSpendControls(false);
+	}).register(
+		o.wallet.network,
+		new ExactStellarScheme(
+			createEd25519Signer(o.wallet.keypair.secret(), o.wallet.network),
+		),
+	);
 	const res = await wrapFetchWithPayment(f, client)(url, init);
 	let hash: string | null = null;
 	const receipt = res.headers.get("payment-response");

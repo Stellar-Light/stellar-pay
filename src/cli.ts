@@ -200,9 +200,18 @@ async function main() {
 		console.error(
 			`stellar-pay: proxy on 127.0.0.1:${proxy.port}, wrapping \`${command}\` (Ctrl-C to stop)`,
 		);
+		// The wrapped command is untrusted — that's why it's behind the proxy.
+		// The proxy (this parent) holds the wallet and does all signing, so the
+		// child needs NO key material. Never inherit the decrypted secret or
+		// the keystore passphrase into it.
+		const {
+			STELLAR_SECRET_KEY: _sk,
+			STELLAR_PAY_PASSPHRASE: _pp,
+			...childEnv
+		} = process.env;
 		const child = spawn(command, cmdArgs, {
 			stdio: "inherit",
-			env: { ...process.env, ...proxyEnv(proxy.port, proxy.caPath) },
+			env: { ...childEnv, ...proxyEnv(proxy.port, proxy.caPath) },
 		});
 		child.on("exit", async (code) => {
 			await proxy.close();
