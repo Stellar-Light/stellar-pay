@@ -34,8 +34,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
-      # SECURITY.md claimed full-history secret scanning ran in CI. It never
-      # existed until this job.
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+      # SECURITY.md claimed full-history secret scanning ran in CI; it never
+      # existed until this job. Uses the gitleaks BINARY, not the marketplace
+      # action — the action requires a paid licence for organisation repos.
+      - name: gitleaks (full history)
+        run: |
+          VER=8.28.0
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks git . --no-banner --redact
