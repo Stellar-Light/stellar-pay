@@ -114,9 +114,8 @@ c.endTask("t4", { succeeded: true });
 c.beginTask("t5", { budget: 1 });
 const e1 = await c.fetch("https://api.x.com/used");
 await e1.json(); // consumed
-const e2 = await c.fetch("https://api.x.com/unused"); // never read
+await c.fetch("https://api.x.com/unused"); // never read → wasted
 c.endTask("t5", { succeeded: true });
-const stats = c.stats();
 const rep = c.report();
 console.log(
 	`\n  report: spent=$${rep.spent} wouldHaveSpent=$${rep.wouldHaveSpent} saved=$${rep.saved} savedPct=${rep.savedPct}% wasteRate=${rep.wasteRate} suppressed=${rep.suppressed}`,

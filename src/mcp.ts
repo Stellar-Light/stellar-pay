@@ -30,7 +30,8 @@ import {
 	searchCatalog,
 } from "./catalog.js";
 import { buildGoverned, type Governed } from "./pay/governed.js";
-import { type Offer, offerUSD } from "./pay/offers.js";
+import type { Offer } from "./pay/offers.js";
+import { autoApprove, explorer } from "./pay/policy.js";
 import { history, sendUSDC } from "./pay/send.js";
 import { balances, loadWallet, type Wallet } from "./pay/wallet.js";
 
@@ -91,8 +92,6 @@ export function blockedTarget(raw: string): string | null {
 const json = (v: unknown) => ({
 	content: [{ type: "text" as const, text: JSON.stringify(v, null, 1) }],
 });
-const explorer = (network: string, hash: string) =>
-	`https://stellar.expert/explorer/${network === "stellar:pubnet" ? "public" : "testnet"}/tx/${hash}`;
 
 let wallet: Wallet | null = null;
 const getWallet = () => {
@@ -100,20 +99,13 @@ const getWallet = () => {
 	return wallet;
 };
 
-/** The approve gate — the hard floor, on every payment whether or not a task is open. */
-function approveGate(w: Wallet): (o: Offer) => Promise<boolean> {
-	return async (o) => {
-		if (w.network === "stellar:testnet") return true; // testnet tokens have no value
-		const usd = offerUSD(o);
-		return usd != null && usd <= MAX_PER_CALL;
-	};
-}
-function gateRefusal(o: Offer) {
-	const usd = offerUSD(o);
-	if (usd == null)
-		return `the offer is not USDC (${o.asset ?? "unknown asset"}); only USDC is auto-approved on mainnet`;
-	return `$${usd.toFixed(4)} exceeds the per-call ceiling of $${MAX_PER_CALL} (STELLAR_PAY_MAX_USD_PER_CALL)`;
-}
+/** The approve gate — the shared spend decision, auto (no prompt in the MCP). */
+const approveGate =
+	(w: Wallet) =>
+	async (o: Offer): Promise<boolean> =>
+		autoApprove(o, { network: w.network, maxUsd: MAX_PER_CALL }).ok;
+const gateRefusal = (o: Offer) =>
+	autoApprove(o, { network: getWallet().network, maxUsd: MAX_PER_CALL }).reason;
 
 const payments: Array<{
 	at: string;

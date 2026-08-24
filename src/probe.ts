@@ -21,6 +21,7 @@
  * that stops answering keeps its history and gains a failure streak.
  */
 import type { AnyBulkWriteOperation } from "mongodb";
+import { isStellar, USDC_SAC as USDC_SAC_MAP } from "./pay/offers.js";
 import { type Accept, type EndpointRow, open } from "./store.js";
 
 const EXECUTE = process.argv.includes("--execute");
@@ -34,14 +35,7 @@ type Candidate = {
 	sourceUrl?: string;
 };
 
-const isStellar = (n?: string | null) =>
-	!!n && n.toLowerCase().startsWith("stellar");
-
-/** USDC Stellar Asset Contract ids — pubnet and testnet (from @x402/stellar). */
-const USDC_SAC = new Set([
-	"CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
-	"CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
-]);
+const USDC_SAC = new Set(Object.values(USDC_SAC_MAP));
 
 /** RFC 2606 / RFC 6761 names can never resolve; registries seed demos with them. */
 function isReservedDemo(url: string): boolean {
