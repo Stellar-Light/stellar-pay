@@ -89,16 +89,36 @@ export const policyPath =
  * should honor an edit on the next payment rather than cache a stale rule).
  * Absent or malformed → no policy (the flat ceiling still applies). */
 export function loadPolicy(): Policy | null {
+	let raw: string;
 	try {
-		return JSON.parse(readFileSync(policyPath, "utf8")) as Policy;
+		raw = readFileSync(policyPath, "utf8");
 	} catch {
-		return null;
+		return null; // genuinely absent — the flat ceiling still applies
 	}
+	// A file that EXISTS but cannot be parsed must never silently disappear:
+	// that would delete allowlist containment without a word. Fail closed.
+	let p: Policy;
+	try {
+		p = JSON.parse(raw) as Policy;
+	} catch (e) {
+		throw new Error(
+			`spend policy at ${policyPath} is not valid JSON (${(e as Error).message}) — refusing to pay with an unreadable policy`,
+		);
+	}
+	const mode = p.mode ?? "denylist";
+	if (mode !== "allowlist" && mode !== "denylist")
+		throw new Error(
+			`spend policy mode "${p.mode}" is not "allowlist" or "denylist" — refusing rather than silently falling back`,
+		);
+	return p;
 }
 
 function hostOf(url: string): string | null {
 	try {
-		return new URL(url).hostname.toLowerCase();
+		// A trailing dot is the SAME server to DNS ("example.com." === "example.com")
+		// but a different string to a deny rule, so strip it. URL already lowercases
+		// and punycodes the hostname and strips the port.
+		return new URL(url).hostname.toLowerCase().replace(/\.+$/, "");
 	} catch {
 		return null;
 	}

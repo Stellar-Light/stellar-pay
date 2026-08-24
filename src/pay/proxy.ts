@@ -16,7 +16,7 @@
  * same way the CLI/MCP do.
  */
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import * as http from "node:http";
 import * as https from "node:https";
 import type { AddressInfo } from "node:net";
@@ -128,6 +128,8 @@ const HOP = new Set([
 export type ProxyOptions = {
 	wallet: Wallet;
 	approve: (offer: Offer, url: string) => Promise<boolean>;
+	/** re-checked on each redirect hop (per-host policy) */
+	guard?: (url: string) => Promise<string | null> | string | null;
 	prefer?: "x402" | "mpp";
 	onPaid?: (info: {
 		url: string;
@@ -166,8 +168,27 @@ export async function startProxy(o: ProxyOptions): Promise<{
 		const url = /^https?:\/\//.test(req.url ?? "")
 			? (req.url as string)
 			: `${scheme}://${host}${req.url ?? ""}`;
+		// Read the body INSIDE the try: an abort mid-upload used to reject
+		// outside any handler and take the whole wallet-holding process down.
+		// Cap it too — an unbounded buffer is a free OOM.
+		const MAX_BODY = 32 * 1024 * 1024;
 		const chunks: Buffer[] = [];
-		for await (const c of req) chunks.push(c as Buffer);
+		let size = 0;
+		try {
+			for await (const c of req) {
+				size += (c as Buffer).length;
+				if (size > MAX_BODY) {
+					res.writeHead(413, { "content-type": "text/plain" });
+					res.end("stellar-pay proxy: request body too large");
+					return;
+				}
+				chunks.push(c as Buffer);
+			}
+		} catch {
+			// client went away mid-body — nothing to answer, just stop
+			res.destroy();
+			return;
+		}
 		const body = chunks.length ? Buffer.concat(chunks) : undefined;
 		const headers: Record<string, string> = {};
 		for (const [k, v] of Object.entries(req.headers))
@@ -181,7 +202,12 @@ export async function startProxy(o: ProxyOptions): Promise<{
 					body,
 					signal: AbortSignal.timeout(120_000),
 				},
-				{ wallet: o.wallet, approve: o.approve, prefer: o.prefer },
+				{
+					wallet: o.wallet,
+					approve: o.approve,
+					guard: o.guard,
+					prefer: o.prefer,
+				},
 			);
 			if (r.paid)
 				o.onPaid?.({
@@ -236,16 +262,45 @@ export async function startProxy(o: ProxyOptions): Promise<{
 	// wallet by skipping the token-checked CONNECT handler below.
 	const tlsServer = https.createServer(
 		{ SNICallback: (name, cb) => cb(null, leaf(name)) },
-		(req, res) => handle(req, res, "https"),
+		(req, res) => {
+			handle(req, res, "https").catch(() => {
+				try {
+					if (!res.headersSent)
+						res.writeHead(502, { "content-type": "text/plain" });
+					res.end("stellar-pay proxy: internal error");
+				} catch {
+					/* socket already gone */
+				}
+			});
+		},
 	);
 	const tlsSock = join(dir, "tls.sock");
 	await new Promise<void>((resolve) => tlsServer.listen(tlsSock, resolve));
+	// The socket lives in a 0700 temp dir; tighten the node itself to 0600 too.
+	// HONEST LIMIT: this keeps out other USERS and anything off-box, but a
+	// process running as the SAME user is inside the trust boundary by
+	// construction — it can read this wallet's environment and keystore
+	// directly, so the proxy is not what stands between it and the funds.
+	// Do not document this as protection against local same-uid code.
+	chmodSync(tlsSock, 0o600);
 
 	// The proxy the child points at: plain-HTTP requests handled directly;
 	// CONNECT tunnels are redirected into our own TLS terminator above. Both
 	// are gated by the per-run token (the tunnelled HTTPS requests are already
 	// behind an authenticated CONNECT, so they aren't re-checked).
 	const proxy = http.createServer((req, res) => {
+		// handle() is async; without this catch a rejection is unhandled and
+		// takes the wallet-holding process down.
+		const safe = (p: Promise<void>) =>
+			p.catch(() => {
+				try {
+					if (!res.headersSent)
+						res.writeHead(502, { "content-type": "text/plain" });
+					res.end("stellar-pay proxy: internal error");
+				} catch {
+					/* socket already gone */
+				}
+			});
 		if (!authed(req)) {
 			res.writeHead(407, {
 				"proxy-authenticate": 'Basic realm="stellar-pay"',
@@ -253,7 +308,7 @@ export async function startProxy(o: ProxyOptions): Promise<{
 			res.end("stellar-pay proxy: authentication required");
 			return;
 		}
-		handle(req, res, "http");
+		safe(handle(req, res, "http"));
 	});
 	proxy.on("connect", (req, clientSocket, head) => {
 		if (!authed(req)) {

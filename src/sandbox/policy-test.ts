@@ -41,13 +41,40 @@ const check = (name: string, cond: boolean, detail = "") => {
 	}
 };
 
-// no file yet is handled by loadPolicy returning null → requested passes through
+// A policy file that EXISTS but is unreadable must fail CLOSED. Silently
+// treating it as "no policy" used to delete allowlist containment without a
+// word — this test previously asserted that vulnerable behaviour.
 writeFileSync(file, "not json");
 {
-	const g = resolveHost("https://api.exa.ai/x", { requested: 0.1 });
+	let threw = false;
+	try {
+		resolveHost("https://api.exa.ai/x", { requested: 0.1 });
+	} catch (e) {
+		threw = /not valid JSON/.test((e as Error).message);
+	}
+	check("malformed policy file → refuses, does not silently pass", threw);
+}
+// An unrecognised mode must also refuse rather than quietly degrade to denylist.
+writeFileSync(file, JSON.stringify({ mode: "AllowList", hosts: {} }));
+{
+	let threw = false;
+	try {
+		resolveHost("https://api.exa.ai/x", { requested: 0.1 });
+	} catch (e) {
+		threw = /not "allowlist" or "denylist"/.test((e as Error).message);
+	}
+	check("misspelled mode → refuses, does not degrade to denylist", threw);
+}
+// A trailing dot is the same server to DNS; it must not escape a deny rule.
+writeFileSync(
+	file,
+	JSON.stringify({ hosts: { "blocked.example.com": { deny: true } } }),
+);
+{
+	const g = resolveHost("https://blocked.example.com./x", { requested: 0.1 });
 	check(
-		"malformed file → no policy, requested ceiling",
-		g.maxUsd === 0.1 && g.blocked === null,
+		"trailing-dot hostname cannot escape a deny rule",
+		g.blocked !== null,
 		JSON.stringify(g),
 	);
 }

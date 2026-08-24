@@ -61,6 +61,10 @@ const SESSION_BUDGET = envCap("STELLAR_PAY_SESSION_BUDGET_USD", 1);
 // an agent can't drain the wallet in many under-ceiling calls (a bare per-call
 // cap is not a session cap).
 let sessionSpentUsd = 0;
+// Reserved-but-not-yet-settled spend. The budget used to be read before an
+// await and written after it, so N concurrent tool calls all passed one $1
+// gate; a reservation closes that window.
+let sessionReservedUsd = 0;
 // Server-generated, single-use, expiring confirm tokens for send_usdc — so the
 // confirmation can't be forged from to+amount or replayed.
 const pendingSends = new Map<
@@ -161,7 +165,8 @@ const getWallet = () => {
  * the cap can never be overshot: the last call that would cross it is refused,
  * not allowed through because the check ran before the price was known. */
 const overBudget = (o: Offer): boolean =>
-	sessionSpentUsd + (offerUSD(o) ?? MAX_PER_CALL) > SESSION_BUDGET;
+	sessionSpentUsd + sessionReservedUsd + (offerUSD(o) ?? MAX_PER_CALL) >
+	SESSION_BUDGET;
 const approveGate =
 	(w: Wallet) =>
 	async (o: Offer, url: string): Promise<boolean> => {
@@ -468,6 +473,12 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 					w.network !== "stellar:testnet"
 				)
 					sessionSpentUsd += paid.usd;
+				// release the reservation this payment was approved under
+				if (w.network !== "stellar:testnet")
+					sessionReservedUsd = Math.max(
+						0,
+						sessionReservedUsd - (paid.usd ?? MAX_PER_CALL),
+					);
 				payments.push({
 					at: new Date().toISOString(),
 					url,

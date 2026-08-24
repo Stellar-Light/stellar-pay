@@ -85,6 +85,14 @@ type Args = {
 // 4 no wallet · 1 generic runtime failure.
 const EXIT = { ok: 0, runtime: 1, usage: 2, refused: 3, noWallet: 4 } as const;
 
+/** Print a usage failure AND set a non-zero code. `return console.error(...)`
+ * returns undefined and leaves the exit code at 0, so a scripted caller read a
+ * usage error as success. */
+function usageError(...msg: unknown[]): void {
+	console.error(...(msg as string[]));
+	process.exitCode = EXIT.usage;
+}
+
 function parse(argv: string[]): Args {
 	const a: Args = {
 		cmd: argv[0] ?? "help",
@@ -253,9 +261,9 @@ async function cmdRun(a: Args): Promise<void> {
 		stdio: "inherit",
 		env: { ...childEnv, ...proxyEnv(proxy.port, proxy.caPath, proxy.token) },
 	});
-	child.on("exit", async (code) => {
+	child.on("exit", async (code, signal) => {
 		await proxy.close();
-		process.exit(code ?? 0);
+		process.exit(code ?? (signal ? 128 : EXIT.runtime));
 	});
 	return;
 }
@@ -281,6 +289,16 @@ async function cmdAgent(a: Args): Promise<void> {
 		: [process.execPath, self, "mcp"];
 	const passthrough = process.argv.slice(3);
 	let child: ReturnType<typeof spawn>;
+	// The agent (and everything IT spawns) is untrusted the same way a wrapped
+	// command is: the MCP server we mount holds the wallet and does the signing,
+	// so the child needs no key material. `run` already stripped these; the
+	// launchers did not.
+	const childEnv = Object.fromEntries(
+		Object.entries(process.env).filter(
+			([k]) =>
+				!/^(STELLAR_SECRET_KEY|STELLAR_PAY_PASSPHRASE|DATABASE_URI)$/i.test(k),
+		),
+	);
 	if (a.cmd === "goose") {
 		// goose mounts a stdio MCP per-invocation via --with-extension.
 		const ext = server
@@ -292,6 +310,7 @@ async function cmdAgent(a: Args): Promise<void> {
 				: "session";
 		child = spawn("goose", [sub, "--with-extension", ext, ...passthrough], {
 			stdio: "inherit",
+			env: childEnv,
 		});
 	} else if (a.cmd === "claude") {
 		const cfg = {
@@ -303,6 +322,7 @@ async function cmdAgent(a: Args): Promise<void> {
 		writeFileSync(file, JSON.stringify(cfg));
 		child = spawn("claude", ["--mcp-config", file, ...passthrough], {
 			stdio: "inherit",
+			env: childEnv,
 		});
 	} else {
 		child = spawn(
@@ -314,10 +334,14 @@ async function cmdAgent(a: Args): Promise<void> {
 				`mcp_servers.stellar-pay.args=${JSON.stringify(server.slice(1))}`,
 				...passthrough,
 			],
-			{ stdio: "inherit" },
+			{ stdio: "inherit", env: childEnv },
 		);
 	}
-	child.on("exit", (code) => process.exit(code ?? 0));
+	// A child killed by a signal has code === null; exiting 0 there would report
+	// success for a crashed or cancelled agent.
+	child.on("exit", (code, signal) =>
+		process.exit(code ?? (signal ? 128 : EXIT.runtime)),
+	);
 	return;
 }
 
@@ -402,12 +426,12 @@ async function cmdAccount(a: Args): Promise<void> {
 	}
 	if (sub === "import") {
 		if (!a.name)
-			return console.error(
+			return usageError(
 				"usage: STELLAR_SECRET_KEY=S… stellar-pay account import --name <name>",
 			);
 		const secret = process.env.STELLAR_SECRET_KEY;
 		if (!secret)
-			return console.error(
+			return usageError(
 				"set STELLAR_SECRET_KEY to the S… secret you want to import, then re-run",
 			);
 		const r = await addAccount(a.name, secret, network, {
@@ -419,14 +443,14 @@ async function cmdAccount(a: Args): Promise<void> {
 	}
 	if (sub === "default") {
 		if (!a.name)
-			return console.error("usage: stellar-pay account default --name <name>");
+			return usageError("usage: stellar-pay account default --name <name>");
 		setDefault(a.name);
 		console.log(`default is now "${a.name}"`);
 		return;
 	}
 	if (sub === "remove" || sub === "rm") {
 		if (!a.name)
-			return console.error("usage: stellar-pay account remove --name <name>");
+			return usageError("usage: stellar-pay account remove --name <name>");
 		removeAccount(a.name);
 		console.log(`removed "${a.name}"`);
 		return;
