@@ -1,0 +1,189 @@
+/**
+ * Offline checks for the per-host spend policy. This is a security control, so
+ * it's exercised directly: a temp policy file is pointed at via env, then
+ * resolveHost/decide are checked against it — no network, no wallet.
+ *
+ * The env var must be set BEFORE ./pay/policy.js is imported (policyPath is
+ * read once at module load), so the import is dynamic and comes after.
+ */
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Offer } from "../pay/offers.js";
+
+const dir = mkdtempSync(join(tmpdir(), "sp-policy-"));
+const file = join(dir, "policy.json");
+process.env.STELLAR_PAY_POLICY = file;
+const { resolveHost, decide } = await import("../pay/policy.js");
+
+const PUBNET_USDC = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
+const usdc = (amount: string): Offer => ({
+	protocol: "x402",
+	network: "stellar:pubnet",
+	asset: PUBNET_USDC,
+	amount, // base units (7dp): "100000" = $0.01
+	payTo: "GABC",
+	feesSponsored: true,
+	expires: null,
+	description: null,
+});
+const write = (p: unknown) => writeFileSync(file, JSON.stringify(p));
+
+let pass = 0,
+	fail = 0;
+const check = (name: string, cond: boolean, detail = "") => {
+	if (cond) {
+		pass++;
+		console.log(`  ✓ ${name}`);
+	} else {
+		fail++;
+		console.log(`  ✗ ${name}  ${detail}`);
+	}
+};
+
+// no file yet is handled by loadPolicy returning null → requested passes through
+writeFileSync(file, "not json");
+{
+	const g = resolveHost("https://api.exa.ai/x", { requested: 0.1 });
+	check(
+		"malformed file → no policy, requested ceiling",
+		g.maxUsd === 0.1 && g.blocked === null,
+		JSON.stringify(g),
+	);
+}
+
+// denylist (default): a host ceiling LOWER than requested wins
+write({
+	version: 1,
+	default: { maxUsdPerCall: 0.05 },
+	hosts: {
+		"api.exa.ai": { maxUsdPerCall: 0.01 },
+		"*.mpprouter.dev": { maxUsdPerCall: 0.2 },
+		"sketchy.example.net": { deny: true },
+	},
+});
+{
+	const g = resolveHost("https://api.exa.ai/search", { requested: 0.1 });
+	check(
+		"host ceiling lower than requested wins",
+		g.maxUsd === 0.01 && !g.blocked,
+	);
+}
+// a host ceiling HIGHER than the caller default raises it (operator's call)
+{
+	const g = resolveHost("https://apiserver.mpprouter.dev/x", {
+		requested: 0.05,
+	});
+	check(
+		"wildcard *.mpprouter.dev raises ceiling to 0.2",
+		g.maxUsd === 0.2 && !g.blocked,
+		JSON.stringify(g),
+	);
+}
+// an EXPLICIT --max-usd can only tighten, never be raised by the policy
+{
+	const g = resolveHost("https://apiserver.mpprouter.dev/x", {
+		requested: 0.03,
+		requestedExplicit: true,
+	});
+	check(
+		"explicit --max-usd tightens below the host ceiling",
+		g.maxUsd === 0.03 && !g.blocked,
+		JSON.stringify(g),
+	);
+}
+// unknown host in denylist mode → payable under the policy default
+{
+	const g = resolveHost("https://new.host.com/x", { requested: 0.1 });
+	check(
+		"denylist: unknown host uses policy default",
+		g.maxUsd === 0.05 && !g.blocked,
+		JSON.stringify(g),
+	);
+}
+// deny wins outright
+{
+	const g = resolveHost("https://sketchy.example.net/x", { requested: 0.1 });
+	check(
+		"deny:true host is blocked",
+		g.blocked?.includes("denied") === true && g.maxUsd === 0,
+		JSON.stringify(g),
+	);
+}
+
+// allowlist mode: only listed hosts are payable
+write({
+	version: 1,
+	mode: "allowlist",
+	hosts: { "api.exa.ai": { maxUsdPerCall: 0.02 } },
+});
+{
+	const listed = resolveHost("https://api.exa.ai/x", { requested: 0.1 });
+	const other = resolveHost("https://api.other.com/x", { requested: 0.1 });
+	check(
+		"allowlist: listed host payable",
+		listed.maxUsd === 0.02 && !listed.blocked,
+		JSON.stringify(listed),
+	);
+	check(
+		"allowlist: unlisted host blocked",
+		other.blocked?.includes("allowlist") === true,
+		JSON.stringify(other),
+	);
+}
+
+// decide(): folds the host gate into the USDC+ceiling rule
+write({
+	version: 1,
+	default: { maxUsdPerCall: 0.05 },
+	hosts: {
+		"cheap.example.com": { maxUsdPerCall: 0.005 },
+		"no.example.com": { deny: true },
+	},
+});
+{
+	const ok = decide(usdc("100000"), {
+		network: "stellar:pubnet",
+		url: "https://any.example.org/x",
+		requested: 0.1,
+	});
+	check("decide: $0.01 USDC under default 0.05 → ok", ok.ok, ok.reason);
+	const overHost = decide(usdc("100000"), {
+		network: "stellar:pubnet",
+		url: "https://cheap.example.com/x",
+		requested: 0.1,
+	});
+	check(
+		"decide: $0.01 over the host's $0.005 ceiling → refused",
+		!overHost.ok,
+		overHost.reason,
+	);
+	const denied = decide(usdc("100000"), {
+		network: "stellar:pubnet",
+		url: "https://no.example.com/x",
+		requested: 0.1,
+	});
+	check(
+		"decide: denied host → refused before ceiling",
+		!denied.ok && denied.reason.includes("denied"),
+		denied.reason,
+	);
+	const notUsdc = decide(
+		{ ...usdc("100000"), asset: "CXNOT" },
+		{
+			network: "stellar:pubnet",
+			url: "https://any.example.org/x",
+			requested: 0.1,
+		},
+	);
+	check(
+		"decide: non-USDC on an allowed host → still refused",
+		!notUsdc.ok,
+		notUsdc.reason,
+	);
+}
+
+console.log(
+	`\n${fail === 0 ? "ALL PASS" : `${fail} FAILED`} — ${pass}/${pass + fail} per-host policy checks`,
+);
+process.exit(fail === 0 ? 0 : 1);

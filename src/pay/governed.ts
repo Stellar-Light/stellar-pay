@@ -53,8 +53,8 @@ const HDR = {
 export function buildGoverned(o: {
 	wallet: Wallet;
 	catalog: Entry[];
-	approve: (offer: Offer) => Promise<boolean>;
-	refusalReason: (offer: Offer) => string;
+	approve: (offer: Offer, url: string) => Promise<boolean>;
+	refusalReason: (offer: Offer, url: string) => string;
 	prefer?: "x402" | "mpp";
 	budgetPerCall: number;
 }): Governed {
@@ -82,7 +82,7 @@ export function buildGoverned(o: {
 			// crafted 402 can't make Headers.set throw and abort the request.
 			headers.set(
 				HDR.refused,
-				o.refusalReason(r.offers[0]).replace(/[^\x20-\x7e]/g, ""),
+				o.refusalReason(r.offers[0], url).replace(/[^\x20-\x7e]/g, ""),
 			);
 		}
 		const body = await r.res.arrayBuffer();

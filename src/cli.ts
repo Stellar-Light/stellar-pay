@@ -39,7 +39,13 @@ import {
 	offerUSD,
 	readOffers,
 } from "./pay/offers.js";
-import { autoApprove, explorer } from "./pay/policy.js";
+import {
+	autoApprove,
+	explorer,
+	loadPolicy,
+	policyPath,
+	resolveHost,
+} from "./pay/policy.js";
 import { BRIDGES, EXCHANGES, onramps, partnerRamps } from "./pay/ramps.js";
 import {
 	addTrustline,
@@ -70,6 +76,7 @@ type Args = {
 	buy: boolean;
 	keychain: boolean;
 	json: boolean;
+	maxUsdSet: boolean;
 	limit?: number;
 };
 
@@ -93,6 +100,7 @@ function parse(argv: string[]): Args {
 		trustline: false,
 		buy: false,
 		keychain: false,
+		maxUsdSet: false,
 	};
 	for (let i = 1; i < argv.length; i++) {
 		const t = argv[i] ?? "";
@@ -110,8 +118,10 @@ function parse(argv: string[]): Args {
 		} else if (t === "--yes" || t === "-y") a.yes = true;
 		else if (t === "--max-usd") {
 			const n = Number(next());
-			if (Number.isFinite(n) && n > 0) a.maxUsd = n;
-			else {
+			if (Number.isFinite(n) && n > 0) {
+				a.maxUsd = n;
+				a.maxUsdSet = true;
+			} else {
 				console.error("--max-usd must be a positive number");
 				process.exit(1);
 			}
@@ -197,10 +207,20 @@ async function cmdRun(a: Args): Promise<void> {
 	await ensureSecretLoaded();
 	const wallet = loadWallet();
 	const { startProxy, proxyEnv } = await import("./pay/proxy.js");
-	const approve = async (o: Offer) => {
-		const line = `pay ${describeOffer(o)} for a request from \`${command}\``;
+	const approve = async (o: Offer, url: string) => {
+		const line = `pay ${describeOffer(o)} for ${url} (via \`${command}\`)`;
+		// The per-host spend policy (deny / allowlist / host ceiling) applies to
+		// every request the wrapped tool makes — each has its own URL.
+		const gate = resolveHost(url, {
+			requested: a.maxUsd,
+			requestedExplicit: a.maxUsdSet,
+		});
+		if (gate.blocked) {
+			console.error(`${line} (refused: ${gate.blocked})`);
+			return false;
+		}
 		if (!a.yes && wallet.network !== "stellar:testnet") return ask(line);
-		const v = autoApprove(o, { network: wallet.network, maxUsd: a.maxUsd });
+		const v = autoApprove(o, { network: wallet.network, maxUsd: gate.maxUsd });
 		console.error(`${line} ${v.ok ? "(approved)" : `(refused: ${v.reason})`}`);
 		return v.ok;
 	};
@@ -604,10 +624,20 @@ async function cmdCurl(a: Args, init: RequestInit): Promise<void> {
 	if (!a.url) throw new Error("curl <url>");
 	await ensureSecretLoaded();
 	const wallet = loadWallet();
-	const approve = async (o: Offer) => {
+	const approve = async (o: Offer, url: string) => {
 		const line = `pay ${describeOffer(o)} for ${a.method} ${a.url}`;
+		// The per-host policy (deny / allowlist / host ceiling) applies on EVERY
+		// path — a human prompt can't override a host the operator denied.
+		const gate = resolveHost(url, {
+			requested: a.maxUsd,
+			requestedExplicit: a.maxUsdSet,
+		});
+		if (gate.blocked) {
+			console.error(`${line}\n  refused: ${gate.blocked}`);
+			return false;
+		}
 		if (!a.yes && wallet.network !== "stellar:testnet") return ask(line);
-		const v = autoApprove(o, { network: wallet.network, maxUsd: a.maxUsd });
+		const v = autoApprove(o, { network: wallet.network, maxUsd: gate.maxUsd });
 		console.error(
 			`${line}${v.ok ? " (approved)" : `\n  refused: ${v.reason}`}`,
 		);
@@ -712,6 +742,60 @@ async function cmdSearch(a: Args): Promise<void> {
 	});
 }
 
+async function cmdPolicy(a: Args): Promise<void> {
+	const { writeFileSync, mkdirSync, existsSync } = await import("node:fs");
+	const { dirname } = await import("node:path");
+	if (a.url === "init") {
+		if (existsSync(policyPath)) {
+			console.error(
+				`policy already exists at ${policyPath} — edit it directly`,
+			);
+			process.exitCode = EXIT.usage;
+			return;
+		}
+		const example = {
+			version: 1,
+			mode: "denylist",
+			default: { maxUsdPerCall: 0.05 },
+			hosts: {
+				"apiserver.mpprouter.dev": { maxUsdPerCall: 0.1 },
+				"*.example.com": { maxUsdPerCall: 0.01, note: "subdomain wildcard" },
+				"sketchy.example.net": { deny: true },
+			},
+		};
+		mkdirSync(dirname(policyPath), { recursive: true });
+		writeFileSync(policyPath, `${JSON.stringify(example, null, 2)}\n`, {
+			mode: 0o600,
+		});
+		console.log(`wrote an example spend policy to ${policyPath}`);
+		console.log(
+			'edit it: set a per-host maxUsdPerCall, deny hosts, or switch mode to "allowlist" to pay only listed hosts.',
+		);
+		return;
+	}
+	const policy = loadPolicy();
+	emit(a, { path: policyPath, active: !!policy, policy }, () => {
+		if (!policy) {
+			console.log(
+				`no spend policy — every host is payable under the built-in ceiling.\ncreate one:  stellar-pay policy init   (${policyPath})`,
+			);
+			return;
+		}
+		console.log(`policy:  ${policyPath}`);
+		console.log(`mode:    ${policy.mode ?? "denylist"}`);
+		console.log(
+			`default: $${policy.default?.maxUsdPerCall ?? "(built-in ceiling)"} per call`,
+		);
+		const hosts = Object.entries(policy.hosts ?? {});
+		if (!hosts.length) console.log("hosts:   (none)");
+		else
+			for (const [h, r] of hosts)
+				console.log(
+					`  ${h.padEnd(32)} ${r.deny ? "DENY" : `$${r.maxUsdPerCall ?? "(default)"}`}`,
+				);
+	});
+}
+
 const HELP = `stellar-pay — pay HTTP 402s in USDC from a Stellar wallet
 
 PAY
@@ -721,6 +805,7 @@ PAY
   verify <url> [-X M] [-d body] [--json]     seller check: is this a correct, Stellar-payable 402?
   search "<task>" [--limit N] [--json]       find live, Stellar-payable APIs for a task
   run [--yes --max-usd N] -- <cmd> …         wrap ANY command behind a proxy that pays its 402s
+  policy [init] [--json]                     show or scaffold the per-host spend policy
 
 WALLET
   whoami | balance [--json]
@@ -756,6 +841,7 @@ const commands: Record<string, (a: Args, init: RequestInit) => Promise<void>> =
 		offers: cmdOffers,
 		curl: cmdCurl,
 		search: cmdSearch,
+		policy: cmdPolicy,
 	};
 
 async function main() {

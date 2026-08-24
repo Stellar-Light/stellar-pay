@@ -127,7 +127,7 @@ const HOP = new Set([
 
 export type ProxyOptions = {
 	wallet: Wallet;
-	approve: (offer: Offer) => Promise<boolean>;
+	approve: (offer: Offer, url: string) => Promise<boolean>;
 	prefer?: "x402" | "mpp";
 	onPaid?: (info: {
 		url: string;

@@ -96,6 +96,28 @@ policy — on mainnet a payment must be USDC, under a per-call ceiling
 (`STELLAR_PAY_MAX_USD_PER_CALL`), and inside a session budget
 (`STELLAR_PAY_SESSION_BUDGET_USD`).
 
+**Per-host spend policy.** Beyond the flat ceiling, an optional policy file
+(`~/.config/stellar-pay/policy.json`, `stellar-pay policy init` to scaffold)
+gives an operator per-host control the flat cap can't — a different ceiling
+per host, an outright **deny**, or **allowlist mode** where only listed hosts
+are payable at all. It applies to every door (CLI `curl`, `run`, and the MCP):
+
+```json
+{
+  "mode": "denylist",
+  "default": { "maxUsdPerCall": 0.05 },
+  "hosts": {
+    "apiserver.mpprouter.dev": { "maxUsdPerCall": 0.10 },
+    "*.trusted-provider.com": { "maxUsdPerCall": 0.50 },
+    "sketchy.example.net": { "deny": true }
+  }
+}
+```
+
+A host rule can raise or lower the ceiling; an explicit `--max-usd` only ever
+tightens it. In `allowlist` mode an autonomous agent can pay **only** the hosts
+you pre-approved — containment the flat cap doesn't give you.
+
 **Spend governance — pay for what's used, not what's asked.** Inside a task,
 [Scrimp](https://github.com/kaankacar/scrimp) (by Kaan Kacar) adds
 outcome-attributed control a budget cap can't match:

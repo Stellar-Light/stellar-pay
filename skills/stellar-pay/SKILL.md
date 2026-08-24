@@ -73,6 +73,12 @@ network (`stellar:pubnet` default). Spend is bounded by
 payment over either is refused, and the refusal names the limit. On mainnet
 only USDC is auto-approved. The session budget resets when the server restarts.
 
+An operator may also install a per-host spend policy
+(`~/.config/stellar-pay/policy.json`): a per-host ceiling, an outright `deny`,
+or `allowlist` mode where only listed hosts are payable. A refusal names the
+policy — if a host is denied or not allowlisted, surface that to the user
+rather than retrying; you cannot override it.
+
 The same loop is scriptable without MCP: `stellar-pay search "<task>" --json`,
 then `stellar-pay curl <url> --yes --max-usd N --json` emits a payment trailer
 (`paid.usd`, `paid.hash`). Exit codes: 0 ok · 2 usage · 3 payment refused · 4

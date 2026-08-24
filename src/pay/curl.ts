@@ -56,7 +56,7 @@ export async function payFetch(
 	init: RequestInit,
 	o: {
 		wallet: Wallet;
-		approve: (offer: Offer) => Promise<boolean>;
+		approve: (offer: Offer, url: string) => Promise<boolean>;
 		prefer?: Protocol;
 		fetch?: typeof globalThis.fetch;
 	},
@@ -78,7 +78,7 @@ export async function payFetch(
 		.map((p) => payable.find((x) => x.protocol === p))
 		.find(Boolean);
 	if (!offer) return { res: first, offers, paid: null, declined: false };
-	if (!(await o.approve(offer)))
+	if (!(await o.approve(offer, url)))
 		return { res: first, offers, paid: null, declined: true };
 
 	// Approval may have waited on a human prompt; give the paying fetch a fresh

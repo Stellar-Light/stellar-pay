@@ -1,9 +1,13 @@
 /**
  * Drives the MCP server over stdio like a client would. Proves the whole
  * governed loop on testnet: all 10 tools are registered, a 402 is paid, the SAME url
- * asked again inside the task is replayed free (Scrimp's duplicate rule), and
- * spend_report shows the saving. Passes only if all of that holds.
+ * asked again inside the task is replayed free (Scrimp's duplicate rule),
+ * spend_report shows the saving, and a per-host policy deny blocks a real
+ * payment. Passes only if all of that holds.
  */
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { setupSandbox } from "./fixture.js";
@@ -18,6 +22,13 @@ const text = (r: unknown) => {
 async function main() {
 	console.log("mcp-test — governed loop over stdio on testnet\n");
 	const sb = await setupSandbox(log);
+	// A per-host policy file the server reads fresh each call — the test rewrites
+	// it mid-run to prove a deny blocks a live payment, then clears it.
+	const policyFile = join(
+		mkdtempSync(join(tmpdir(), "mcp-policy-")),
+		"policy.json",
+	);
+	const sandboxHost = new URL(sb.url).hostname;
 	const transport = new StdioClientTransport({
 		command: "npx",
 		args: ["tsx", "src/cli.ts", "mcp"],
@@ -27,6 +38,7 @@ async function main() {
 			STELLAR_NETWORK: "stellar:testnet",
 			CATALOG_FILE: process.env.CATALOG_FILE ?? ".local/catalog.json",
 			STELLAR_PAY_ALLOW_PRIVATE: "1", // the sandbox charge server is on 127.0.0.1
+			STELLAR_PAY_POLICY: policyFile,
 		} as Record<string, string>,
 		stderr: "pipe",
 	});
@@ -72,6 +84,30 @@ async function main() {
 	log(
 		`get_balance: ${String(b.public_key).slice(0, 6)}… xlm=${b.xlm} others=${(b.others as unknown[])?.length}`,
 	);
+
+	// --- per-host policy: a deny must block a real payment, even on testnet ---
+	writeFileSync(
+		policyFile,
+		JSON.stringify({ version: 1, hosts: { [sandboxHost]: { deny: true } } }),
+	);
+	const denied = text(
+		await client.callTool({
+			name: "curl",
+			arguments: { url: sb.url, method: "GET" },
+		}),
+	);
+	const denyReason = (denied.refused as { reason?: string } | undefined)
+		?.reason;
+	log(
+		`policy deny: status=${denied.status} refused=${denyReason ?? "(not refused!)"}`,
+	);
+	if (denied.paid)
+		throw new Error("a denied host still paid — policy did not block");
+	if (!denyReason?.includes("denied"))
+		throw new Error(
+			`deny should refuse with a reason, got ${JSON.stringify(denied).slice(0, 200)}`,
+		);
+	rmSync(policyFile, { force: true }); // clear the policy; the rest runs unrestricted
 
 	// Bracket a task so Scrimp's rules engage, then pay the SAME url twice.
 	text(
@@ -137,7 +173,7 @@ async function main() {
 		`payer SPAY balance now ${await sb.payerBalance()} (was 100, and only ONE payment despite two calls)`,
 	);
 	console.log(
-		"\nPASS — a 402 was paid through the MCP, the duplicate was replayed free, and spend_report showed the saving.",
+		"\nPASS — a per-host deny blocked a payment, a 402 was paid through the MCP, the duplicate was replayed free, and spend_report showed the saving.",
 	);
 	process.exit(0);
 }

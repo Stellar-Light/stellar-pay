@@ -35,7 +35,7 @@ import {
 	type PreferInit,
 } from "./pay/governed.js";
 import { type Offer, offerUSD } from "./pay/offers.js";
-import { autoApprove, explorer } from "./pay/policy.js";
+import { autoApprove, decide, explorer } from "./pay/policy.js";
 import { history, sendUSDC } from "./pay/send.js";
 import { balances, loadWallet, type Wallet } from "./pay/wallet.js";
 
@@ -164,15 +164,18 @@ const overBudget = (o: Offer): boolean =>
 	sessionSpentUsd + (offerUSD(o) ?? MAX_PER_CALL) > SESSION_BUDGET;
 const approveGate =
 	(w: Wallet) =>
-	async (o: Offer): Promise<boolean> => {
-		if (!autoApprove(o, { network: w.network, maxUsd: MAX_PER_CALL }).ok)
+	async (o: Offer, url: string): Promise<boolean> => {
+		// The per-host policy (deny / allowlist / host ceiling) layers on top of
+		// the MCP's flat MAX_PER_CALL; MAX_PER_CALL is the pre-policy default.
+		if (!decide(o, { network: w.network, url, requested: MAX_PER_CALL }).ok)
 			return false;
 		return w.network === "stellar:testnet" || !overBudget(o);
 	};
-const gateRefusal = (o: Offer) => {
-	const v = autoApprove(o, {
+const gateRefusal = (o: Offer, url: string) => {
+	const v = decide(o, {
 		network: getWallet().network,
-		maxUsd: MAX_PER_CALL,
+		url,
+		requested: MAX_PER_CALL,
 	});
 	if (!v.ok) return v.reason;
 	return `would exceed the session budget ($${(SESSION_BUDGET - sessionSpentUsd).toFixed(4)} of $${SESSION_BUDGET} left)`;
@@ -201,7 +204,7 @@ function getGoverned(): Promise<Governed> {
 			wallet: w,
 			catalog,
 			approve: approveGate(w),
-			refusalReason: (offer) => gateRefusal(offer),
+			refusalReason: (offer, url) => gateRefusal(offer, url),
 			budgetPerCall: MAX_PER_CALL,
 		});
 		return governed;
