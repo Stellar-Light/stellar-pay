@@ -22,6 +22,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
+import { daysAlive, loadCatalog, searchCatalog } from "./catalog.js";
 import { payFetch } from "./pay/curl.js";
 import {
 	addAccount,
@@ -68,7 +69,14 @@ type Args = {
 	trustline: boolean;
 	buy: boolean;
 	keychain: boolean;
+	json: boolean;
+	limit?: number;
 };
+
+// Documented, stable exit codes so a wrapper script can branch without parsing
+// text (gh/clig.dev convention). 0 ok · 2 usage · 3 payment refused/declined ·
+// 4 no wallet · 1 generic runtime failure.
+const EXIT = { ok: 0, runtime: 1, usage: 2, refused: 3, noWallet: 4 } as const;
 
 function parse(argv: string[]): Args {
 	const a: Args = {
@@ -76,8 +84,11 @@ function parse(argv: string[]): Args {
 		method: "GET",
 		headers: {},
 		yes: false,
-		maxUsd: 0.1,
+		// Same env var the MCP reads, so an operator's ceiling binds BOTH doors;
+		// --max-usd still overrides per-invocation. Falls back to $0.10.
+		maxUsd: envCeiling(),
 		include: false,
+		json: false,
 		sandbox: false,
 		trustline: false,
 		buy: false,
@@ -113,9 +124,26 @@ function parse(argv: string[]): Args {
 		else if (t === "--trustline") a.trustline = true;
 		else if (t === "--buy") a.buy = true;
 		else if (t === "--keychain") a.keychain = true;
-		else if (!t.startsWith("-") && !a.url) a.url = t;
+		else if (t === "--json") a.json = true;
+		else if (t === "--limit") {
+			const n = Number(next());
+			if (Number.isInteger(n) && n > 0) a.limit = n;
+		} else if (!t.startsWith("-") && !a.url) a.url = t;
 	}
 	return a;
+}
+
+/** The per-call ceiling, from STELLAR_PAY_MAX_USD_PER_CALL (shared with the MCP)
+ * or $0.10. A malformed value falls back rather than becoming NaN (fail-open). */
+function envCeiling(): number {
+	const n = Number(process.env.STELLAR_PAY_MAX_USD_PER_CALL);
+	return Number.isFinite(n) && n > 0 ? n : 0.1;
+}
+
+/** Emit a result as JSON (agent mode) or hand off to a human-prose printer. */
+function emit(a: Args, obj: unknown, human: () => void): void {
+	if (a.json) console.log(JSON.stringify(obj, null, 1));
+	else human();
 }
 
 function openBrowser(url: string): void {
@@ -251,23 +279,25 @@ async function cmdAgent(a: Args): Promise<void> {
 	return;
 }
 
-async function cmdWhoami(): Promise<void> {
+async function cmdWhoami(a: Args): Promise<void> {
 	await ensureSecretLoaded();
 	const w = loadWallet();
-	console.log(`${w.publicKey}  ${w.network}`);
-	return;
+	emit(a, { public_key: w.publicKey, network: w.network }, () =>
+		console.log(`${w.publicKey}  ${w.network}`),
+	);
 }
 
-async function cmdBalance(): Promise<void> {
+async function cmdBalance(a: Args): Promise<void> {
 	await ensureSecretLoaded();
 	const w = loadWallet();
 	const b = await balances(w.publicKey, w.network);
-	if (!b.funded)
-		return console.log(`${w.publicKey} is not funded on ${w.network}`);
-	console.log(
-		`USDC ${b.usdc ?? "(no trustline)"}  XLM ${b.xlm}${b.others.length ? `  +${b.others.length} other asset(s)` : ""}`,
-	);
-	return;
+	emit(a, { public_key: w.publicKey, network: w.network, ...b }, () => {
+		if (!b.funded)
+			return console.log(`${w.publicKey} is not funded on ${w.network}`);
+		console.log(
+			`USDC ${b.usdc ?? "(no trustline)"}  XLM ${b.xlm}${b.others.length ? `  +${b.others.length} other asset(s)` : ""}`,
+		);
+	});
 }
 
 async function cmdSetup(a: Args): Promise<void> {
@@ -380,37 +410,46 @@ async function cmdTopup(a: Args): Promise<void> {
 	// the way `pay topup` does. The address is pre-filled where the provider
 	// supports it; otherwise it's printed to paste.
 	if (a.buy && t.network === "stellar:pubnet") {
-		const all = onramps(t.address, a.amount);
-		const primary = all[0];
-		if (!primary) {
-			console.error("no on-ramp configured");
-			process.exitCode = 1;
+		// Opens a browser and blocks up to 5 minutes — only sane on a TTY. In a
+		// pipe (an agent), fall through to the printed address + ramp URLs.
+		if (!process.stdout.isTTY) {
+			console.error(
+				"topup --buy opens a browser and waits; not available non-interactively. Showing the address and on-ramps instead.",
+			);
+		} else {
+			const all = onramps(t.address, a.amount);
+			const primary = all[0];
+			if (!primary) {
+				console.error("no on-ramp configured");
+				process.exitCode = 1;
+				return;
+			}
+			console.log(`address:   ${t.address}   (paste this if the page asks)`);
+			console.log(
+				`opening ${primary.name} on-ramp in your browser: ${primary.url}`,
+			);
+			openBrowser(primary.url);
+			const others = all.slice(1);
+			console.log(
+				`other on-ramps: ${others.map((o) => `${o.name} ${o.url}`).join("  ·  ")}`,
+			);
+			if (!t.hasUsdcTrustline)
+				console.log(
+					"note: add a USDC trustline (`stellar-pay setup --trustline`) so the delivery can land",
+				);
+			console.error("\nwaiting for USDC to arrive (Ctrl-C to stop)…");
+			const got = await pollFunding(t.address, t.network, {
+				onTick: (ms) =>
+					process.stderr.write(`\r  ${Math.round(ms / 1000)}s…   `),
+			});
+			process.stderr.write("\r");
+			console.log(
+				got
+					? `✓ received ${got.received} USDC — balance now ${got.balance}`
+					: "▲ nothing arrived in 5m — re-run `stellar-pay topup --buy` to keep watching",
+			);
 			return;
 		}
-		console.log(`address:   ${t.address}   (paste this if the page asks)`);
-		console.log(
-			`opening ${primary.name} on-ramp in your browser: ${primary.url}`,
-		);
-		openBrowser(primary.url);
-		const others = all.slice(1);
-		console.log(
-			`other on-ramps: ${others.map((o) => `${o.name} ${o.url}`).join("  ·  ")}`,
-		);
-		if (!t.hasUsdcTrustline)
-			console.log(
-				"note: add a USDC trustline (`stellar-pay setup --trustline`) so the delivery can land",
-			);
-		console.error("\nwaiting for USDC to arrive (Ctrl-C to stop)…");
-		const got = await pollFunding(t.address, t.network, {
-			onTick: (ms) => process.stderr.write(`\r  ${Math.round(ms / 1000)}s…   `),
-		});
-		process.stderr.write("\r");
-		console.log(
-			got
-				? `✓ received ${got.received} USDC — balance now ${got.balance}`
-				: "▲ nothing arrived in 5m — re-run `stellar-pay topup --buy` to keep watching",
-		);
-		return;
 	}
 	console.log(`address:   ${t.address}`);
 	console.log(`network:   ${t.network}`);
@@ -491,57 +530,74 @@ async function cmdSend(a: Args): Promise<void> {
 	return;
 }
 
-async function cmdHistory(): Promise<void> {
+async function cmdHistory(a: Args): Promise<void> {
 	await ensureSecretLoaded();
 	const w = loadWallet();
-	const rows = await history(w.publicKey, w.network, 20);
-	if (!rows.length) return console.log("no payments yet");
-	for (const h of rows)
-		console.log(
-			`${h.at.slice(0, 10)}  ${h.direction === "sent" ? "→" : "←"} ${h.amount.padStart(12)} ${h.asset.padEnd(5)} ${h.direction === "sent" ? "to" : "from"} ${h.counterparty.slice(0, 6)}…${h.counterparty.slice(-4)}`,
-		);
-	return;
+	const rows = await history(w.publicKey, w.network, a.limit ?? 20);
+	emit(a, { network: w.network, payments: rows }, () => {
+		if (!rows.length) return console.log("no payments yet");
+		for (const h of rows)
+			console.log(
+				`${h.at.slice(0, 10)}  ${h.direction === "sent" ? "→" : "←"} ${h.amount.padStart(12)} ${h.asset.padEnd(5)} ${h.direction === "sent" ? "to" : "from"} ${h.counterparty.slice(0, 6)}…${h.counterparty.slice(-4)}`,
+			);
+	});
 }
 
 async function cmdVerify(a: Args): Promise<void> {
 	if (!a.url) {
-		console.error("usage: stellar-pay verify <url> [-X METHOD] [-d body]");
-		process.exitCode = 1;
+		console.error(
+			"usage: stellar-pay verify <url> [-X METHOD] [-d body] [--json]",
+		);
+		process.exitCode = EXIT.usage;
 		return;
 	}
 	if (!URL.canParse(a.url) || !/^https?:$/.test(new URL(a.url).protocol)) {
 		console.error(`"${a.url}" is not a valid http(s) URL`);
-		process.exitCode = 1;
+		process.exitCode = EXIT.usage;
 		return;
 	}
 	const v = await verifyEndpoint(a.url, a.method, a.body);
-	for (const c of v.checks)
+	emit(a, v, () => {
+		for (const c of v.checks)
+			console.log(
+				`  ${c.ok ? "\u2713" : "\u2717"} ${c.label.padEnd(24)} ${c.detail}`,
+			);
 		console.log(
-			`  ${c.ok ? "\u2713" : "\u2717"} ${c.label.padEnd(24)} ${c.detail}`,
+			v.payable
+				? "\n\u2713 PAYABLE — this endpoint answers a correct Stellar 402; the probe will index it and a stellar-pay client can pay it."
+				: "\n\u2717 NOT PAYABLE from a Stellar wallet yet — fix the \u2717 items above.",
 		);
-	console.log(
-		v.payable
-			? "\n\u2713 PAYABLE — this endpoint answers a correct Stellar 402; the probe will index it and a stellar-pay client can pay it."
-			: "\n\u2717 NOT PAYABLE from a Stellar wallet yet — fix the \u2717 items above.",
-	);
-	if (!v.payable) process.exitCode = 1;
-	return;
+	});
+	// A failed check is a legitimate result, not a usage error — distinct code.
+	if (!v.payable) process.exitCode = EXIT.refused;
 }
 
 async function cmdOffers(a: Args, init: RequestInit): Promise<void> {
-	if (!a.url) throw new Error("offers <url>");
+	if (!a.url) {
+		console.error(
+			"usage: stellar-pay offers <url> [-X METHOD] [-d body] [--json]",
+		);
+		process.exitCode = EXIT.usage;
+		return;
+	}
 	const r = await fetch(a.url, init);
-	if (r.status !== 402) return console.log(`${r.status} — no payment asked`);
-	const offers = readOffers(r.headers, await r.text());
-	if (!offers.length)
-		return console.log(
-			"402 but no readable offer (neither x402 accepts nor an MPP challenge)",
-		);
-	for (const o of offers)
-		console.log(
-			`${describeOffer(o)}${o.description ? ` — ${o.description}` : ""}`,
-		);
-	return;
+	const offers = r.status === 402 ? readOffers(r.headers, await r.text()) : [];
+	emit(
+		a,
+		{ status: r.status, payment_required: r.status === 402, offers },
+		() => {
+			if (r.status !== 402)
+				return console.log(`${r.status} — no payment asked`);
+			if (!offers.length)
+				return console.log(
+					"402 but no readable offer (neither x402 accepts nor an MPP challenge)",
+				);
+			for (const o of offers)
+				console.log(
+					`${describeOffer(o)}${o.description ? ` — ${o.description}` : ""}`,
+				);
+		},
+	);
 }
 
 async function cmdCurl(a: Args, init: RequestInit): Promise<void> {
@@ -562,30 +618,125 @@ async function cmdCurl(a: Args, init: RequestInit): Promise<void> {
 		approve,
 		prefer: a.prefer,
 	});
+	const bodyText = await r.res.text();
+	const usd = r.paid ? offerUSD(r.paid.offer) : null;
+	const paid = r.paid
+		? {
+				protocol: r.paid.protocol,
+				usd,
+				amount: r.paid.offer.amount,
+				asset: r.paid.offer.asset,
+				hash: r.paid.hash,
+				explorer: r.paid.hash ? explorer(wallet.network, r.paid.hash) : null,
+			}
+		: null;
+
+	if (r.declined) process.exitCode = EXIT.refused;
+	else if (r.res.status === 402 && !r.paid) process.exitCode = EXIT.refused;
+	else if (!r.res.ok) process.exitCode = EXIT.runtime;
+
+	// --json: ONE machine object carries body + payment trailer. Without it the
+	// body stays raw on stdout (pipe into jq) and payment facts go to stderr.
+	if (a.json) {
+		console.log(
+			JSON.stringify(
+				{
+					status: r.res.status,
+					content_type: r.res.headers.get("content-type"),
+					body: bodyText,
+					paid,
+					declined: r.declined,
+					not_payable:
+						r.res.status === 402 && !r.paid
+							? r.offers.map((o) => o.network)
+							: null,
+				},
+				null,
+				1,
+			),
+		);
+		return;
+	}
+
 	if (a.include) {
 		console.log(`HTTP ${r.res.status}`);
 		for (const [k, v] of r.res.headers) console.log(`${k}: ${v}`);
 		console.log();
 	}
-	const bodyText = await r.res.text();
 	process.stdout.write(bodyText.endsWith("\n") ? bodyText : `${bodyText}\n`);
-	if (r.paid) {
-		const usd = offerUSD(r.paid.offer);
+	if (paid) {
 		console.error(
-			`\npaid ${usd != null ? `$${usd.toFixed(4)} USDC` : `${r.paid.offer.amount} base units`} via ${r.paid.protocol.toUpperCase()}${r.paid.hash ? ` · ${explorer(wallet.network, r.paid.hash)}` : ""}`,
+			`\npaid ${usd != null ? `$${usd.toFixed(4)} USDC` : `${r.paid?.offer.amount} base units`} via ${paid.protocol.toUpperCase()}${paid.hash ? ` · ${paid.explorer}` : ""}`,
 		);
 	} else if (r.declined) {
-		console.error("\nnot paid (declined)");
-		process.exitCode = 2;
+		console.error(
+			"\nnot paid (declined) — pass --yes --max-usd N to authorize",
+		);
 	} else if (r.res.status === 402) {
 		console.error(
 			`\n402 not payable from a ${wallet.network} wallet; it accepts: ${r.offers.map((o) => o.network).join(", ") || "nothing readable"}`,
 		);
-		process.exitCode = 1;
 	}
-	if (!r.res.ok && !process.exitCode) process.exitCode = 1;
-	return;
 }
+
+async function cmdSearch(a: Args): Promise<void> {
+	const query = a.url; // first positional is the query
+	if (!query) {
+		console.error('usage: stellar-pay search "<task>" [--limit N] [--json]');
+		process.exitCode = EXIT.usage;
+		return;
+	}
+	const hits = searchCatalog(await loadCatalog(), query, a.limit ?? 5);
+	const rows = hits.map((h) => ({
+		url: h.url,
+		host: h.host,
+		title: h.title,
+		price_usd: h.priceUSD,
+		protocol: h.protocol,
+		method: h.method ?? "GET or POST",
+		alive_days: daysAlive(h),
+		last_verified: h.lastCheckedAt,
+	}));
+	emit(a, { query, candidates: rows }, () => {
+		if (!rows.length)
+			return console.log(
+				`no live match for "${query}" — try \`stellar-pay search\` with broader words, or a different task`,
+			);
+		for (const r of rows)
+			console.log(
+				`${r.price_usd != null ? `$${r.price_usd.toFixed(4)}`.padStart(9) : "     ?  "}  ${r.protocol.padEnd(5)} ${r.url}${r.title ? `  — ${r.title}` : ""}`,
+			);
+		console.log(
+			`\npay one:  stellar-pay curl <url> --yes --max-usd ${a.maxUsd}`,
+		);
+	});
+}
+
+const HELP = `stellar-pay — pay HTTP 402s in USDC from a Stellar wallet
+
+PAY
+  curl <url> [-X M] [-H "K: V"] [-d body] [--yes] [--max-usd N] [--x402|--mpp] [-i] [--json]
+                                 make a request; if it 402s, read the offer, pay, retry
+  offers <url> [-X M] [-d body] [--json]     what a 402 asks — pays nothing
+  verify <url> [-X M] [-d body] [--json]     seller check: is this a correct, Stellar-payable 402?
+  search "<task>" [--limit N] [--json]       find live, Stellar-payable APIs for a task
+  run [--yes --max-usd N] -- <cmd> …         wrap ANY command behind a proxy that pays its 402s
+
+WALLET
+  whoami | balance [--json]
+  setup [--save <name>] [--keychain] [--trustline]
+  account <list|import|default|remove|export> [--name N]
+  topup [--buy] [--amount N]                 fund the wallet (QR + on-ramps; --buy opens a card ramp)
+  send <G…address> --amount <USDC> [--yes]   send USDC to an address
+  history [--limit N] [--json]
+
+AGENTS
+  mcp                                        serve the MCP on stdio
+  claude | codex [args…]                     launch the agent with the MCP mounted
+
+GLOBAL   --sandbox (testnet)   --json (machine output)   -h/--help
+ENV      STELLAR_SECRET_KEY, STELLAR_NETWORK, STELLAR_PAY_PASSPHRASE, STELLAR_PAY_MAX_USD_PER_CALL
+EXIT     0 ok · 2 usage · 3 payment refused/declined · 4 no wallet · 1 runtime error`;
 
 const commands: Record<string, (a: Args, init: RequestInit) => Promise<void>> =
 	{
@@ -604,6 +755,7 @@ const commands: Record<string, (a: Args, init: RequestInit) => Promise<void>> =
 		verify: cmdVerify,
 		offers: cmdOffers,
 		curl: cmdCurl,
+		search: cmdSearch,
 	};
 
 async function main() {
@@ -620,17 +772,32 @@ async function main() {
 		signal: AbortSignal.timeout(60_000),
 	};
 
+	// `--help`/`-h` anywhere, `help`, or no command → the full reference on
+	// stdout, exit 0. An UNKNOWN command → error on stderr, exit 2 (so a typo in
+	// a scripted pipeline fails loudly instead of silently succeeding).
+	if (
+		a.cmd === "help" ||
+		process.argv.slice(2).some((t) => t === "-h" || t === "--help")
+	) {
+		console.log(HELP);
+		return;
+	}
 	const handler = commands[a.cmd];
 	if (!handler) {
-		console.log(
-			"stellar-pay  curl <url> | offers <url> | balance | whoami   (--yes --max-usd N --x402|--mpp -i --sandbox)",
-		);
+		console.error(`unknown command "${a.cmd}"\n`);
+		console.error(HELP);
+		process.exitCode = EXIT.usage;
 		return;
 	}
 	await handler(a, init);
 }
 
 main().catch((e) => {
-	console.error(`error: ${(e as Error).message}`);
-	process.exit(1);
+	const msg = (e as Error).message ?? String(e);
+	console.error(`error: ${msg}`);
+	// A missing wallet is a distinct, recoverable condition (set a key), not a
+	// generic crash — give agents a code they can branch on.
+	process.exit(
+		/no wallet|STELLAR_SECRET_KEY/i.test(msg) ? EXIT.noWallet : EXIT.runtime,
+	);
 });

@@ -65,10 +65,13 @@ token, its CA key lives only in memory, and it dies with the command.
 
 ## 🤖 For agents: MCP, Claude Code, Raven
 
+Mount the MCP into an agent:
+
 ```sh
 stellar-pay claude            # Claude Code with stellar-pay mounted
 stellar-pay codex             # Codex with stellar-pay mounted
-stellar-pay mcp               # stdio server for Claude Desktop, Cursor, or your own client
+claude mcp add stellar-pay -- stellar-pay mcp   # or register it yourself
+stellar-pay mcp               # raw stdio server for Cursor, goose, or your own client
 ```
 
 Tools: `search_catalog`, `get_catalog_entry`, `list_catalog`, `curl`,
@@ -77,9 +80,21 @@ Tools: `search_catalog`, `get_catalog_entry`, `list_catalog`, `curl`,
 model call) and `get_history`. The agent-facing playbook is
 [`skills/stellar-pay/SKILL.md`](skills/stellar-pay/SKILL.md).
 
-**Who approves what:** the CLI asks a human before it signs; the MCP signs
-only within a spending policy — on mainnet a payment must be USDC, under a
-per-call ceiling, and inside a session budget.
+Or script the whole loop without MCP — every command takes `--json` and
+returns a documented exit code (`0` ok · `2` usage · `3` payment refused · `4`
+no wallet · `1` runtime):
+
+```sh
+stellar-pay search "web search for a query" --json      # discover live endpoints
+stellar-pay curl <url> --yes --max-usd 0.02 --json      # pay; body + {paid:{usd,hash}} trailer
+stellar-pay balance --json                              # {usdc, xlm, …}
+```
+
+**Who approves what:** the CLI asks a human before it signs (or `--yes
+--max-usd N` to authorize unattended); the MCP signs only within a spending
+policy — on mainnet a payment must be USDC, under a per-call ceiling
+(`STELLAR_PAY_MAX_USD_PER_CALL`), and inside a session budget
+(`STELLAR_PAY_SESSION_BUDGET_USD`).
 
 **Spend governance — pay for what's used, not what's asked.** Inside a task,
 [Scrimp](https://github.com/kaankacar/scrimp) (by Kaan Kacar) adds
