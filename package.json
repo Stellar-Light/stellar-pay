@@ -30,7 +30,8 @@
 		"build": "tsc -p tsconfig.build.json",
 		"prepublishOnly": "npm run build && npm run typecheck",
 		"test:hostile": "tsx src/sandbox/hostile-test.ts",
-		"test:redirect": "tsx src/sandbox/redirect-test.ts"
+		"test:redirect": "tsx src/sandbox/redirect-test.ts",
+		"test:pin": "tsx src/sandbox/pin-test.ts"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.3.2",

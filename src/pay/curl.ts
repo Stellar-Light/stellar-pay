@@ -43,6 +43,53 @@ function toBaseUnits7(human: string): bigint {
 	return BigInt(whole) * 10_000_000n + BigInt(frac.slice(0, 7).padEnd(7, "0"));
 }
 
+/**
+ * The bait-and-switch pin, as one testable rule.
+ *
+ * payFetch approves what its OWN probe saw, but the payment libraries re-fetch
+ * the 402 and sign THAT challenge. This compares the two. It lives here, alone
+ * and exported, because an audit found the inline versions had no tests at all
+ * — they could be deleted and the whole suite stayed green.
+ *
+ * Returns null when the live challenge matches the approved offer, or the
+ * reason it does not.
+ */
+export function pinMismatch(
+	offer: Offer,
+	live: {
+		amount?: string | null;
+		currency?: string | null;
+		recipient?: string | null;
+		network?: string | null;
+	},
+): string | null {
+	if (
+		live.network != null &&
+		offer.network !== "stellar" &&
+		live.network !== offer.network
+	)
+		return `the endpoint switched network after approval (approved ${offer.network}, asked to sign ${live.network})`;
+	if (
+		offer.amount != null &&
+		live.amount != null &&
+		toBaseUnits7(live.amount) !== BigInt(offer.amount)
+	)
+		return "the endpoint's payment requirement changed after approval — refusing to sign a different amount";
+	if (
+		offer.asset != null &&
+		live.currency != null &&
+		live.currency !== offer.asset
+	)
+		return "the endpoint's payment requirement changed after approval — refusing to sign a different asset";
+	if (
+		offer.payTo != null &&
+		live.recipient != null &&
+		live.recipient !== offer.payTo
+	)
+		return "the endpoint's payment requirement changed after approval — refusing to sign to a different recipient";
+	return null;
+}
+
 const isRedirect = (n: number) =>
 	n === 301 || n === 302 || n === 303 || n === 307 || n === 308;
 
@@ -137,11 +184,10 @@ export async function payFetch(
 						request?: { methodDetails?: { network?: string } };
 					}
 				).request;
-				const net = req?.methodDetails?.network;
-				if (net != null && offer.network !== "stellar" && net !== offer.network)
-					throw new Error(
-						`the endpoint switched network after approval (approved ${offer.network}, asked to sign ${net}) — refusing`,
-					);
+				const bad = pinMismatch(offer, {
+					network: req?.methodDetails?.network,
+				});
+				if (bad) throw new Error(`${bad} — refusing`);
 				return helpers.createCredential();
 			},
 			methods: [
@@ -154,15 +200,12 @@ export async function payFetch(
 						// the approved offer (amount, currency, recipient) and abort by
 						// throwing on any mismatch, mirroring the x402 selector below.
 						if (e.type === "challenge") {
-							const ok =
-								(offer.amount == null ||
-									toBaseUnits7(e.amount) === BigInt(offer.amount)) &&
-								(offer.asset == null || e.currency === offer.asset) &&
-								(offer.payTo == null || e.recipient === offer.payTo);
-							if (!ok)
-								throw new Error(
-									"the endpoint's payment requirement changed after approval — refusing to sign a different amount",
-								);
+							const bad = pinMismatch(offer, {
+								amount: e.amount,
+								currency: e.currency,
+								recipient: e.recipient,
+							});
+							if (bad) throw new Error(bad);
 						}
 						if (e.type === "paid") hash = e.hash;
 					},

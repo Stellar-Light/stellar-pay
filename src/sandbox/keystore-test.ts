@@ -22,6 +22,7 @@ const {
 	setDefault,
 	removeAccount,
 	ensureSecretLoaded,
+	keystorePath,
 } = await import("../pay/keystore.js");
 
 const log = (m: string) => console.log(`  ${m}`);
@@ -78,8 +79,28 @@ async function main() {
 	if (after.accounts.length !== 1 || after.default !== "main")
 		throw new Error("remove/default-reassign wrong");
 
+	// The listing hiding the secret proves nothing about the FILE. Plaintext on
+	// disk at mode 0644 used to still print "PASS — no secret in listings".
+	{
+		const { readFileSync, statSync } = await import("node:fs");
+		const raw = readFileSync(keystorePath, "utf8");
+		const leaked = raw.includes(a.secret()) || raw.includes(b.secret());
+		console.log(
+			leaked
+				? "  ✗ THE SECRET IS IN PLAINTEXT ON DISK"
+				: "  ✓ the secret is not present in the keystore file",
+		);
+		const mode = statSync(keystorePath).mode & 0o777;
+		console.log(
+			mode === 0o600
+				? "  ✓ keystore file is owner-only (0600)"
+				: `  ✗ keystore file mode is ${mode.toString(8)}, expected 600`,
+		);
+		if (leaked || mode !== 0o600) process.exit(1);
+	}
+
 	console.log(
-		"\nPASS — encrypted round-trip, no secret in listings, wrong-pass rejected, env populated, default reassigned.",
+		"\nPASS — encrypted round-trip, secret absent from the listing AND from the file on disk (0600), wrong-pass rejected, env populated, default reassigned.",
 	);
 	process.exit(0);
 }

@@ -18,7 +18,8 @@ on this repository (preferred), or email the maintainers.
 
 **Practices:** keys live in the OS keychain or an AES-256-GCM keystore, never
 plaintext; the wallet secret is stripped from wrapped commands' environments;
-every spend passes one shared approval gate; full-history secret scanning runs
-in CI. `vendor/` is third-party code — see `vendor/NOTICE.md`.
+every spend passes one shared approval gate; full-history secret scanning
+(gitleaks) and the offline proof suite run in CI on every push and pull
+request. `vendor/` is third-party code — see `vendor/NOTICE.md`.
 
 We aim to acknowledge reports within 72 hours.
