@@ -9,7 +9,6 @@
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
-import { open } from "./store.js";
 
 const run = promisify(execFile);
 
@@ -57,6 +56,10 @@ export function toEntry(r: Record<string, unknown>): Entry {
 }
 
 export async function fromMongo(): Promise<Entry[]> {
+	// Imported lazily: the Mongo driver is only needed by the probe/export jobs,
+	// so a library consumer or a CLI user reading the catalog snapshot never
+	// loads it (and need not install it).
+	const { open } = await import("./store.js");
 	const { col, close } = await open();
 	try {
 		return (await col.find({}).toArray()).map((r) =>

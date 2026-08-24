@@ -184,8 +184,34 @@ Alpha. From source:
 ```sh
 git clone https://github.com/Stellar-Light/stellar-pay && cd stellar-pay
 npm install     # .npmrc sets legacy-peer-deps: @x402/stellar and @stellar/mpp pin different stellar-sdk majors; both run on 16
+npm run build   # compile to dist/ (the CLI runs from source via tsx without this)
 npm link        # puts `stellar-pay` on your PATH (or use `npm run pay -- <args>`)
 ```
+
+## 📦 Use it as a library
+
+The same package is the CLI, the MCP server, and an importable library — so a
+tool that wants the 402 loop *inside* it doesn't have to shell out:
+
+```ts
+import { payFetch, loadWallet, decide } from "stellar-pay";
+
+const wallet = loadWallet();
+const { res, paid } = await payFetch(url, { method: "POST", body }, {
+  wallet,
+  // your approval rule — or reuse ours, per-host policy file included
+  approve: async (offer, url) =>
+    decide(offer, { network: wallet.network, url, requested: 0.05 }).ok,
+});
+console.log(res.status, paid?.hash);
+```
+
+Also exported: `readOffers` / `offerUSD` (parse a 402), `startProxy` +
+`proxyEnv` (wrap a child process), `verifyEndpoint` (seller check),
+`loadCatalog` / `searchCatalog`, `buildGoverned` (spend governance), and
+`buildServer` (mount the MCP in your own host). Full TypeScript types ship
+with it; the Mongo indexer is a dev-only dependency, so installing the
+library doesn't pull it.
 
 ## Quick start
 
