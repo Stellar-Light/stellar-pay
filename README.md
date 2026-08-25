@@ -243,6 +243,63 @@ and on mainnet lists live fiat on-ramps — MoneyGram cash→USDC and more,
 pulled from Stellar Light's partner directory; `topup --buy` opens a card
 on-ramp pre-filled and waits for the USDC to land.
 
+## Using stellar-pay
+
+Everything the buyer side does, in one place.
+
+| | |
+|---|---|
+| **[Pass-through commands](#-pay-for-any-api)** | `curl`, and `run -- <anything>` to wrap a tool you didn't write — same request shape, 402s handled |
+| **[Top-up account](#-wallet)** | `topup` — SEP-7 QR, live fiat on-ramps, `--buy` opens a card ramp and waits for the funds |
+| **[Manage accounts](#-wallet)** | `setup --save`, `account list / import / default / remove / export`, `send`, `history` |
+| **[Find things to pay for](#-a-catalog-thats-evidence-not-a-listing)** | `search "<task>" --json` over a catalog that is re-probed daily, not a registry listing |
+| **[Spend policy](#-for-agents-mcp-claude-code-raven)** | per-host ceilings, deny, allowlist — `stellar-pay policy init` |
+| **[Agents](#-for-agents-mcp-claude-code-raven)** | `mcp`, `claude`, `codex`, `goose` |
+
+```sh
+stellar-pay --help            # every command, flags and exit codes
+stellar-pay <command> --json  # machine output on all of them
+```
+
+**Not built:** recurring **subscriptions / payment delegations** (pay.sh has
+them). Every payment here is per-request and separately approved. MPP session
+mode — one deposit, many off-chain vouchers — is the piece that would make
+subscriptions natural, and it is not built either.
+
+## Building with stellar-pay
+
+The other side: making **your own** API answer a Stellar 402 so clients like
+this one can pay it.
+
+**1 — Check what you serve.** `verify` is the neutral validator, the same one
+our probe uses, so it is the honest second opinion on your own endpoint:
+
+```sh
+stellar-pay verify https://your-api.example/paid -X POST -d '{}'
+```
+
+It checks the things that actually break payment: that you answer 402, that
+the challenge parses, that it names a Stellar network, that the asset is the
+USDC SAC (not the string `"USDC"`), that a recipient and amount are present,
+and whether you sponsor fees. Each check passes or fails with the reason.
+
+**2 — Serve the 402.** We do not ship a paywall gateway — on Stellar that
+layer is SDF's own. Gate your route with
+[`@stellar/mpp`](https://www.npmjs.com/package/@stellar/mpp) (charge mode) or
+[`@x402/stellar`](https://www.npmjs.com/package/@x402/stellar) (the `exact`
+scheme).
+
+**3 — Copy a working seller.** `sandbox-server/` in this repo is a real,
+deployed MPP seller in about 100 lines — the one behind
+[the sandbox](https://stellar-pay-sandbox.fly.dev/). It shows the parts that
+are easy to get wrong: sponsoring fees so the buyer needs no XLM, pricing in a
+SAC rather than an asset code, and a challenge store that must be shared if you
+run more than one instance.
+
+**4 — Get discovered.** Anything that answers a live Stellar 402 is picked up
+by the daily probe and appears in `search` for every agent using this client —
+no registration, no listing fee. Liveness is the only membership test.
+
 ## Install
 
 Alpha. From source:
