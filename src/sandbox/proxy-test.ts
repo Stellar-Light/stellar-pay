@@ -5,6 +5,7 @@
  * saw the 402; the proxy paid it. Also confirms the local CA is generated.
  */
 import { request as httpRequest } from "node:http";
+import { connect as netConnect } from "node:net";
 import { URL } from "node:url";
 import { startProxy } from "../pay/proxy.js";
 import type { Wallet } from "../pay/wallet.js";
@@ -148,6 +149,42 @@ async function main() {
 		throw new Error(`expected 407 without auth, got ${noAuth}`);
 	log("request without the per-run token refused with 407 ✓");
 
+	// Leg 4 — the CONNECT tunnel is the HTTPS/MITM boundary and had NO test:
+	// a tunnel opened without the per-run token would hand any local process a
+	// full intercepting egress proxy backed by the wallet.
+	const connectStatus = (withAuth: boolean) =>
+		new Promise<string>((resolve, reject) => {
+			const sock = netConnect(proxy.port, "127.0.0.1", () => {
+				const auth = withAuth
+					? `Proxy-Authorization: Basic ${Buffer.from(`stellar-pay:${proxy.token}`).toString("base64")}\r\n`
+					: "";
+				sock.write(
+					`CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n${auth}\r\n`,
+				);
+			});
+			sock.once("data", (d) => {
+				sock.destroy();
+				resolve(d.toString("utf8").split("\r\n")[0] ?? "");
+			});
+			sock.on("error", reject);
+			setTimeout(() => {
+				sock.destroy();
+				resolve("(no response)");
+			}, 5000);
+		});
+
+	const connNoAuth = await connectStatus(false);
+	if (!/407/.test(connNoAuth))
+		throw new Error(
+			`CONNECT without the token should be 407, got: ${connNoAuth}`,
+		);
+	log("CONNECT without the per-run token refused with 407 ✓");
+
+	const connAuth = await connectStatus(true);
+	if (!/200/.test(connAuth))
+		throw new Error(`CONNECT with the token should be 200, got: ${connAuth}`);
+	log("CONNECT with the token establishes the tunnel ✓");
+
 	await proxy.close();
 	sb.close();
 
@@ -159,7 +196,7 @@ async function main() {
 		throw new Error("the proxy returned 200 but reported no payment");
 	log(`payer balance now ${await sb.payerBalance()} (was 100)`);
 	console.log(
-		"\nPASS — paid 402 → 200 through the proxy, gzip returned as plaintext (no stale encoding headers), and the per-run token gate holds.",
+		"\nPASS — paid 402 → 200 through the proxy, gzip returned as plaintext (no stale encoding headers), and the per-run token gate holds on BOTH the plain-HTTP and CONNECT paths.",
 	);
 	process.exit(0);
 }

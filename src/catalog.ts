@@ -4,7 +4,8 @@
  *
  * Three sources, first that works: the shared Mongo when DATABASE_URI is set
  * (CI, or a developer who has it), else the `catalog` branch of this repo
- * through the user's own `gh` auth (no local secret at all), else a file.
+ * over plain HTTPS from the public catalog branch (no auth, no tooling),
+ * falling back to the user's own `gh` if that fails, else a file.
  */
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
@@ -82,6 +83,20 @@ export async function fromMongo(): Promise<Entry[]> {
 }
 
 export async function fromCatalogBranch(): Promise<Entry[]> {
+	// Plain HTTPS first: the repo is public, so the snapshot is a public feed
+	// that needs no auth and no tooling. The README says exactly that; it used
+	// to shell out to an AUTHENTICATED `gh` instead, which meant the claim was
+	// false for anyone without the CLI logged in.
+	const raw = `https://raw.githubusercontent.com/${CATALOG_REPO}/${CATALOG_BRANCH}/catalog.json`;
+	try {
+		const r = await fetch(raw, { signal: AbortSignal.timeout(30_000) });
+		if (r.ok)
+			return ((await r.json()) as Record<string, unknown>[]).map(toEntry);
+	} catch {
+		// fall through to gh — useful if the repo is ever private again
+	}
+	// Fallback for a private repo or a rate-limited network: the user's own
+	// gh auth, no secret of ours involved.
 	const { stdout } = await run(
 		"gh",
 		[

@@ -178,8 +178,16 @@ method that produced the challenge, the networks it actually named, and how
 long it has been alive. (48 hours, not 24, so a single missed daily probe is
 not an outage. The one deliberate exception is our own testnet sandbox, marked
 `curated`, so newcomers have something to pay.) About **390 endpoints** qualify
-today across the x402 Bazaar and mpp-router. If it's in the catalog, your
-wallet can pay it right now; the live 402 is still the authority on price.
+today across the x402 Bazaar and mpp-router.
+
+Being in the catalog means it **answered a Stellar 402 at the last probe** —
+that is strictly better than a registry listing, and still short of a
+guarantee. Roughly **8% of live rows fail a strict check** (`stellar-pay
+verify <url>` is the same validator our probe uses, and it is the honest
+second opinion): a host can rotate its price, change asset, or go down between
+probes. The live 402 is always the authority — `curl` re-reads it and pins the
+payment to what you approved, so a stale row costs you a refusal, never a
+wrong payment.
 
 Using the catalog needs no secret — it's a public feed anyone can pull:
 
@@ -187,8 +195,9 @@ Using the catalog needs no secret — it's a public feed anyone can pull:
 https://raw.githubusercontent.com/Stellar-Light/stellar-pay/catalog/catalog.json
 ```
 
-The daily job publishes the snapshot to the `catalog` branch; the client reads
-the same file. Aggregators and other agents are welcome to ingest it — every
+The daily job publishes the snapshot to the `catalog` branch, and the client
+fetches that exact URL over plain HTTPS — no token, no `gh`, no account.
+(It falls back to your own `gh` auth only if the direct fetch fails.) Aggregators and other agents are welcome to ingest it — every
 row carries its evidence (price, protocol, method, `lastCheckedAt`, days
 alive). Only the probe job (`npm run probe`, `probe:execute`, `export` — CI,
 daily) touches the database.

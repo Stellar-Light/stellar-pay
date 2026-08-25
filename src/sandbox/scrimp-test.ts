@@ -131,6 +131,36 @@ check(
 	`${rep.wasteRate}`,
 );
 
+// 6. IDENTITY — the dedupe key must not confuse DIFFERENT requests. A key
+// regression would silently serve the answer you paid for on url A when you
+// asked for url B: not just a lost payment, the WRONG DATA. The audit found
+// no negative case for this at all.
+c.beginTask("t6", { budget: 1 });
+const r1 = await c.fetch("https://api.x.com/quote/AAPL");
+const a1body = (await r1.json()) as { url: string };
+const r2 = await c.fetch("https://api.x.com/quote/TSLA"); // different resource
+const b1body = (await r2.json()) as { url: string };
+check(
+	"a DIFFERENT url is not served from the first one's purchase",
+	S(r2) === null && b1body.url.endsWith("TSLA"),
+	`suppression=${S(r2)} body=${JSON.stringify(b1body)}`,
+);
+check(
+	"the first response still carried its own url",
+	a1body.url.endsWith("AAPL"),
+	JSON.stringify(a1body),
+);
+// method must be part of identity too — a POST is not the GET you paid for
+const g = await c.fetch("https://api.x.com/thing");
+await g.json();
+const p2 = await c.fetch("https://api.x.com/thing", { method: "POST" });
+check(
+	"a POST is not served from a GET's purchase",
+	S(p2) === null,
+	`suppression=${S(p2)}`,
+);
+c.endTask("t6", { succeeded: true });
+
 console.log(
 	`\n${fail === 0 ? "ALL PASS" : fail + " FAILED"} — ${pass}/${pass + fail} scrimp behaviors verified`,
 );
