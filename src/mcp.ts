@@ -172,9 +172,28 @@ const approveGate =
 	async (o: Offer, url: string): Promise<boolean> => {
 		// The per-host policy (deny / allowlist / host ceiling) layers on top of
 		// the MCP's flat MAX_PER_CALL; MAX_PER_CALL is the pre-policy default.
-		if (!decide(o, { network: w.network, url, requested: MAX_PER_CALL }).ok)
-			return false;
-		return w.network === "stellar:testnet" || !overBudget(o);
+		const v = decide(o, { network: w.network, url, requested: MAX_PER_CALL });
+		if (!v.ok) {
+			// A refusal on network mismatch or a denied host is an operator
+			// decision (or an attack) — never escalate those to a person, who
+			// would just be trained to click yes. A ceiling or budget refusal is
+			// a judgement call, so offer it to the human driving the agent.
+			if (!/exceeds the ceiling/i.test(v.reason)) return false;
+			return (
+				(await askHuman(o, url, `Policy refused it: ${v.reason}`)) === true
+			);
+		}
+		if (w.network === "stellar:testnet") return true;
+		if (overBudget(o))
+			return (
+				(await askHuman(
+					o,
+					url,
+					`This would exceed the session budget ($${(SESSION_BUDGET - sessionSpentUsd - sessionReservedUsd).toFixed(4)} of $${SESSION_BUDGET} left).`,
+				)) === true
+			);
+		sessionReservedUsd += offerUSD(o) ?? MAX_PER_CALL;
+		return true;
 	};
 const gateRefusal = (o: Offer, url: string) => {
 	const v = decide(o, {
@@ -215,6 +234,62 @@ function getGoverned(): Promise<Governed> {
 		return governed;
 	})();
 	return governedP;
+}
+
+/** Set once buildServer() runs, so the spend gate can ask the human. */
+const mcp: McpServer | null = null;
+
+const describeOfferSafe = (o: Offer) => {
+	const usd = offerUSD(o);
+	return usd != null
+		? `$${usd.toFixed(4)} USDC`
+		: `${o.amount ?? "?"} of ${o.asset ?? "?"}`;
+};
+
+/**
+ * Ask the HUMAN to approve a payment, through the MCP client's own UI.
+ *
+ * This is the headless answer to "who approves what". The CLI can prompt a
+ * terminal; an agent running in Claude Desktop, Cursor or a cloud runner has no
+ * TTY, so a payment the policy refuses would just fail silently. MCP
+ * elicitation puts the decision in front of the person driving the agent.
+ *
+ * Returns null when the client does not support elicitation — callers keep the
+ * refusal in that case. A client that advertises support but errors returns
+ * false. Nothing here can turn a refusal into a silent yes.
+ */
+async function askHuman(
+	offer: Offer,
+	url: string,
+	why: string,
+): Promise<boolean | null> {
+	if (!mcp?.server.getClientCapabilities()?.elicitation) return null;
+	let host = "the endpoint";
+	try {
+		host = new URL(url).host;
+	} catch {
+		/* keep the placeholder */
+	}
+	try {
+		const r = await mcp.server.elicitInput({
+			message: `Approve a payment of ${describeOfferSafe(offer)} to ${host}?\n\n${why}\n\nThis moves real funds on ${offer.network}.`,
+			requestedSchema: {
+				type: "object",
+				properties: {
+					approve: {
+						type: "boolean",
+						title: "Approve this payment",
+						description: "Nothing is signed unless you approve.",
+					},
+				},
+				required: ["approve"],
+			},
+		});
+		if (r.action !== "accept") return false;
+		return (r.content as { approve?: boolean } | undefined)?.approve === true;
+	} catch {
+		return false;
+	}
 }
 
 export function buildServer() {

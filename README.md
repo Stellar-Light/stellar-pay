@@ -121,7 +121,7 @@ stellar-pay balance --json                              # {usdc, xlm, …}
 --max-usd N` to authorize unattended); the MCP signs only within a spending
 policy — on mainnet a payment must be USDC, under a per-call ceiling
 (`STELLAR_PAY_MAX_USD_PER_CALL`), and inside a session budget
-(`STELLAR_PAY_SESSION_BUDGET_USD`).
+(`STELLAR_PAY_SESSION_BUDGET_USD`). When the MCP client supports **elicitation**, a payment the policy refuses *on price* is put to the person driving the agent rather than failing silently; a denied host or a network mismatch is never escalated, because those are operator decisions or attacks, not judgement calls.
 
 **Per-host spend policy.** Beyond the flat ceiling, an optional policy file
 (`~/.config/stellar-pay/policy.json`, `stellar-pay policy init` to scaffold)
@@ -213,10 +213,18 @@ funded. `run` and the agent launchers strip it from the commands they spawn.
 
 **Compared with [pay.sh](https://github.com/solana-foundation/pay):** they
 generate straight into the OS keystore and gate every mainnet signature behind
-Touch ID / Windows Hello. We match the storage, but **not** the per-signature
-biometric prompt — on mainnet the CLI asks in the terminal and the MCP relies
-on the spend policy. A native biometric gate is on the roadmap, not shipped;
-treat that as a real gap, not a footnote.
+Touch ID / Windows Hello. We now match both halves on macOS — `--keychain`
+pre-trusts no application, so unlocking the wallet requires **Touch ID** (or
+the login password). For headless agents, where no biometric exists, a payment
+the policy refuses on price is escalated to the human through **MCP
+elicitation** — the same fallback pay.sh uses. Windows Hello and a Linux
+polkit equivalent are genuinely not built.
+
+Passkeys would be stronger still — the key would never leave the secure
+enclave, and Soroban verifies secp256r1 natively via
+[passkey-kit](https://github.com/stellar/passkey-kit). It is deliberately not
+here: passkey signing needs WebAuthn, i.e. a browser and a human touching a
+sensor, which a headless CLI paying 402s unattended does not have.
 
 `topup` shows a SEP-7 QR any mobile Stellar wallet scans (Lobstr, Freighter),
 and on mainnet lists live fiat on-ramps — MoneyGram cash→USDC and more,

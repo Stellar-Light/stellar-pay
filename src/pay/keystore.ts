@@ -91,6 +91,14 @@ function keychainSet(name: string, secret: string): void {
 			KC_ACCOUNT,
 			"-s",
 			kcService(name),
+			// -T "" means NO application is pre-trusted to read this item, so
+			// macOS demands user authorization on every read — Touch ID where the
+			// machine has it, the login password otherwise. That is the
+			// per-signature presence gate; without it the keychain is only
+			// storage, and any process running as this user could read the seed
+			// silently.
+			"-T",
+			"",
 			// -U MUST precede -w: `-w` consumes the NEXT argv token as the
 			// password, so ["-w","-U"] silently stored the literal string "-U".
 			"-U",
