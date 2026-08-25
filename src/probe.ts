@@ -70,20 +70,9 @@ async function jsonOrNull<T>(
  * money before risking a cent; the probe re-checks it like any other row, so
  * a broken sandbox shows up as a dead endpoint rather than a stale promise.
  */
-const SANDBOX: Candidate[] = [
-	{
-		url: "https://stellar-pay-sandbox.fly.dev/data",
-		title: "stellar-pay sandbox — paid call (testnet)",
-		source: "curated",
-		sourceUrl: "https://stellar-pay-sandbox.fly.dev/",
-	},
-	{
-		url: "https://stellar-pay-sandbox.fly.dev/quote",
-		title: "stellar-pay sandbox — price quote (testnet)",
-		source: "curated",
-		sourceUrl: "https://stellar-pay-sandbox.fly.dev/",
-	},
-];
+// Our hosted sandbox is offline (hosting lapsed), so seeding it would publish
+// two rows the probe immediately marks dead. Restore this list when it is back.
+const SANDBOX: Candidate[] = [];
 
 /** Coinbase's Bazaar — every resource, kept when any accept names Stellar. */
 async function fromBazaar(): Promise<Candidate[]> {
