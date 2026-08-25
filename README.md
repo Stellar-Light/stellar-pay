@@ -247,19 +247,163 @@ on-ramp pre-filled and waits for the USDC to land.
 
 ## Using stellar-pay
 
-Everything the buyer side does, in one place.
+Each row links to its own section below — full flags, not a pointer back to the
+pitch.
 
 | | |
 |---|---|
-| **[Pass-through commands](#-pay-for-any-api)** | `curl`, and `run -- <anything>` to wrap a tool you didn't write — same request shape, 402s handled |
-| **[Top-up account](#-wallet)** | `topup` — SEP-7 QR, live fiat on-ramps, `--buy` opens a card ramp and waits for the funds |
-| **[Manage accounts](#-wallet)** | `setup --save`, `account list / import / default / remove / export`, `--account <name>` to run one command as another wallet, `send` (to an address **or a saved name**, `--amount max`), `history` |
-| **[Find things to pay for](#-a-catalog-thats-evidence-not-a-listing)** | `search "<task>" --json` over a catalog that is re-probed daily, not a registry listing |
-| **[Spend policy](#-for-agents-mcp-claude-code-raven)** | per-host ceilings, deny, allowlist — `stellar-pay policy init` |
-| **[Agents](#-for-agents-mcp-claude-code-raven)** | `mcp`, `claude`, `codex`, `goose` |
+| **[Pass-through commands](#pass-through-commands)** | `curl`, `offers`, and `run -- <anything>` to wrap a tool you didn't write |
+| **[Top-up account](#top-up-account)** | `topup` — SEP-7 QR, card on-ramps, exchange and bridge routes |
+| **[Manage accounts](#manage-accounts)** | `setup --save`, the `account` family, `--account`, `send`, `history` |
+| **[Find things to pay for](#find-things-to-pay-for)** | `search` over a daily-probed catalog |
+| **[Spend policy](#spend-policy)** | per-host ceilings, deny, allowlist |
+| **[Agents](#agents)** | `mcp`, `claude`, `codex`, `goose` |
+| **[Exit codes & JSON](#exit-codes--json)** | what to branch on in a script |
+
+### Pass-through commands
+
+Same request shape as `curl`, with 402s handled.
 
 ```sh
-stellar-pay --help            # every command, flags and exit codes
+stellar-pay offers <url>                     # read the challenge, pay NOTHING
+stellar-pay curl   <url>                     # ask, pay, return the body
+stellar-pay curl   <url> --yes --max-usd 0.05  # unattended, under a ceiling
+stellar-pay run -- <command> [args…]         # wrap a tool that isn't ours
+```
+
+| flag | meaning |
+|---|---|
+| `-X <METHOD>` | HTTP method (`-d` implies POST) |
+| `-H "K: V"` | extra header, repeatable |
+| `-d <body>` | request body; JSON gets `content-type: application/json` |
+| `-i` | include response headers in the output |
+| `--yes` | don't prompt — approve anything the policy allows |
+| `--max-usd <N>` | ceiling for this call; can only *tighten* a host rule |
+| `--x402` / `--mpp` | force a protocol instead of letting us pick |
+| `--sandbox` | testnet |
+| `--json` | machine output |
+| `--account <name>` | run this one command as another saved wallet |
+
+`run` starts a localhost proxy, points the child at it via `HTTPS_PROXY` plus a
+CA only that child trusts, and pays any 402 it hits. The child never sees your
+key — `run` strips `STELLAR_SECRET_KEY` and `STELLAR_PAY_PASSPHRASE` from its
+environment.
+
+### Top-up account
+
+```sh
+stellar-pay topup                    # address + SEP-7 QR + every route, then waits
+stellar-pay topup --buy              # open a card on-ramp pre-filled, then wait
+stellar-pay topup --buy --amount 25  # ask the ramp for a specific amount
+```
+
+`topup` prints your address and a **SEP-7 QR** that any mobile Stellar wallet
+scans (Lobstr, Freighter), then watches the account and tells you when funds
+land. On mainnet it also lists the real routes, and these are exactly what
+ships — no others are implied:
+
+| route | who | note |
+|---|---|---|
+| **Card / PayPal** | **MoonPay** | the same provider pay.sh uses; your address is pre-filled in the URL |
+| | **Lobstr** | Stellar-native card purchase of USDC on Stellar |
+| | **Rozo** | checkout that can settle USDC on Stellar |
+| **Exchange withdraw** | **Coinbase**, **Kraken** | buy USDC, then **withdraw on the Stellar network**. Coinbase's *embedded* Onramp does **not** deliver to Stellar (EVM + Solana only), so it is buy-then-withdraw, not one click |
+| **Bridge** | **Rozo Intent Bridge** | for USDC/USDT you already hold on Base, Solana or Ethereum |
+| **Fiat anchors** | MoneyGram cash→USDC, FinClusive, regional anchors | pulled live from Stellar Light's partner directory, so the list tracks reality rather than this file |
+
+Point `--buy` somewhere else with `STELLAR_PAY_ONRAMP_URL` — `{ADDRESS}` and
+`{AMOUNT}` are substituted.
+
+### Manage accounts
+
+```sh
+stellar-pay setup --save main             # new wallet, sealed locally
+stellar-pay setup --save main --keychain  # …in the OS secret store instead
+stellar-pay setup --sandbox --save dev    # testnet: funded + trustline, one command
+stellar-pay setup --trustline             # add the USDC trustline to an existing wallet
+
+stellar-pay account list                  # saved wallets — never the secret
+stellar-pay account import --name work    # import STELLAR_SECRET_KEY under a name
+stellar-pay account default --name work   # change the default
+stellar-pay account remove --name old
+stellar-pay account export --name work    # print the secret (stderr, after auth)
+
+stellar-pay whoami                        # address + network
+stellar-pay balance                       # USDC + XLM
+stellar-pay history                       # recent payments, any asset
+```
+
+**Run one command as another wallet** without changing the default:
+
+```sh
+stellar-pay --account work curl <url> --yes
+```
+
+**Send:**
+
+```sh
+stellar-pay send <G…address> --amount 1.5   # to an address
+stellar-pay send work --amount 1.5          # to a SAVED ACCOUNT NAME
+stellar-pay send <G…address> --amount max   # everything, minus the XLM reserve
+```
+
+Where the key actually lives, in resolution order: `--account <name>` → an
+explicit `STELLAR_SECRET_KEY` → the default keystore account. See
+[Wallets](#-wallet) for the storage backends and the Touch ID gate.
+
+### Find things to pay for
+
+```sh
+stellar-pay search "web search for a query" --json
+stellar-pay search "price data" --limit 3
+```
+
+Searches the [catalog](#-a-catalog-thats-evidence-not-a-listing) — endpoints
+that answered a real Stellar 402 **within the last day**, re-probed daily. Rows
+carry price, protocol, method and how long they've been alive, so you can pick
+on evidence rather than on a registry listing. The same data is a
+[public feed](#-a-catalog-thats-evidence-not-a-listing) you can pull directly.
+
+### Spend policy
+
+```sh
+stellar-pay policy        # show the active policy and where it lives
+stellar-pay policy init   # scaffold one
+```
+
+Per-host ceilings, outright `deny`, or `allowlist` mode where only listed hosts
+are payable at all. It applies to **every** door — CLI `curl`, `run`, and the
+MCP — and a malformed file or an unrecognised `mode` **refuses to pay** rather
+than silently reverting to no policy. Full example under
+[Per-host spend policy](#-for-agents-mcp-claude-code-raven).
+
+### Agents
+
+```sh
+stellar-pay mcp       # stdio MCP server for any client
+stellar-pay claude    # Claude Code, tools already mounted
+stellar-pay codex     # Codex
+stellar-pay goose     # goose (--with-extension)
+```
+
+Ten tools, the spend policy, and — where the client supports elicitation — a
+human approval prompt when the policy refuses on price. Details and the tool
+list: [For agents](#-for-agents-mcp-claude-code-raven).
+
+### Exit codes & JSON
+
+Every command takes `--json`. Branch on the code, not on the text:
+
+| code | meaning |
+|---|---|
+| `0` | ok |
+| `1` | runtime failure |
+| `2` | usage error (bad flag, unknown command, missing argument) |
+| `3` | payment refused or declined |
+| `4` | no wallet available |
+
+```sh
+stellar-pay --help            # every command and flag
 stellar-pay <command> --json  # machine output on all of them
 ```
 
