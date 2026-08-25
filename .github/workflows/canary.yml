@@ -1,0 +1,39 @@
+# Watch the DEPLOYED sandbox, not the repo.
+#
+# Twice now a live claim broke silently: a demo sat 7 days stale behind a green
+# pipeline, and this sandbox went down when a hosting trial lapsed — while the
+# README's headline command still pointed at it. Nothing was watching the thing
+# users actually hit. This does.
+name: canary
+on:
+  schedule: [{ cron: "37 * * * *" }]
+  workflow_dispatch:
+permissions: { contents: read, issues: write }
+
+jobs:
+  sandbox:
+    runs-on: ubuntu-latest
+    steps:
+      - name: The sandbox must be up and serving 402s
+        id: probe
+        run: |
+          H=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 https://stellar-pay-sandbox.fly.dev/health || echo 000)
+          D=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 https://stellar-pay-sandbox.fly.dev/data   || echo 000)
+          echo "health=$H data=$D"
+          echo "health=$H" >> "$GITHUB_OUTPUT"
+          echo "data=$D"   >> "$GITHUB_OUTPUT"
+          # /data MUST answer 402 — a 200 would mean it stopped charging.
+          [ "$H" = "200" ] && [ "$D" = "402" ]
+
+      - name: Open an issue when the demo is down
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          H: ${{ steps.probe.outputs.health }}
+          D: ${{ steps.probe.outputs.data }}
+        run: |
+          TITLE="canary: sandbox is down (health $H, /data $D)"
+          if gh issue list --state open --search "canary: sandbox is down in:title" --json number --jq 'length' | grep -qv '^0$'; then
+            echo "already reported"; exit 0
+          fi
+          gh issue create --title "$TITLE" --body "$(printf 'The hosted sandbox is not answering as expected.\n\n- /health: **%s** (want 200)\n- /data: **%s** (want 402)\n\nThe README headline command depends on this endpoint. Past causes: the fly.io hosting lapsed, or the machine was stopped.\n\n_opened automatically by the canary workflow._' "$H" "$D")"

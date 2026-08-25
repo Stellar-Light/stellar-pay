@@ -17,29 +17,25 @@ curl -X POST https://apiserver.mpprouter.dev/v1/services/exa/search -d '{"query"
 stellar-pay curl -X POST https://apiserver.mpprouter.dev/v1/services/exa/search -d '{"query":"stellar"}'
 ```
 
-**Try it now — read a live 402, pay nothing, install nothing:**
+**Try it now — a real on-chain payment, with play money:**
+
+```sh
+export STELLAR_PAY_PASSPHRASE=sandbox   # testnet play money; any value works
+npx stellar-pay setup --sandbox --save sandbox                 # funded testnet wallet, sealed locally
+npx stellar-pay curl https://stellar-pay-sandbox.fly.dev/data --yes --sandbox
+```
+
+That settles on Stellar testnet for real — the output carries the
+stellar.expert link. No real funds, no signup, nothing installed. The
+[sandbox](https://stellar-pay-sandbox.fly.dev/) is our own paid endpoint,
+priced in native XLM so a friendbot-funded wallet can pay it immediately (no
+trustline, no faucet) with the seller sponsoring fees.
+
+Or read a live MAINNET 402 without a wallet, spending nothing:
 
 ```sh
 npx stellar-pay offers https://apiserver.mpprouter.dev/v1/services/exa/search -X POST -d '{"query":"stellar"}'
 ```
-
-That prints the real terms a mainnet endpoint is asking for — price, asset,
-recipient, and whether fees are sponsored — without a wallet and without
-spending anything.
-
-**To actually pay something**, make a funded testnet wallet and pay a testnet
-endpoint:
-
-```sh
-export STELLAR_PAY_PASSPHRASE=sandbox   # testnet play money; any value works
-npx stellar-pay setup --sandbox --save sandbox   # funded wallet + trustline, one command
-npx stellar-pay curl <a stellar:testnet 402 url> --yes --sandbox
-```
-
-> **Note:** our own hosted sandbox endpoint is offline while we sort out
-> hosting, so the command above needs a testnet 402 of your own — the
-> `sandbox-server/` directory in this repo runs one locally in about 100 lines
-> (`SELLER_SECRET_KEY=S… npx tsx sandbox-server/server.ts`).
 
 Or look without paying anything, on mainnet:
 
@@ -446,8 +442,8 @@ layer is SDF's own. Gate your route with
 scheme).
 
 **3 — Copy a working seller.** `sandbox-server/` in this repo is a real,
-MPP seller in about 100 lines — run it yourself with a friendbot-funded
-`SELLER_SECRET_KEY`. It shows the parts that
+deployed MPP seller in about 100 lines — the one behind
+[the sandbox](https://stellar-pay-sandbox.fly.dev/). It shows the parts that
 are easy to get wrong: sponsoring fees so the buyer needs no XLM, pricing in a
 SAC rather than an asset code, and a challenge store that must be shared if you
 run more than one instance.
