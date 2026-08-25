@@ -21,7 +21,13 @@ import {
 	randomBytes,
 	scryptSync,
 } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -70,15 +76,104 @@ function write(s: Store): void {
 // ID prompt needs a native Security-framework binding (roadmap); this gives
 // keychain storage and its access controls today, with no plaintext on disk.
 
-const keychainAvailable = process.platform === "darwin";
 const KC_ACCOUNT = "stellar-pay";
 const kcService = (name: string) => `stellar-pay:${name}`;
 
+/**
+ * Which OS secret store this machine can use.
+ *
+ *  - darwin  : Keychain via `security`, written with NO pre-trusted app, so
+ *              every read demands Touch ID / the login password.
+ *  - linux   : libsecret via `secret-tool` (GNOME Keyring, KWallet via the
+ *              Secret Service API) — unlocked with the login keyring.
+ *  - win32   : DPAPI via PowerShell. The ciphertext is bound to this Windows
+ *              user account and machine, so the stored blob is useless if the
+ *              file is copied elsewhere. (Credential Manager cannot read a
+ *              secret back out from the CLI, so DPAPI is the usable primitive.)
+ */
+function osStore(): "security" | "secret-tool" | "dpapi" | null {
+	if (process.platform === "darwin") return "security";
+	if (process.platform === "win32") return "dpapi";
+	if (process.platform === "linux") {
+		try {
+			execFileSync("secret-tool", ["--version"], { stdio: "ignore" });
+			return "secret-tool";
+		} catch {
+			return null; // libsecret not installed
+		}
+	}
+	return null;
+}
+
+const keychainAvailable = osStore() !== null;
+
+/** Human name for the backend, for errors and `account list`. */
+export function osStoreName(): string {
+	switch (osStore()) {
+		case "security":
+			return "macOS Keychain";
+		case "secret-tool":
+			return "libsecret (GNOME Keyring / KWallet)";
+		case "dpapi":
+			return "Windows DPAPI";
+		default:
+			return "none";
+	}
+}
+
+/** PowerShell one-liner runner for the Windows path. */
+function pwsh(script: string, input?: string): string {
+	const exe = process.env.SystemRoot
+		? `${process.env.SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
+		: "powershell.exe";
+	return execFileSync(
+		exe,
+		["-NoProfile", "-NonInteractive", "-Command", script],
+		{ input, encoding: "utf8" },
+	).trim();
+}
+
+/** Where the DPAPI ciphertext lives (the secret itself never lands here). */
+const dpapiFile = (name: string) =>
+	join(dirname(FILE), `dpapi-${name.replace(/[^a-zA-Z0-9_-]/g, "_")}.bin`);
+
 function keychainSet(name: string, secret: string): void {
-	if (!keychainAvailable)
+	const store = osStore();
+	if (!store)
 		throw new Error(
-			"the keychain backend is macOS-only; use the encrypted file (STELLAR_PAY_PASSPHRASE)",
+			process.platform === "linux"
+				? "no OS secret store found: install libsecret (`apt install libsecret-tools`) or use the encrypted file (STELLAR_PAY_PASSPHRASE)"
+				: "no OS secret store on this platform; use the encrypted file (STELLAR_PAY_PASSPHRASE)",
 		);
+	if (store === "secret-tool") {
+		// Password on STDIN, never argv.
+		execFileSync(
+			"secret-tool",
+			[
+				"store",
+				"--label",
+				`stellar-pay ${name}`,
+				"service",
+				kcService(name),
+				"account",
+				KC_ACCOUNT,
+			],
+			{ input: secret, stdio: ["pipe", "ignore", "ignore"] },
+		);
+		return;
+	}
+	if (store === "dpapi") {
+		// DPAPI-encrypt under THIS user; only the ciphertext touches disk.
+		mkdirSync(dirname(FILE), { recursive: true });
+		const out = dpapiFile(name).replace(/\\/g, "\\\\");
+		pwsh(
+			`$s = [Console]::In.ReadToEnd().Trim(); ` +
+				`$sec = ConvertTo-SecureString $s -AsPlainText -Force; ` +
+				`ConvertFrom-SecureString $sec | Set-Content -Path "${out}" -Encoding ascii`,
+			secret,
+		);
+		return;
+	}
 	// The secret goes in on STDIN, never as an argument: an argv value is
 	// visible in the process table to everything on the machine and can surface
 	// in error text. `security` prompts twice ("password data" / "retype"), so
@@ -108,6 +203,21 @@ function keychainSet(name: string, secret: string): void {
 	);
 }
 function keychainGet(name: string): string {
+	const store = osStore();
+	if (store === "secret-tool")
+		return execFileSync(
+			"secret-tool",
+			["lookup", "service", kcService(name), "account", KC_ACCOUNT],
+			{ encoding: "utf8" },
+		).trim();
+	if (store === "dpapi") {
+		const f = dpapiFile(name).replace(/\\/g, "\\\\");
+		return pwsh(
+			`$e = Get-Content -Path "${f}" -Raw; ` +
+				`$sec = ConvertTo-SecureString $e; ` +
+				`[Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))`,
+		);
+	}
 	return execFileSync(
 		"security",
 		["find-generic-password", "-a", KC_ACCOUNT, "-s", kcService(name), "-w"],
@@ -115,6 +225,27 @@ function keychainGet(name: string): string {
 	).trim();
 }
 function keychainDelete(name: string): void {
+	const store = osStore();
+	if (store === "secret-tool") {
+		try {
+			execFileSync(
+				"secret-tool",
+				["clear", "service", kcService(name), "account", KC_ACCOUNT],
+				{ stdio: "ignore" },
+			);
+		} catch {
+			// already gone
+		}
+		return;
+	}
+	if (store === "dpapi") {
+		try {
+			rmSync(dpapiFile(name), { force: true });
+		} catch {
+			// already gone
+		}
+		return;
+	}
 	try {
 		execFileSync(
 			"security",
