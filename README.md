@@ -208,7 +208,9 @@ daily) touches the database.
 stellar-pay setup --save main                 # new wallet, sealed in an encrypted local keystore
 stellar-pay topup                             # get USDC in: QR + address + live on-ramps; waits for the deposit
 stellar-pay balance                           # USDC + XLM at a glance
-stellar-pay send <G...address> --amount 1.5   # send USDC (confirms first)
+stellar-pay send <G...address|name> --amount 1.5   # send USDC (confirms first); --amount max drains
+stellar-pay account export --name main backup.json # 0600 backup; import restores it
+stellar-pay balance --account work                 # run ONE command as another wallet
 stellar-pay history                           # recent payments to/from the wallet
 ```
 
@@ -251,7 +253,7 @@ Everything the buyer side does, in one place.
 |---|---|
 | **[Pass-through commands](#-pay-for-any-api)** | `curl`, and `run -- <anything>` to wrap a tool you didn't write — same request shape, 402s handled |
 | **[Top-up account](#-wallet)** | `topup` — SEP-7 QR, live fiat on-ramps, `--buy` opens a card ramp and waits for the funds |
-| **[Manage accounts](#-wallet)** | `setup --save`, `account list / import / default / remove / export`, `send`, `history` |
+| **[Manage accounts](#-wallet)** | `setup --save`, `account list / import / default / remove / export`, `--account <name>` to run one command as another wallet, `send` (to an address **or a saved name**, `--amount max`), `history` |
 | **[Find things to pay for](#-a-catalog-thats-evidence-not-a-listing)** | `search "<task>" --json` over a catalog that is re-probed daily, not a registry listing |
 | **[Spend policy](#-for-agents-mcp-claude-code-raven)** | per-host ceilings, deny, allowlist — `stellar-pay policy init` |
 | **[Agents](#-for-agents-mcp-claude-code-raven)** | `mcp`, `claude`, `codex`, `goose` |

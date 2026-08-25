@@ -6,10 +6,11 @@
  *   verify <url> [-X M] [-d body]          seller check: is this a correct, Stellar-payable 402?
  *   balance | whoami
  *   setup [--trustline]                    new wallet (testnet: funded + trustline), or add trustline to STELLAR_SECRET_KEY
- *   send <G...address> --amount <USDC> [--yes]   send USDC to an address
+ *   send <G...address|name> --amount <USDC|max> [--yes]   send USDC
  *   history                                recent payments (any asset) to/from the wallet
  *   topup [--buy] [--amount N]             fund this wallet: --buy opens an on-ramp + waits; else QR + address + ramps
- *   account <list|import|default|remove|export> [--name N]   manage saved wallets (encrypted file or --keychain)
+ *   account <list|import|default|remove|export> [--name N] [<file>]  manage saved wallets
+ *   --account <name>                       run ONE command as that wallet
  *   setup --save <name> [--keychain]       new wallet sealed in the encrypted file, or (macOS) the Keychain
  *   run [--yes --max-usd N] -- <cmd>…      wrap ANY command behind a proxy that pays its 402s
  *   mcp                                    serve the MCP on stdio
@@ -17,7 +18,7 @@
  * Wallet: STELLAR_SECRET_KEY, network: STELLAR_NETWORK (default stellar:pubnet).
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -25,6 +26,7 @@ import { fileURLToPath } from "node:url";
 import { daysAlive, loadCatalog, searchCatalog } from "./catalog.js";
 import { payFetch } from "./pay/curl.js";
 import {
+	accountPublicKey,
 	addAccount,
 	ensureSecretLoaded,
 	exportSecret,
@@ -77,6 +79,12 @@ type Args = {
 	keychain: boolean;
 	json: boolean;
 	maxUsdSet: boolean;
+	/** --account <name>: run this ONE command as a specific saved wallet */
+	account?: string;
+	/** every bare token, in order — subcommand, paths, etc. */
+	positional: string[];
+	/** --force: replace an existing account of the same name */
+	force: boolean;
 	limit?: number;
 };
 
@@ -109,6 +117,8 @@ function parse(argv: string[]): Args {
 		buy: false,
 		keychain: false,
 		maxUsdSet: false,
+		positional: [],
+		force: false,
 	};
 	for (let i = 1; i < argv.length; i++) {
 		const t = argv[i] ?? "";
@@ -139,14 +149,21 @@ function parse(argv: string[]): Args {
 		else if (t === "--sandbox") a.sandbox = true;
 		else if (t === "--amount") a.amount = next();
 		else if (t === "--name" || t === "--save") a.name = next();
+		else if (t === "--account") a.account = next();
 		else if (t === "--trustline") a.trustline = true;
 		else if (t === "--buy") a.buy = true;
 		else if (t === "--keychain") a.keychain = true;
+		else if (t === "--force") a.force = true;
 		else if (t === "--json") a.json = true;
 		else if (t === "--limit") {
 			const n = Number(next());
 			if (Number.isInteger(n) && n > 0) a.limit = n;
-		} else if (!t.startsWith("-") && !a.url) a.url = t;
+		} else if (!t.startsWith("-")) {
+			// Keep EVERY bare token in order: the first is the subcommand/url,
+			// later ones are paths (`account export --name main backup.json`).
+			if (!a.url) a.url = t;
+			a.positional.push(t);
+		}
 	}
 	return a;
 }
@@ -212,7 +229,7 @@ async function cmdRun(a: Args): Promise<void> {
 		process.exitCode = 1;
 		return;
 	}
-	await ensureSecretLoaded();
+	await ensureSecretLoaded(a.account);
 	const wallet = loadWallet();
 	const { startProxy, proxyEnv } = await import("./pay/proxy.js");
 	const approve = async (o: Offer, url: string) => {
@@ -346,7 +363,7 @@ async function cmdAgent(a: Args): Promise<void> {
 }
 
 async function cmdWhoami(a: Args): Promise<void> {
-	await ensureSecretLoaded();
+	await ensureSecretLoaded(a.account);
 	const w = loadWallet();
 	emit(a, { public_key: w.publicKey, network: w.network }, () =>
 		console.log(`${w.publicKey}  ${w.network}`),
@@ -354,7 +371,7 @@ async function cmdWhoami(a: Args): Promise<void> {
 }
 
 async function cmdBalance(a: Args): Promise<void> {
-	await ensureSecretLoaded();
+	await ensureSecretLoaded(a.account);
 	const w = loadWallet();
 	const b = await balances(w.publicKey, w.network);
 	emit(a, { public_key: w.publicKey, network: w.network, ...b }, () => {
@@ -372,7 +389,7 @@ async function cmdSetup(a: Args): Promise<void> {
 		| "stellar:testnet";
 	// `setup --trustline` adds the USDC trustline to an existing wallet.
 	if (a.trustline) {
-		await ensureSecretLoaded();
+		await ensureSecretLoaded(a.account);
 		const w = loadWallet();
 		const tx = await addTrustline(w);
 		console.log(
@@ -393,6 +410,7 @@ async function cmdSetup(a: Args): Promise<void> {
 		const saved = await addAccount(a.name, r.secret, network, {
 			makeDefault: true,
 			backend: a.keychain ? "keychain" : "file",
+			force: a.force,
 		});
 		console.log(
 			`saved to keystore as "${saved.name}" (default) — ${keystorePath}`,
@@ -429,14 +447,31 @@ async function cmdAccount(a: Args): Promise<void> {
 			return usageError(
 				"usage: STELLAR_SECRET_KEY=S… stellar-pay account import --name <name>",
 			);
-		const secret = process.env.STELLAR_SECRET_KEY;
+		// A file beats an env var for restore: an exported backup can be moved
+		// between machines without the secret ever touching a shell history.
+		// Second positional is the path: `account import --name main backup.json`
+		let secret = process.env.STELLAR_SECRET_KEY ?? "";
+		const from = a.positional[1];
+		if (from) {
+			try {
+				const raw = readFileSync(from, "utf8").trim();
+				secret = raw.startsWith("{")
+					? ((JSON.parse(raw) as { secret?: string }).secret ?? "")
+					: raw;
+			} catch (e) {
+				return usageError(`cannot read ${from}: ${(e as Error).message}`);
+			}
+			if (!/^S[A-Z2-7]{55}$/.test(secret))
+				return usageError(`${from} does not contain a Stellar secret (S…)`);
+		}
 		if (!secret)
 			return usageError(
-				"set STELLAR_SECRET_KEY to the S… secret you want to import, then re-run",
+				"give a backup file (`account import --name main backup.json`) or set STELLAR_SECRET_KEY, then re-run",
 			);
 		const r = await addAccount(a.name, secret, network, {
 			makeDefault: true,
 			backend: a.keychain ? "keychain" : "file",
+			force: a.force,
 		});
 		console.log(`imported "${r.name}" — ${r.publicKey}`);
 		return;
@@ -457,6 +492,19 @@ async function cmdAccount(a: Args): Promise<void> {
 	}
 	if (sub === "export") {
 		const secret = await exportSecret(a.name);
+		const out = a.positional[1];
+		if (out) {
+			// Written 0600 and as JSON so `account import` can read it straight
+			// back. Printing a secret to a terminal is the thing that ends up in
+			// scrollback and screen-shares.
+			writeFileSync(
+				out,
+				`${JSON.stringify({ name: a.name ?? "(default)", secret }, null, 2)}\n`,
+				{ mode: 0o600 },
+			);
+			console.log(`exported to ${out} (owner-only). Keep it offline.`);
+			return;
+		}
 		console.error(secret); // stderr, and only after the passphrase check inside exportSecret
 		return;
 	}
@@ -468,7 +516,7 @@ async function cmdAccount(a: Args): Promise<void> {
 }
 
 async function cmdTopup(a: Args): Promise<void> {
-	await ensureSecretLoaded();
+	await ensureSecretLoaded(a.account);
 	const w = loadWallet();
 	const t = await topupInfo(w);
 	const uri = payUri(t.address, t.network, a.amount);
@@ -574,30 +622,67 @@ async function cmdTopup(a: Args): Promise<void> {
 }
 
 async function cmdSend(a: Args): Promise<void> {
-	await ensureSecretLoaded();
+	await ensureSecretLoaded(a.account);
 	const w = loadWallet();
-	const to = a.url ?? ""; // first positional
-	const amount = a.amount ?? "";
-	if (!to || !amount) {
+	const target = a.url ?? ""; // first positional: a G… address OR a saved name
+	// Sending to a saved account by NAME beats copy-pasting a 56-character key,
+	// which is exactly where people paste the wrong one.
+	const named =
+		target && !/^G[A-Z2-7]{55}$/.test(target) ? accountPublicKey(target) : null;
+	const to = named ?? target;
+	if (target && !named && !/^G[A-Z2-7]{55}$/.test(target)) {
 		console.error(
-			"usage: stellar-pay send <G...address> --amount <USDC>  [--yes]",
+			`"${target}" is neither a G… address nor a saved account name — \`stellar-pay account list\` shows the saved ones`,
 		);
-		process.exitCode = 1;
+		process.exitCode = EXIT.usage;
 		return;
 	}
-	const line = `send ${amount} USDC to ${to.slice(0, 6)}…${to.slice(-4)} on ${w.network}`;
+	// `--amount max` drains the spendable balance, minus what the account must
+	// keep to stay alive.
+	let amount = a.amount ?? "";
+	if (amount === "max") {
+		const b = await balances(w.publicKey, w.network);
+		amount = b.usdc ?? "0";
+		if (!(Number(amount) > 0)) {
+			console.error("nothing to send: USDC balance is zero");
+			process.exitCode = EXIT.runtime;
+			return;
+		}
+	}
+	if (!to || !amount) {
+		console.error(
+			"usage: stellar-pay send <G...address|account-name> --amount <USDC|max>  [--yes] [--account N]",
+		);
+		process.exitCode = EXIT.usage;
+		return;
+	}
+	const line = `send ${amount} USDC to ${named ? `${target} (${to.slice(0, 6)}…${to.slice(-4)})` : `${to.slice(0, 6)}…${to.slice(-4)}`} on ${w.network}`;
 	if (!a.yes && !(await ask(line))) {
 		console.error("not sent");
 		process.exitCode = 2;
 		return;
 	}
 	const r = await sendUSDC(w, to, amount);
+	if (a.json) {
+		console.log(
+			JSON.stringify({
+				sent: {
+					to,
+					amount: r.amount,
+					asset: r.asset,
+					hash: r.hash,
+					explorer: explorer(w.network, r.hash),
+				},
+			}),
+		);
+		return;
+	}
 	console.log(`sent ${r.amount} USDC · ${explorer(w.network, r.hash)}`);
 	return;
 }
 
 async function cmdHistory(a: Args): Promise<void> {
-	await ensureSecretLoaded();
+	await ensureSecretLoaded(a.account);
 	const w = loadWallet();
 	const rows = await history(w.publicKey, w.network, a.limit ?? 20);
 	emit(a, { network: w.network, payments: rows }, () => {
@@ -668,7 +753,7 @@ async function cmdOffers(a: Args, init: RequestInit): Promise<void> {
 
 async function cmdCurl(a: Args, init: RequestInit): Promise<void> {
 	if (!a.url) throw new Error("curl <url>");
-	await ensureSecretLoaded();
+	await ensureSecretLoaded(a.account);
 	const wallet = loadWallet();
 	const approve = async (o: Offer, url: string) => {
 		const line = `pay ${describeOffer(o)} for ${a.method} ${a.url}`;
@@ -861,9 +946,13 @@ PAY
 WALLET
   whoami | balance [--json]
   setup [--save <name>] [--keychain] [--trustline]
-  account <list|import|default|remove|export> [--name N]
+  account list
+  account import --name N [<file>]           restore from a backup file, or STELLAR_SECRET_KEY
+  account export [--name N] [<file>]         back up (to a 0600 file, or stderr)
+  account default --name N | remove --name N
   topup [--buy] [--amount N]                 fund the wallet (QR + on-ramps; --buy opens a card ramp)
-  send <G…address> --amount <USDC> [--yes]   send USDC to an address
+  send <G…address|account-name> --amount <USDC|max> [--yes]
+                                             send USDC; 'max' drains the balance
   history [--limit N] [--json]
 
 AGENTS
@@ -871,6 +960,8 @@ AGENTS
   claude | codex [args…]                     launch the agent with the MCP mounted
 
 GLOBAL   --sandbox (testnet)   --json (machine output)   -h/--help
+         --account <name>   run one command as a specific saved wallet
+         --force            replace an existing account on import/setup
 ENV      STELLAR_SECRET_KEY, STELLAR_NETWORK, STELLAR_PAY_PASSPHRASE, STELLAR_PAY_MAX_USD_PER_CALL
 EXIT     0 ok · 2 usage · 3 payment refused/declined · 4 no wallet · 1 runtime error`;
 

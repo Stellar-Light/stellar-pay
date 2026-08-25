@@ -192,11 +192,21 @@ export async function addAccount(
 	name: string,
 	secret: string,
 	network: Network,
-	opts: { makeDefault?: boolean; backend?: "file" | "keychain" } = {},
+	opts: {
+		makeDefault?: boolean;
+		backend?: "file" | "keychain";
+		force?: boolean;
+	} = {},
 ): Promise<{ name: string; publicKey: string; backend: "file" | "keychain" }> {
 	const kp = Keypair.fromSecret(secret); // validates
 	const st = read();
-	if (st.accounts[name]) throw new Error(`account "${name}" already exists`);
+	if (st.accounts[name] && !opts.force)
+		throw new Error(
+			`account "${name}" already exists — pass --force to replace it (the old secret is unrecoverable afterwards)`,
+		);
+	// Replacing a keychain-backed account must clear the OS item too, or the
+	// old secret lingers under the same service name.
+	if (st.accounts[name]?.backend === "keychain") keychainDelete(name);
 	const backend = opts.backend ?? "file";
 	if (backend === "keychain") {
 		keychainSet(name, secret); // OS keychain holds the secret; no ciphertext on disk
@@ -274,7 +284,24 @@ export async function exportSecret(name?: string): Promise<string> {
  * decrypt the default keystore account and export it into the environment for
  * this run only. Returns false if no wallet is available at all.
  */
-export async function ensureSecretLoaded(): Promise<boolean> {
+export async function ensureSecretLoaded(name?: string): Promise<boolean> {
+	// An explicitly named account beats everything, including a secret already
+	// in the environment: `--account work` must mean work, not "whatever the
+	// shell happens to export".
+	if (name) {
+		const s = read();
+		const acct = s.accounts[name];
+		if (!acct)
+			throw new Error(
+				`no account "${name}" — \`stellar-pay account list\` shows the saved ones`,
+			);
+		process.env.STELLAR_SECRET_KEY = await readSecret(name, acct);
+		// The account's own network wins for that account, unless the caller
+		// asked for one explicitly (--sandbox sets this before we run).
+		if (!process.env.STELLAR_NETWORK)
+			process.env.STELLAR_NETWORK = acct.network;
+		return true;
+	}
 	if (process.env.STELLAR_SECRET_KEY) return true;
 	const s = read();
 	const acct = s.default ? s.accounts[s.default] : undefined;
@@ -282,6 +309,11 @@ export async function ensureSecretLoaded(): Promise<boolean> {
 	process.env.STELLAR_SECRET_KEY = await readSecret(s.default, acct);
 	if (!process.env.STELLAR_NETWORK) process.env.STELLAR_NETWORK = acct.network;
 	return true;
+}
+
+/** Public key of a saved account, without unlocking it. */
+export function accountPublicKey(name: string): string | null {
+	return read().accounts[name]?.publicKey ?? null;
 }
 
 export const keystorePath = FILE;
