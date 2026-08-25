@@ -20,6 +20,8 @@ export type Entry = {
 	method: "GET" | "POST" | null;
 	protocol: string;
 	acceptsStellar: boolean;
+	/** every network the 402 actually named (empty on older rows) */
+	networks: string[];
 	priceUSD: number | null;
 	source: string;
 	lastStatus: string;
@@ -45,6 +47,7 @@ export function toEntry(r: Record<string, unknown>): Entry {
 		method: (r.method as Entry["method"]) ?? null,
 		protocol: String(r.protocol ?? "unknown"),
 		acceptsStellar: !!r.acceptsStellar,
+		networks: Array.isArray(r.networks) ? (r.networks as string[]) : [],
 		priceUSD: typeof r.priceUSD === "number" ? r.priceUSD : null,
 		source: String(r.source ?? "curated"),
 		lastStatus: String(r.lastStatus ?? ""),
@@ -117,8 +120,36 @@ export async function loadCatalog(
 	return filter(entries, opts);
 }
 
+/** A row is only "payable right now" if it is live, FRESH, and names a network
+ * this catalog actually claims. The README promises "answered a real 402 …
+ * within the last day"; nothing enforced the freshness half, so a host that
+ * died months ago stayed in the default view forever. 48h, not 24, so one
+ * missed daily probe is not an outage. */
+const FRESH_MS = 48 * 60 * 60 * 1000;
+
+const isFresh = (x: Entry) => {
+	if (!x.lastCheckedAt) return false;
+	const t = Date.parse(x.lastCheckedAt);
+	return Number.isFinite(t) && Date.now() - t <= FRESH_MS;
+};
+
+/** Mainnet, or a row we curated deliberately (the testnet sandbox). */
+const claimedNetwork = (x: Entry) =>
+	x.networks.length === 0 // older rows predate the field
+		? x.acceptsStellar
+		: x.networks.some((n) => n === "stellar:pubnet" || n === "stellar") ||
+			x.source === "curated";
+
 const filter = (e: Entry[], o: { all?: boolean }) =>
-	o.all ? e : e.filter((x) => x.acceptsStellar && x.lastStatus === "402");
+	o.all
+		? e
+		: e.filter(
+				(x) =>
+					x.acceptsStellar &&
+					x.lastStatus === "402" &&
+					isFresh(x) &&
+					claimedNetwork(x),
+			);
 
 const STOP = new Set(
 	"a an the to for of in on with and or is are do does can i my me get find search api".split(

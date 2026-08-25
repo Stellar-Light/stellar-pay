@@ -171,10 +171,13 @@ nothing about Stellar: the same standard runs on Base, Solana and Polygon, and
 most servers name only those. Measured 2026-08 from the x402 Bazaar: of its
 ~1,611 hosts, **three** name `stellar:pubnet`. A listing is not supply.
 
-So the catalog probes instead of trusting. An entry is in it because it
-**answered a real 402 naming `stellar:pubnet` within the last day** —
-re-probed daily, carrying its price, protocol, the method that produced the
-challenge, and how long it has been alive. About **390 endpoints** qualify
+So the catalog probes instead of trusting. An entry appears in the default
+view only if it **answered a real 402, on a network this catalog claims, and
+was re-probed within the last 48 hours** — carrying its price, protocol, the
+method that produced the challenge, the networks it actually named, and how
+long it has been alive. (48 hours, not 24, so a single missed daily probe is
+not an outage. The one deliberate exception is our own testnet sandbox, marked
+`curated`, so newcomers have something to pay.) About **390 endpoints** qualify
 today across the x402 Bazaar and mpp-router. If it's in the catalog, your
 wallet can pay it right now; the live 402 is still the authority on price.
 

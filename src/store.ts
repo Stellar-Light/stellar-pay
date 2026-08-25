@@ -25,6 +25,8 @@ export type EndpointRow = {
 	/** the method that produced the 402 */
 	method?: "GET" | "POST" | null;
 	acceptsStellar: boolean;
+	/** every network the 402 actually named, verbatim */
+	networks?: string[];
 	accepts: Accept[];
 	priceUSD: number | null;
 	source: "bazaar" | "mpp-router" | "stellar-directory" | "curated";

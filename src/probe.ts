@@ -336,6 +336,17 @@ async function main() {
 			const acceptsStellar = r.accepts.some(
 				(a) => isStellar(a.network) || a.network === "stellar",
 			);
+			// Keep the ACTUAL networks. `acceptsStellar` is a prefix match, so a
+			// stellar:testnet accept — or a bare MPP `method` token "stellar" —
+			// used to publish as if it were stellar:pubnet payable. Consumers
+			// need to see which network a row really names.
+			const networks = [
+				...new Set(
+					r.accepts
+						.map((a) => a.network)
+						.filter((n): n is string => typeof n === "string" && n.length > 0),
+				),
+			];
 			if (r.status === "402") paid++;
 			if (acceptsStellar) stellarPayable++;
 			const prev = byUrl.get(c.url);
@@ -366,6 +377,7 @@ async function main() {
 				protocol: r.protocol,
 				method: r.method,
 				acceptsStellar,
+				networks,
 				accepts: r.accepts,
 				priceUSD,
 				source: c.source,

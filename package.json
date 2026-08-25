@@ -32,7 +32,8 @@
 		"test:hostile": "tsx src/sandbox/hostile-test.ts",
 		"test:redirect": "tsx src/sandbox/redirect-test.ts",
 		"test:pin": "tsx src/sandbox/pin-test.ts",
-		"test:keychain": "tsx src/sandbox/keychain-check.ts"
+		"test:keychain": "tsx src/sandbox/keychain-check.ts",
+		"test:catalog": "tsx src/sandbox/catalog-test.ts"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.3.2",

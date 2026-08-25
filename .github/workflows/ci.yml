@@ -25,6 +25,7 @@ jobs:
       - run: npm run test:pin       # bait-and-switch pins
       - run: npm run test:hostile   # seller-controlled headers
       - run: npm run test:redirect  # redirects cannot escape the gates
+      - run: npm run test:catalog  # the catalog's own claim
       - run: npm run test:ssrf
       - run: npm run test:scrimp
       - run: npm run test:keystore
