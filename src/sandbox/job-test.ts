@@ -1,60 +1,48 @@
 /**
- * TW job flow e2e — hire → escrow → deliver → approve → release, receipted.
+ * TW job flow e2e — DIRECT contract integration, keyless, fully self-contained.
  *
- * Runs the research corpus's core loop against Trustless Work's TESTNET
- * escrow with two of our keys (buyer + provider). Requires TW_API_KEY (an
- * owner-requested key from dapp.trustlesswork.com); without it, prints the
- * exact setup step and SKIPS (exit 0) — a missing key is a setup gap, not
- * a code failure.
+ * hire → escrow → deliver → approve → release against Trustless Work's live
+ * testnet wasm, two friendbot keys, native XLM as the job token (any SEP-41
+ * token works; XLM means no faucet dependency). No API key, no account, no
+ * TW server anywhere in the loop — the contract is the counterparty.
  *
- * The buyer needs testnet USDC (TW's issuer) for the fund step: the test
- * creates the trustline; if the balance is zero the fund step's error is
- * surfaced with the faucet pointer.
+ * Verifies on Horizon at the end: the provider actually received the payout
+ * (amount minus TW's 0.3%), and the receipts chain
+ * open ← fund ← deliver ← approve ← release is intact.
  *
- *   TW_API_KEY=… npm run test:job
+ *   npm run test:job
  */
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-	Asset,
-	BASE_FEE,
-	Horizon,
-	Keypair,
-	Networks,
-	Operation,
-	TransactionBuilder,
-} from "@stellar/stellar-sdk";
+import { Asset, Keypair, Networks } from "@stellar/stellar-sdk";
 
 const DIR = mkdtempSync(join(tmpdir(), "stellar-pay-job-"));
 process.env.STELLAR_PAY_SESSION_DIR = DIR;
-const AMOUNT = 1; // 1 USDC — small, real
+const AMOUNT = 10_000_000n; // 1 XLM in stroops — small, real
 
 async function friendbot(pub: string) {
 	const r = await fetch(`https://friendbot.stellar.org?addr=${pub}`);
 	if (!r.ok && r.status !== 400) throw new Error(`friendbot ${r.status}`);
 }
 
+async function xlm(pub: string): Promise<bigint> {
+	const r = await fetch(`https://horizon-testnet.stellar.org/accounts/${pub}`);
+	const d = (await r.json()) as {
+		balances: Array<{ asset_type: string; balance: string }>;
+	};
+	const b = d.balances.find((x) => x.asset_type === "native")?.balance ?? "0";
+	const [i = "0", f = ""] = b.split(".");
+	return BigInt(i) * 10_000_000n + BigInt((f + "0000000").slice(0, 7));
+}
+
 async function main() {
 	console.log(
-		"═══ TW job flow e2e — hire → escrow → deliver → approve → release ═══\n",
+		"═══ TW job flow e2e — DIRECT contract, keyless: hire → escrow → deliver → approve → release ═══\n",
 	);
-	if (!process.env.TW_API_KEY) {
-		console.log(
-			"SKIP — TW_API_KEY not set.\nOwner step (once): sign in at https://dapp.trustlesswork.com, request an API key, then:\n  export TW_API_KEY=…  &&  npm run test:job",
-		);
-		return;
-	}
-	// Import AFTER the session dir env is set (receipts resolve paths lazily,
-	// but keep the ordering explicit anyway).
-	const {
-		approveJob,
-		deliverJob,
-		fundJob,
-		openJob,
-		releaseJob,
-		TW_TESTNET_USDC_ISSUER,
-	} = await import("../pay/job.js");
+	const { approveJob, deliverJob, fundJob, openJob, releaseJob } = await import(
+		"../pay/job.js"
+	);
 
 	const buyer = Keypair.random();
 	const provider = Keypair.random();
@@ -63,105 +51,115 @@ async function main() {
 		friendbot(provider.publicKey()),
 	]);
 	console.log(`buyer    ${buyer.publicKey()}`);
-	console.log(`provider ${provider.publicKey()}`);
+	console.log(`provider ${provider.publicKey()}\n`);
 
-	// Trustlines to TW's testnet USDC for both parties (the escrow pays the
-	// receiver in it; the buyer funds in it).
-	const horizon = new Horizon.Server("https://horizon-testnet.stellar.org");
-	const usdc = new Asset("USDC", TW_TESTNET_USDC_ISSUER);
-	for (const kp of [buyer, provider]) {
-		const acct = await horizon.loadAccount(kp.publicKey());
-		const tx = new TransactionBuilder(acct, {
-			fee: BASE_FEE,
-			networkPassphrase: Networks.TESTNET,
-		})
-			.addOperation(Operation.changeTrust({ asset: usdc }))
-			.setTimeout(60)
-			.build();
-		tx.sign(kp);
-		await horizon.submitTransaction(tx);
-	}
-	console.log("trustlines set (TW testnet USDC)\n");
+	const spec = `Verify 3 directory rows for stellarlight and attach dated evidence per row. Payment: 1 XLM on approval. Judge: buyer (declared).`;
+	const XLM_SAC = Asset.native().contractId(Networks.TESTNET);
 
-	const spec = `Verify 3 directory rows for stellarlight and attach dated evidence per row. Payment: ${AMOUNT} USDC on approval. Judge: buyer (declared).`;
-
-	const open = await openJob({
-		roles: { buyer, provider: provider.publicKey() },
-		amountUsdc: AMOUNT,
+	const job = {
+		buyer,
+		provider: provider.publicKey(),
+		tokenContract: XLM_SAC,
+		amount: AMOUNT,
 		title: "stellarlight verification batch",
 		spec,
-	});
+		// Testnet play money; REAL usage must set TW's published fee address.
+		// Declared, not hidden: the 0.3% here goes back to the buyer.
+		twFeeAddress: buyer.publicKey(),
+	};
+
+	const open = await openJob(job);
 	console.log(
 		`open     escrow ${open.contractId.slice(0, 10)}… engagement ${open.engagementId}`,
 	);
+	console.log(
+		`         deploy ${open.deployTx.slice(0, 10)}… init ${open.initTx.slice(0, 10)}… (TW wasm, our deploy)`,
+	);
 
-	try {
-		const fund = await fundJob({
-			buyer,
-			contractId: open.contractId,
-			amountUsdc: AMOUNT,
-			openReceiptId: open.receiptId,
-		});
-		console.log(`fund     tx ${(fund.txHash ?? "").slice(0, 12)}…`);
+	const fund = await fundJob({
+		...job,
+		contractId: open.contractId,
+		engagementId: open.engagementId,
+		openReceiptId: open.receiptId,
+	});
+	console.log(`fund     tx ${fund.tx.slice(0, 12)}… (1 XLM into escrow)`);
 
-		const deliver = await deliverJob({
-			provider,
-			contractId: open.contractId,
-			evidence: "sha256:demo-deliverable-hash",
-			prevReceiptId: fund.receiptId,
-		});
-		console.log(`deliver  tx ${(deliver.txHash ?? "").slice(0, 12)}…`);
+	const provBefore = await xlm(provider.publicKey());
+	const deliver = await deliverJob({
+		provider,
+		contractId: open.contractId,
+		evidence: "sha256:demo-deliverable-hash",
+		prevReceiptId: fund.receiptId,
+	});
+	console.log(`deliver  tx ${deliver.tx.slice(0, 12)}… (evidence on-chain)`);
 
-		const approve = await approveJob({
-			approver: buyer,
-			contractId: open.contractId,
-			prevReceiptId: deliver.receiptId,
-		});
-		console.log(`approve  tx ${(approve.txHash ?? "").slice(0, 12)}…`);
+	const approve = await approveJob({
+		approver: buyer,
+		contractId: open.contractId,
+		prevReceiptId: deliver.receiptId,
+	});
+	console.log(`approve  tx ${approve.tx.slice(0, 12)}…`);
 
-		const release = await releaseJob({
-			releaseSigner: buyer,
-			contractId: open.contractId,
-			prevReceiptId: approve.receiptId,
-		});
-		console.log(`release  tx ${(release.txHash ?? "").slice(0, 12)}…`);
+	const release = await releaseJob({
+		releaseSigner: buyer,
+		contractId: open.contractId,
+		twFeeAddress: job.twFeeAddress,
+		prevReceiptId: approve.receiptId,
+	});
+	console.log(`release  tx ${release.tx.slice(0, 12)}…`);
 
-		// Receipt chain: open ← fund ← deliver ← approve ← release.
-		const rows = readFileSync(join(DIR, "receipts.jsonl"), "utf8")
-			.trim()
-			.split("\n")
-			.map(
-				(l) => JSON.parse(l) as { kind: string; id: string; refs?: string[] },
-			);
-		const chain = [
-			"job-open",
-			"job-fund",
-			"job-deliver",
-			"job-approve",
-			"job-release",
-		];
-		let prev: string | undefined;
-		for (const kind of chain) {
-			const row = rows.find((r) => r.kind === kind);
-			if (!row) throw new Error(`missing ${kind} receipt`);
-			if (prev && !row.refs?.includes(prev))
-				throw new Error(`${kind} does not reference its predecessor`);
-			prev = row.id;
-		}
-		console.log(`\nledger   ${chain.join(" ← ")} — chain intact`);
-		console.log(
-			"\nRESULT: PASS — full agreement lifecycle on Trustless Work testnet, every step receipted and chained.",
-		);
-	} catch (e) {
-		const msg = (e as Error).message;
-		if (/balance|underfunded|trustline|insufficient/i.test(msg)) {
-			console.log(
-				`\nBLOCKED at funding: ${msg}\nThe buyer key needs TW testnet USDC — faucet in their dApp (dapp.trustlesswork.com). Deploy + receipt chain up to this point verified.`,
-			);
-			return;
-		}
-		throw e;
+	// On-chain truth: the RELEASE TX must carry the exact payout effect.
+	// (The provider's raw balance delta is the wrong meter — it includes the
+	// network fee they paid on their own deliver tx.)
+	await new Promise((r) => setTimeout(r, 4000));
+	const expected = AMOUNT - (AMOUNT * 30n) / 10_000n; // minus TW's 0.3%
+	const fx = await fetch(
+		`https://horizon-testnet.stellar.org/transactions/${release.tx}/effects?limit=20`,
+	);
+	const fxd = (await fx.json()) as {
+		_embedded?: {
+			records?: Array<{ type: string; account?: string; amount?: string }>;
+		};
+	};
+	const credited = (fxd._embedded?.records ?? []).find(
+		(e) => e.type === "account_credited" && e.account === provider.publicKey(),
+	);
+	const gotStr = credited?.amount ?? "0";
+	const [gi = "0", gf = ""] = gotStr.split(".");
+	const got = BigInt(gi) * 10_000_000n + BigInt((gf + "0000000").slice(0, 7));
+	console.log(
+		`\nhorizon  release tx credited provider ${got} stroops (expected ${expected} = 1 XLM − 0.3% TW fee): ${got === expected ? "EXACT ✓" : "MISMATCH ✗"}`,
+	);
+	if (got !== expected) throw new Error("payout amount wrong");
+	void provBefore;
+
+	// The receipts chain.
+	const rows = readFileSync(join(DIR, "receipts.jsonl"), "utf8")
+		.trim()
+		.split("\n")
+		.map((l) => JSON.parse(l) as { kind: string; id: string; refs?: string[] });
+	const chain = [
+		"job-open",
+		"job-fund",
+		"job-deliver",
+		"job-approve",
+		"job-release",
+	];
+	let prev: string | undefined;
+	for (const kind of chain) {
+		const row = rows.find((r) => r.kind === kind);
+		if (!row) throw new Error(`missing ${kind} receipt`);
+		if (prev && !row.refs?.includes(prev))
+			throw new Error(`${kind} does not reference its predecessor`);
+		prev = row.id;
 	}
+	console.log(`ledger   ${chain.join(" ← ")} — chain intact`);
+	console.log(
+		`\nexplorer https://stellar.expert/explorer/testnet/contract/${open.contractId}`,
+	);
+	console.log(
+		"\nRESULT: PASS — full agreement lifecycle, direct against TW's contract, keyless, payout exact, receipts chained.",
+	);
 }
 
 main().catch((err) => {

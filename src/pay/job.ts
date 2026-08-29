@@ -1,282 +1,349 @@
 /**
- * Jobs — escrow-backed work agreements on Trustless Work (testnet).
+ * Jobs — escrow-backed work agreements on Trustless Work's CONTRACT (testnet).
  *
- * The research corpus's core thesis, made runnable: one party hires another
- * it doesn't trust; funds sit in a Soroban escrow neither controls; release
- * happens on approval; a judge exists for the contested case. We author no
- * contract — Trustless Work's escrow is the rail (reuse-don't-build), their
- * REST API builds each transaction, OUR keystore signs it, their helper
- * submits it. Full lifecycle:
+ * DIRECT integration, no intermediary: we deploy escrow instances from TW's
+ * live testnet wasm (content-addressed — deploying the hash IS their code),
+ * invoke the lifecycle via Soroban RPC, sign with OUR keys, submit
+ * ourselves. No API key, no account, no TW server in the loop — their
+ * README's word for the infrastructure is "permissionless", and this module
+ * takes it at its word. (v1 of this file used their REST API and inherited
+ * its x-api-key gate; the owner's objection was correct — a neutral layer
+ * cannot require every agent to open an account with an intermediary.)
  *
- *   open    deploy + configure the escrow (roles, amount, spec) — the spec
- *           text rides `description`, its sha256 rides `engagementId`, so
- *           the agreement's terms are hash-pinned on-chain from birth
- *   fund    move the amount into the escrow
- *   deliver service provider marks the milestone done, evidence attached
- *   approve approver signs off
- *   release release signer pays out (minus TW's 0.3% protocol fee)
- *   dispute either side escalates to the dispute resolver
+ * Lifecycle (single-release):
+ *   open    deploy from wasm hash + initialize_escrow(Escrow) — the spec
+ *           text rides `description`, sha256(spec) rides `engagement_id`:
+ *           terms hash-pinned on-chain from birth
+ *   fund    fund_escrow — the contract re-checks the EXPECTED escrow struct
+ *           (their anti-TOCTOU design; we pass what we initialized)
+ *   deliver change_milestone_status(evidence) by the service provider
+ *   approve approve_milestone by the approver
+ *   release release_funds — pays receiver minus platform fee (ours: 0) and
+ *           TW's 0.3%, which goes to `twFeeAddress`
  *
- * Every step lands a receipt ref-chained to the job-open row — the
+ * TW FEE HONESTY: the contract sends 0.3% to a caller-supplied address and
+ * does not validate it. Their API passes their own; direct callers must
+ * too. TW_FEE_ADDRESS env or the explicit parameter — the e2e uses a
+ * declared placeholder on testnet play money; REAL usage must set TW's
+ * published fee address (asking them to publish it is on the outreach
+ * list).
+ *
+ * Every step lands a receipt ref-chained to the job-open row: the
  * attribution chain IS the job's history.
- *
- * TESTNET (dev API). Auth: x-api-key from TW_API_KEY — requesting a key is
- * an account action the OWNER does once at trustlesswork.com; nothing here
- * creates accounts.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
+	Address,
+	BASE_FEE,
+	Contract,
 	type Keypair,
 	Networks,
+	nativeToScVal,
+	Operation,
+	rpc,
 	TransactionBuilder,
+	xdr,
 } from "@stellar/stellar-sdk";
 import { record } from "./receipts.js";
 
-const BASE = process.env.TW_API_BASE ?? "https://dev.api.trustlesswork.com";
-/** Trustless Work's testnet USDC (their documented default asset). */
-export const TW_TESTNET_USDC_ISSUER =
-	"GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
+const RPC_URL =
+	process.env.STELLAR_RPC_URL ?? "https://soroban-testnet.stellar.org";
+/** TW's live single-release escrow wasm on testnet — read off their own
+ * deployed instances (CCVMTKXF…, CDY37HAA…) on 2026-08-29. Content-addressed:
+ * deploying this hash deploys exactly their audited-or-not code, nothing else. */
+export const TW_ESCROW_WASM_HASH =
+	"7c3f7b2af92ad86092708b23babf80f9e1308d7f3ce18b703b9499192ecc934b";
 
-function apiKey(): string {
-	const k = process.env.TW_API_KEY;
-	if (!k)
-		throw new Error(
-			"TW_API_KEY is not set. Request one at https://dapp.trustlesswork.com (a one-time account step), then export TW_API_KEY.",
-		);
-	return k;
-}
-
-async function tw<T>(path: string, body: unknown): Promise<T> {
-	const res = await fetch(`${BASE}${path}`, {
-		method: "POST",
-		headers: {
-			"Content-Type": "application/json",
-			"x-api-key": apiKey(),
-		},
-		body: JSON.stringify(body),
-		signal: AbortSignal.timeout(30_000),
-	});
-	const text = await res.text();
-	let json: Record<string, unknown>;
-	try {
-		json = JSON.parse(text) as Record<string, unknown>;
-	} catch {
-		throw new Error(`TW ${path} → ${res.status}: ${text.slice(0, 200)}`);
-	}
-	if (!res.ok)
-		throw new Error(
-			`TW ${path} → ${res.status}: ${(json.message as string) ?? text.slice(0, 200)}`,
-		);
-	return json as T;
-}
-
-/** Every mutating endpoint returns an unsigned XDR; we sign with OUR key and
- * their helper broadcasts. The signature never leaves this process. */
-async function signAndSend(
-	unsignedXdr: string,
-	signer: Keypair,
-): Promise<{ txHash: string | null; raw: Record<string, unknown> }> {
-	const tx = TransactionBuilder.fromXDR(unsignedXdr, Networks.TESTNET);
-	tx.sign(signer);
-	const raw = await tw<Record<string, unknown>>("/helper/send-transaction", {
-		signedXdr: tx.toXDR(),
-	});
-	const txHash =
-		(raw.txHash as string) ??
-		((raw.data as Record<string, unknown>)?.txHash as string) ??
-		null;
-	return { txHash, raw };
-}
-
-function unsignedFrom(r: Record<string, unknown>): string {
-	const x =
-		(r.unsignedTransaction as string) ??
-		(r.xdr as string) ??
-		((r.data as Record<string, unknown>)?.unsignedTransaction as string);
-	if (!x)
-		throw new Error(
-			`TW response carried no unsigned XDR: ${JSON.stringify(r).slice(0, 200)}`,
-		);
-	return x;
-}
-
-export type JobRoles = {
-	/** pays, approves, and can release — the buyer */
+export type JobSpec = {
+	/** pays, approves, releases — the buyer */
 	buyer: Keypair;
-	/** does the work, receives the payout */
+	/** does the work, receives the payout (public key) */
 	provider: string;
-	/** arbitrates the contested case; defaults to the buyer (declared, not hidden) */
+	/** arbitrates disputes; defaults to buyer — DECLARED in the receipt */
 	judge?: string;
+	/** SEP-41 token contract (SAC) the job pays in */
+	tokenContract: string;
+	/** amount in the token's base units (i128) */
+	amount: bigint;
+	title: string;
+	/** the terms; sha256 becomes engagement_id */
+	spec: string;
+	/** TW's 0.3% fee recipient — REQUIRED to be TW's published address in
+	 * real usage; testnet harnesses may pass a declared placeholder */
+	twFeeAddress: string;
 };
 
-export async function openJob(o: {
-	roles: JobRoles;
-	amountUsdc: number;
-	title: string;
-	/** the terms; sha256(spec) becomes the engagementId — hash-pinned from birth */
-	spec: string;
-}): Promise<{ contractId: string; engagementId: string; receiptId: string }> {
-	const buyerPub = o.roles.buyer.publicKey();
+const server = () => new rpc.Server(RPC_URL);
+
+async function submit(
+	built: import("@stellar/stellar-sdk").Transaction,
+	signer: Keypair,
+): Promise<string> {
+	const s = server();
+	const prepared = await s.prepareTransaction(built);
+	prepared.sign(signer);
+	const sent = await s.sendTransaction(prepared);
+	if (sent.status === "ERROR")
+		throw new Error(`tx rejected: ${JSON.stringify(sent.errorResult)}`);
+	for (let i = 0; i < 30; i++) {
+		await new Promise((r) => setTimeout(r, 1500));
+		const res = await s.getTransaction(sent.hash);
+		if (res.status === "SUCCESS") return sent.hash;
+		if (res.status === "FAILED")
+			throw new Error(`tx failed on-chain: ${sent.hash}`);
+	}
+	throw new Error(`tx timed out: ${sent.hash}`);
+}
+
+async function invoke(
+	contractId: string,
+	method: string,
+	args: xdr.ScVal[],
+	signer: Keypair,
+): Promise<string> {
+	const s = server();
+	const acct = await s.getAccount(signer.publicKey());
+	const tx = new TransactionBuilder(acct, {
+		fee: (Number(BASE_FEE) * 1000).toString(),
+		networkPassphrase: Networks.TESTNET,
+	})
+		.addOperation(new Contract(contractId).call(method, ...args))
+		.setTimeout(60)
+		.build();
+	return submit(tx, signer);
+}
+
+/** The contract's Escrow struct as an ScVal — field names and types must
+ * match storage/types.rs exactly; the contract re-validates this struct on
+ * fund (their anti-TOCTOU), so one canonical builder serves both calls. */
+function escrowScVal(o: JobSpec, engagementId: string): xdr.ScVal {
+	const addr = (a: string) => Address.fromString(a).toScVal();
+	const str = (v: string) => xdr.ScVal.scvString(v);
+	const sym = (v: string) => xdr.ScVal.scvSymbol(v);
+	const map = (entries: Array<[string, xdr.ScVal]>) =>
+		xdr.ScVal.scvMap(
+			entries
+				.sort(([a], [b]) => a.localeCompare(b))
+				.map(([k, v]) => new xdr.ScMapEntry({ key: sym(k), val: v })),
+		);
+	return map([
+		["engagement_id", str(engagementId)],
+		["title", str(o.title)],
+		[
+			"roles",
+			map([
+				["approver", addr(o.buyer.publicKey())],
+				["service_provider", addr(o.provider)],
+				["platform", addr(o.buyer.publicKey())],
+				["release_signer", addr(o.buyer.publicKey())],
+				["dispute_resolver", addr(o.judge ?? o.buyer.publicKey())],
+				["receiver", addr(o.provider)],
+			]),
+		],
+		["description", str(o.spec)],
+		["amount", nativeToScVal(o.amount, { type: "i128" })],
+		["platform_fee", nativeToScVal(0, { type: "u32" })],
+		[
+			"milestones",
+			xdr.ScVal.scvVec([
+				map([
+					["description", str(o.spec.slice(0, 500))],
+					["status", str("pending")],
+					["evidence", str("")],
+					["approved", xdr.ScVal.scvBool(false)],
+				]),
+			]),
+		],
+		[
+			"flags",
+			map([
+				["disputed", xdr.ScVal.scvBool(false)],
+				["released", xdr.ScVal.scvBool(false)],
+				["resolved", xdr.ScVal.scvBool(false)],
+			]),
+		],
+		["trustline", map([["address", addr(o.tokenContract)]])],
+		["receiver_memo", nativeToScVal(0, { type: "u32" })],
+	]);
+}
+
+export async function openJob(o: JobSpec): Promise<{
+	contractId: string;
+	engagementId: string;
+	receiptId: string;
+	deployTx: string;
+	initTx: string;
+}> {
+	const s = server();
 	const specHash = createHash("sha256").update(o.spec).digest("hex");
 	const engagementId = `job-${specHash.slice(0, 16)}`;
-	const r = await tw<Record<string, unknown>>("/deployer/single-release", {
-		signer: buyerPub,
-		engagementId,
-		title: o.title,
-		description: o.spec,
-		roles: {
-			approver: buyerPub,
-			serviceProvider: o.roles.provider,
-			platformAddress: buyerPub,
-			releaseSigner: buyerPub,
-			disputeResolver: o.roles.judge ?? buyerPub,
-			receiver: o.roles.provider,
-		},
-		amount: o.amountUsdc,
-		platformFee: 0,
-		milestones: [{ description: o.spec.slice(0, 500) }],
-		trustline: {
-			address: TW_TESTNET_USDC_ISSUER,
-			decimals: 10_000_000,
-		},
-	});
-	const { txHash, raw } = await signAndSend(unsignedFrom(r), o.roles.buyer);
-	const contractId =
-		(raw.contractId as string) ??
-		((raw.data as Record<string, unknown>)?.contractId as string) ??
-		(r.contractId as string) ??
-		"";
-	if (!contractId)
-		throw new Error(
-			`deploy sent but no contractId surfaced: ${JSON.stringify(raw).slice(0, 200)}`,
-		);
+
+	// 1. Deploy an instance of THEIR wasm (empty __constructor).
+	const acct = await s.getAccount(o.buyer.publicKey());
+	const deployTxB = new TransactionBuilder(acct, {
+		fee: (Number(BASE_FEE) * 1000).toString(),
+		networkPassphrase: Networks.TESTNET,
+	})
+		.addOperation(
+			Operation.createCustomContract({
+				address: Address.fromString(o.buyer.publicKey()),
+				wasmHash: Buffer.from(TW_ESCROW_WASM_HASH, "hex"),
+				salt: randomBytes(32),
+			}),
+		)
+		.setTimeout(60)
+		.build();
+	const prepared = await s.prepareTransaction(deployTxB);
+	prepared.sign(o.buyer);
+	const sent = await s.sendTransaction(prepared);
+	if (sent.status === "ERROR")
+		throw new Error(`deploy rejected: ${JSON.stringify(sent.errorResult)}`);
+	let contractId = "";
+	for (let i = 0; i < 30; i++) {
+		await new Promise((r) => setTimeout(r, 1500));
+		const res = await s.getTransaction(sent.hash);
+		if (res.status === "SUCCESS") {
+			contractId = Address.fromScVal(res.returnValue!).toString();
+			break;
+		}
+		if (res.status === "FAILED") throw new Error(`deploy failed: ${sent.hash}`);
+	}
+	if (!contractId) throw new Error("deploy timed out");
+
+	// 2. Initialize with the escrow struct — terms live on-chain from here.
+	const initTx = await invoke(
+		contractId,
+		"initialize_escrow",
+		[escrowScVal(o, engagementId)],
+		o.buyer,
+	);
+
 	const receiptId = record({
 		kind: "job-open",
 		network: "stellar:testnet",
-		amount: String(Math.round(o.amountUsdc * 10_000_000)),
-		payer: buyerPub,
-		payee: o.roles.provider,
-		tx: txHash,
+		amount: o.amount.toString(),
+		asset: o.tokenContract,
+		payer: o.buyer.publicKey(),
+		payee: o.provider,
+		tx: initTx,
 		detail: {
 			contractId,
 			engagementId,
 			specSha256: specHash,
-			judge: o.roles.judge ?? buyerPub,
+			judge: o.judge ?? o.buyer.publicKey(),
+			deployTx: sent.hash,
+			wasmHash: TW_ESCROW_WASM_HASH,
 			title: o.title,
 		},
 	});
-	return { contractId, engagementId, receiptId };
+	return { contractId, engagementId, receiptId, deployTx: sent.hash, initTx };
 }
 
-export async function fundJob(o: {
-	buyer: Keypair;
-	contractId: string;
-	amountUsdc: number;
-	openReceiptId: string;
-}): Promise<{ txHash: string | null; receiptId: string }> {
-	const r = await tw<Record<string, unknown>>(
-		"/escrow/single-release/fund-escrow",
-		{
-			contractId: o.contractId,
-			signer: o.buyer.publicKey(),
-			amount: o.amountUsdc,
-		},
+export async function fundJob(
+	o: JobSpec & {
+		contractId: string;
+		engagementId: string;
+		openReceiptId: string;
+	},
+): Promise<{ tx: string; receiptId: string }> {
+	const tx = await invoke(
+		o.contractId,
+		"fund_escrow",
+		[
+			Address.fromString(o.buyer.publicKey()).toScVal(),
+			escrowScVal(o, o.engagementId),
+			nativeToScVal(o.amount, { type: "i128" }),
+		],
+		o.buyer,
 	);
-	const { txHash } = await signAndSend(unsignedFrom(r), o.buyer);
 	const receiptId = record({
 		kind: "job-fund",
 		network: "stellar:testnet",
-		amount: String(Math.round(o.amountUsdc * 10_000_000)),
+		amount: o.amount.toString(),
+		asset: o.tokenContract,
 		payer: o.buyer.publicKey(),
-		tx: txHash,
+		tx,
 		refs: [o.openReceiptId],
 		detail: { contractId: o.contractId },
 	});
-	return { txHash, receiptId };
+	return { tx, receiptId };
 }
 
 export async function deliverJob(o: {
 	provider: Keypair;
 	contractId: string;
-	/** evidence — a URL or a sha256 of the deliverable; goes on-chain */
 	evidence: string;
 	prevReceiptId: string;
-}): Promise<{ txHash: string | null; receiptId: string }> {
-	const r = await tw<Record<string, unknown>>(
-		"/escrow/single-release/change-milestone-status",
-		{
-			contractId: o.contractId,
-			milestoneIndex: "0",
-			newStatus: "completed",
-			newEvidence: o.evidence,
-			serviceProvider: o.provider.publicKey(),
-		},
+}): Promise<{ tx: string; receiptId: string }> {
+	const tx = await invoke(
+		o.contractId,
+		"change_milestone_status",
+		[
+			nativeToScVal(0, { type: "u32" }),
+			xdr.ScVal.scvString("completed"),
+			xdr.ScVal.scvString(o.evidence), // Option<String>: Some = the value
+			Address.fromString(o.provider.publicKey()).toScVal(),
+		],
+		o.provider,
 	);
-	const { txHash } = await signAndSend(unsignedFrom(r), o.provider);
 	const receiptId = record({
 		kind: "job-deliver",
 		network: "stellar:testnet",
 		payer: o.provider.publicKey(),
-		tx: txHash,
+		tx,
 		refs: [o.prevReceiptId],
 		detail: { contractId: o.contractId, evidence: o.evidence },
 	});
-	return { txHash, receiptId };
+	return { tx, receiptId };
 }
 
 export async function approveJob(o: {
 	approver: Keypair;
 	contractId: string;
 	prevReceiptId: string;
-}): Promise<{ txHash: string | null; receiptId: string }> {
-	const r = await tw<Record<string, unknown>>(
-		"/escrow/single-release/approve-milestone",
-		{
-			contractId: o.contractId,
-			milestoneIndex: "0",
-			approver: o.approver.publicKey(),
-		},
+}): Promise<{ tx: string; receiptId: string }> {
+	const tx = await invoke(
+		o.contractId,
+		"approve_milestone",
+		[
+			nativeToScVal(0, { type: "u32" }),
+			Address.fromString(o.approver.publicKey()).toScVal(),
+		],
+		o.approver,
 	);
-	const { txHash } = await signAndSend(unsignedFrom(r), o.approver);
 	const receiptId = record({
 		kind: "job-approve",
 		network: "stellar:testnet",
 		payer: o.approver.publicKey(),
-		tx: txHash,
+		tx,
 		refs: [o.prevReceiptId],
 		detail: { contractId: o.contractId },
 	});
-	return { txHash, receiptId };
+	return { tx, receiptId };
 }
 
 export async function releaseJob(o: {
 	releaseSigner: Keypair;
 	contractId: string;
+	twFeeAddress: string;
 	prevReceiptId: string;
-}): Promise<{ txHash: string | null; receiptId: string }> {
-	const r = await tw<Record<string, unknown>>(
-		"/escrow/single-release/release-funds",
-		{
-			contractId: o.contractId,
-			releaseSigner: o.releaseSigner.publicKey(),
-		},
+}): Promise<{ tx: string; receiptId: string }> {
+	const tx = await invoke(
+		o.contractId,
+		"release_funds",
+		[
+			Address.fromString(o.releaseSigner.publicKey()).toScVal(),
+			Address.fromString(o.twFeeAddress).toScVal(),
+		],
+		o.releaseSigner,
 	);
-	const { txHash } = await signAndSend(unsignedFrom(r), o.releaseSigner);
 	const receiptId = record({
 		kind: "job-release",
 		network: "stellar:testnet",
 		payer: o.releaseSigner.publicKey(),
-		tx: txHash,
+		tx,
 		refs: [o.prevReceiptId],
-		detail: { contractId: o.contractId },
+		detail: { contractId: o.contractId, twFeeAddress: o.twFeeAddress },
 	});
-	return { txHash, receiptId };
-}
-
-export async function jobStatus(contractId: string): Promise<unknown> {
-	const res = await fetch(
-		`${BASE}/helper/get-escrow-by-contract-ids?contractIds=${encodeURIComponent(contractId)}`,
-		{ headers: { "x-api-key": apiKey() }, signal: AbortSignal.timeout(30_000) },
-	);
-	return res.json();
+	return { tx, receiptId };
 }
