@@ -49,6 +49,7 @@ import {
 	resolveHost,
 } from "./pay/policy.js";
 import { BRIDGES, EXCHANGES, onramps, partnerRamps } from "./pay/ramps.js";
+import { list as listReceipts, record, verifyOnChain } from "./pay/receipts.js";
 import {
 	addTrustline,
 	history,
@@ -86,6 +87,8 @@ type Args = {
 	/** --force: replace an existing account of the same name */
 	force: boolean;
 	limit?: number;
+	/** receipts --verify <id>: prove one ledger row against the chain */
+	verifyReceipt?: string;
 };
 
 // Documented, stable exit codes so a wrapper script can branch without parsing
@@ -158,7 +161,8 @@ function parse(argv: string[]): Args {
 		else if (t === "--limit") {
 			const n = Number(next());
 			if (Number.isInteger(n) && n > 0) a.limit = n;
-		} else if (!t.startsWith("-")) {
+		} else if (t === "--verify") a.verifyReceipt = next();
+		else if (!t.startsWith("-")) {
 			// Keep EVERY bare token in order: the first is the subcommand/url,
 			// later ones are paths (`account export --name main backup.json`).
 			if (!a.url) a.url = t;
@@ -694,6 +698,40 @@ async function cmdHistory(a: Args): Promise<void> {
 	});
 }
 
+async function cmdReceipts(a: Args): Promise<void> {
+	// --verify <id>: the PGTR half — prove a row against the CHAIN, so the
+	// receipt is a portable authorization artifact, not a log line.
+	const verifyId = a.verifyReceipt;
+	if (verifyId) {
+		const row = listReceipts({ limit: 10_000 }).find((r) =>
+			r.id.startsWith(verifyId),
+		);
+		if (!row) {
+			console.error(`no receipt with id ${verifyId}`);
+			process.exitCode = EXIT.usage;
+			return;
+		}
+		const v = await verifyOnChain(row);
+		emit(a, { receipt: row, ...v }, () => {
+			for (const c of v.checks)
+				console.log(
+					`  ${c.ok ? "✓" : "✗"} ${c.name}${c.note ? ` — ${c.note}` : ""}`,
+				);
+			console.log(v.ok ? "VERIFIED on-chain" : "NOT verified");
+		});
+		if (!v.ok) process.exitCode = EXIT.runtime;
+		return;
+	}
+	const rows = listReceipts({ limit: a.limit ?? 20 });
+	emit(a, { receipts: rows }, () => {
+		if (!rows.length) return console.log("no receipts yet");
+		for (const r of rows)
+			console.log(
+				`${r.at.slice(0, 19)}  ${r.id}  ${r.kind.padEnd(15)} ${r.amount ?? ""} ${r.url ?? r.detail?.rule ?? ""}${r.refs?.length ? `  ⤴ ${r.refs.join(",")}` : ""}`,
+			);
+	});
+}
+
 async function cmdVerify(a: Args): Promise<void> {
 	if (!a.url) {
 		console.error(
@@ -755,6 +793,20 @@ async function cmdCurl(a: Args, init: RequestInit): Promise<void> {
 	if (!a.url) throw new Error("curl <url>");
 	await ensureSecretLoaded(a.account);
 	const wallet = loadWallet();
+	// Every spend DECISION becomes a receipt row naming the rule that fired
+	// (policy-as-artifact); the payment row that may follow references it.
+	let decisionId: string | undefined;
+	const logDecision = (o: Offer, allowed: boolean, rule: string) => {
+		decisionId = record({
+			kind: "policy-decision",
+			network: wallet.network,
+			url: a.url,
+			amount: o.amount,
+			asset: o.asset,
+			payee: o.payTo,
+			detail: { allowed, rule },
+		});
+	};
 	const approve = async (o: Offer, url: string) => {
 		const line = `pay ${describeOffer(o)} for ${a.method} ${a.url}`;
 		// The per-host policy (deny / allowlist / host ceiling) applies on EVERY
@@ -765,13 +817,19 @@ async function cmdCurl(a: Args, init: RequestInit): Promise<void> {
 		});
 		if (gate.blocked) {
 			console.error(`${line}\n  refused: ${gate.blocked}`);
+			logDecision(o, false, `host-policy: ${gate.blocked}`);
 			return false;
 		}
-		if (!a.yes && wallet.network !== "stellar:testnet") return ask(line);
+		if (!a.yes && wallet.network !== "stellar:testnet") {
+			const human = await ask(line);
+			logDecision(o, human, human ? "human-approved" : "human-declined");
+			return human;
+		}
 		const v = autoApprove(o, { network: wallet.network, maxUsd: gate.maxUsd });
 		console.error(
 			`${line}${v.ok ? " (approved)" : `\n  refused: ${v.reason}`}`,
 		);
+		logDecision(o, v.ok, v.ok ? "auto-approve" : v.reason);
 		return v.ok;
 	};
 	const r = await payFetch(a.url, init, {
@@ -785,6 +843,20 @@ async function cmdCurl(a: Args, init: RequestInit): Promise<void> {
 		prefer: a.prefer,
 	});
 	const bodyText = await r.res.text();
+	if (r.paid) {
+		record({
+			kind: "payment",
+			network: wallet.network,
+			protocol: r.paid.protocol,
+			url: a.url,
+			amount: r.paid.offer.amount,
+			asset: r.paid.offer.asset,
+			payer: wallet.publicKey,
+			payee: r.paid.offer.payTo,
+			tx: r.paid.hash,
+			refs: decisionId ? [decisionId] : undefined,
+		});
+	}
 	const usd = r.paid ? offerUSD(r.paid.offer) : null;
 	const paid = r.paid
 		? {
@@ -954,6 +1026,7 @@ WALLET
   send <G…address|account-name> --amount <USDC|max> [--yes]
                                              send USDC; 'max' drains the balance
   history [--limit N] [--json]
+  receipts [--limit N] [--verify ID] [--json]  the local ledger; --verify proves a row on-chain
 
 AGENTS
   mcp                                        serve the MCP on stdio
@@ -980,6 +1053,7 @@ const commands: Record<string, (a: Args, init: RequestInit) => Promise<void>> =
 		topup: cmdTopup,
 		send: cmdSend,
 		history: cmdHistory,
+		receipts: cmdReceipts,
 		verify: cmdVerify,
 		offers: cmdOffers,
 		curl: cmdCurl,

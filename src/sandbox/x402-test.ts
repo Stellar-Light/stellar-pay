@@ -51,7 +51,10 @@ async function main() {
 	console.log("═══ x402 v2 conformance — stock client pays our sandbox ═══\n");
 	const buyer = Keypair.random();
 	const seller = Keypair.random();
-	await Promise.all([friendbot(buyer.publicKey()), friendbot(seller.publicKey())]);
+	await Promise.all([
+		friendbot(buyer.publicKey()),
+		friendbot(seller.publicKey()),
+	]);
 	console.log(`buyer   ${buyer.publicKey()}`);
 	console.log(`seller  ${seller.publicKey()}\n`);
 
@@ -99,8 +102,7 @@ async function main() {
 			spendControls: {
 				allowedAssets: [
 					{
-						asset:
-							"CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+						asset: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
 						network: "stellar:testnet",
 					},
 				],
@@ -134,7 +136,9 @@ async function main() {
 		// real, honestly noted, and irrelevant to whether the payment settled.
 		await new Promise((r) => setTimeout(r, 4000));
 		const txHash = (receipt as { transaction?: string }).transaction ?? "";
-		const fx = await fetch(`${HORIZON}/transactions/${txHash}/effects?limit=20`);
+		const fx = await fetch(
+			`${HORIZON}/transactions/${txHash}/effects?limit=20`,
+		);
 		const fxd = (await fx.json()) as {
 			_embedded?: {
 				records?: Array<{ type: string; account?: string; amount?: string }>;
@@ -153,10 +157,9 @@ async function main() {
 		console.log(
 			`        seller NET delta ${sellerAfter - sellerBefore} stroops (payment ${stroops(PRICE_XLM)} minus the sponsored network fee — the demo price is below the soroban fee, deliberately)`,
 		);
-		console.log(
-			`        https://stellar.expert/explorer/testnet/tx/${txHash}`,
-		);
-		if (!credited) throw new Error("payment effect not found in the receipt's tx");
+		console.log(`        https://stellar.expert/explorer/testnet/tx/${txHash}`);
+		if (!credited)
+			throw new Error("payment effect not found in the receipt's tx");
 		console.log(
 			"\nRESULT: PASS — unmodified @x402/fetch client paid our x402 v2 endpoint, settled on testnet, receipt decoded.",
 		);

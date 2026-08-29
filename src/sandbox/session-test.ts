@@ -24,21 +24,21 @@
  */
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
+import { stellar as stellarChannelClient } from "@stellar/mpp/channel/client";
 import {
+	Address,
 	Asset,
 	BASE_FEE,
 	Keypair,
 	Networks,
+	nativeToScVal,
 	Operation,
 	rpc,
 	StrKey,
 	TransactionBuilder,
 	xdr,
-	Address,
-	nativeToScVal,
 } from "@stellar/stellar-sdk";
 import { Mppx } from "mppx/client";
-import { stellar as stellarChannelClient } from "@stellar/mpp/channel/client";
 import { fileStore, sessionPaths } from "../pay/session-store.js";
 
 const RPC_URL = "https://soroban-testnet.stellar.org";
@@ -126,8 +126,7 @@ async function deployChannel(
 				contract: Address.fromScVal(res.returnValue!).toString(),
 				hash: sent.hash,
 			};
-		if (res.status === "FAILED")
-			throw new Error(`deploy failed: ${sent.hash}`);
+		if (res.status === "FAILED") throw new Error(`deploy failed: ${sent.hash}`);
 	}
 	throw new Error("deploy timed out");
 }
@@ -175,23 +174,17 @@ async function main() {
 	);
 
 	// ── Spawn OUR sandbox in channel mode ─────────────────────────────────
-	const child = spawn(
-		"npx",
-		["tsx", "sandbox-server/server.ts"],
-		{
-			env: {
-				...process.env,
-				SELLER_SECRET_KEY: seller.secret(),
-				CHANNEL_CONTRACT: contract,
-				COMMITMENT_PUBKEY: Buffer.from(commitKp.rawPublicKey()).toString(
-					"hex",
-				),
-				PORT: String(PORT),
-				PRICE_XLM,
-			},
-			stdio: ["ignore", "pipe", "pipe"],
+	const child = spawn("npx", ["tsx", "sandbox-server/server.ts"], {
+		env: {
+			...process.env,
+			SELLER_SECRET_KEY: seller.secret(),
+			CHANNEL_CONTRACT: contract,
+			COMMITMENT_PUBKEY: Buffer.from(commitKp.rawPublicKey()).toString("hex"),
+			PORT: String(PORT),
+			PRICE_XLM,
 		},
-	);
+		stdio: ["ignore", "pipe", "pipe"],
+	});
 	const serverLog: string[] = [];
 	child.stdout.on("data", (d) => serverLog.push(String(d)));
 	child.stderr.on("data", (d) => serverLog.push(String(d)));
@@ -201,7 +194,8 @@ async function main() {
 		const health = (await (await fetch(`${base}/health`)).json()) as {
 			channelMode?: boolean;
 		};
-		if (!health.channelMode) throw new Error("sandbox did not enable channel mode");
+		if (!health.channelMode)
+			throw new Error("sandbox did not enable channel mode");
 		console.log(`sandbox   ${base} (channel mode on)\n`);
 
 		const sellerTxBefore = await txCount(seller.publicKey());
@@ -237,7 +231,9 @@ async function main() {
 			const r = await mppx.fetch(`${base}/data-session`);
 			times.push(Date.now() - s);
 			if (r.status !== 200)
-				throw new Error(`session call ${i + 1} → ${r.status}: ${await r.text()}`);
+				throw new Error(
+					`session call ${i + 1} → ${r.status}: ${await r.text()}`,
+				);
 			lastBody = (await r.json()) as { mode?: string };
 		}
 		console.log(
@@ -293,7 +289,9 @@ async function main() {
 			},
 		} as RequestInit);
 		if (closeRes.status !== 200)
-			console.log(`close     response ${closeRes.status}: ${await closeRes.text()}`);
+			console.log(
+				`close     response ${closeRes.status}: ${await closeRes.text()}`,
+			);
 		const closeMs = Date.now() - s;
 		console.log(
 			`close     requested via MPP credential (${closeMs} ms) — waiting for on-chain settle…`,
