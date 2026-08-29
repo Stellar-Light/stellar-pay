@@ -37,6 +37,7 @@ import {
 } from "./pay/keystore.js";
 import {
 	describeOffer,
+	isStellar,
 	type Offer,
 	offerUSD,
 	readOffers,
@@ -59,6 +60,14 @@ import {
 	setupWallet,
 	topupInfo,
 } from "./pay/send.js";
+import {
+	closeChannel,
+	DEFAULT_DEPOSIT_XLM,
+	hostOf,
+	openChannel,
+	sessionFetch,
+} from "./pay/session.js";
+import { getChannel, listChannels } from "./pay/session-store.js";
 import { verifyEndpoint } from "./pay/verify.js";
 import { balances, loadWallet } from "./pay/wallet.js";
 
@@ -89,6 +98,10 @@ type Args = {
 	limit?: number;
 	/** receipts --verify <id>: prove one ledger row against the chain */
 	verifyReceipt?: string;
+	/** curl --session: pay via the host's registered one-way channel */
+	session: boolean;
+	/** session open --deposit <xlm>: channel deposit (default 5) */
+	deposit?: number;
 };
 
 // Documented, stable exit codes so a wrapper script can branch without parsing
@@ -120,6 +133,7 @@ function parse(argv: string[]): Args {
 		buy: false,
 		keychain: false,
 		maxUsdSet: false,
+		session: false,
 		positional: [],
 		force: false,
 	};
@@ -162,7 +176,11 @@ function parse(argv: string[]): Args {
 			const n = Number(next());
 			if (Number.isInteger(n) && n > 0) a.limit = n;
 		} else if (t === "--verify") a.verifyReceipt = next();
-		else if (!t.startsWith("-")) {
+		else if (t === "--session") a.session = true;
+		else if (t === "--deposit") {
+			const n = Number(next());
+			if (Number.isFinite(n) && n > 0) a.deposit = n;
+		} else if (!t.startsWith("-")) {
 			// Keep EVERY bare token in order: the first is the subcommand/url,
 			// later ones are paths (`account export --name main backup.json`).
 			if (!a.url) a.url = t;
@@ -698,6 +716,102 @@ async function cmdHistory(a: Args): Promise<void> {
 	});
 }
 
+async function cmdSession(a: Args): Promise<void> {
+	// positional[0] is the subcommand (`account export <path>` precedent).
+	const sub = a.positional[0] ?? "";
+	// `session open <url>`: the deposit IS the spend — approval before deploy.
+	if (sub === "open") {
+		const url = a.positional[1];
+		if (!url || !URL.canParse(url))
+			return usageError("usage: stellar-pay session open <url> [--deposit 5]");
+		await ensureSecretLoaded(a.account);
+		const wallet = loadWallet();
+		// The seller's receiving account comes from THEIR OWN 402 — never from
+		// a catalog or a flag someone could spoof.
+		const probe = await fetch(url, { redirect: "manual" });
+		const offers = readOffers(probe.headers, await probe.text());
+		const payTo = offers.find((o) => isStellar(o.network))?.payTo;
+		if (probe.status !== 402 || !payTo)
+			return usageError(
+				`${url} did not answer a Stellar 402 (status ${probe.status}) — nothing to open a channel against`,
+			);
+		const depositXlm = a.deposit ?? DEFAULT_DEPOSIT_XLM;
+		const line = `open a payment channel to ${hostOf(url)}: deposit ${depositXlm} XLM (max exposure), recipient ${payTo.slice(0, 6)}…`;
+		if (!a.yes && wallet.network !== "stellar:testnet") {
+			if (!(await ask(line))) {
+				process.exitCode = EXIT.refused;
+				return;
+			}
+		} else console.error(`${line} (approved)`);
+		const r = await openChannel({ wallet, url, recipient: payTo, depositXlm });
+		emit(
+			a,
+			{
+				host: r.host,
+				contract: r.contract,
+				commitment_pubkey_hex: r.commitmentPubHex,
+				deposit_xlm: depositXlm,
+				tx: r.tx,
+				explorer: `https://stellar.expert/explorer/testnet/tx/${r.tx}`,
+			},
+			() => {
+				console.log(`channel  ${r.contract}`);
+				console.log(
+					`deposit  ${depositXlm} XLM (your max exposure to ${r.host})`,
+				);
+				console.log(
+					`tx       https://stellar.expert/explorer/testnet/tx/${r.tx}`,
+				);
+				console.log(
+					`\nGive the seller these (our sandbox takes them as env):\n  CHANNEL_CONTRACT=${r.contract}\n  COMMITMENT_PUBKEY=${r.commitmentPubHex}\n\nThen: stellar-pay curl <url> --session`,
+				);
+			},
+		);
+		return;
+	}
+	if (sub === "close") {
+		const url = a.positional[1];
+		if (!url || !URL.canParse(url))
+			return usageError("usage: stellar-pay session close <url>");
+		const c = getChannel(hostOf(url));
+		if (!c) return usageError(`no channel for ${hostOf(url)}`);
+		// Best-known cumulative: tracked by sessionFetch from the client's own
+		// signed events (never adopted from the server). The close must cover
+		// its own request, so read one price step from the live 402.
+		const last = BigInt(c.lastCumulative ?? "0");
+		const probe = await fetch(url, { redirect: "manual" });
+		const priceStep = BigInt(
+			readOffers(probe.headers, await probe.text()).find((o) =>
+				isStellar(o.network),
+			)?.amount ?? "1",
+		);
+		const r = await closeChannel({ url, lastCumulative: last, priceStep });
+		const settled = (last + priceStep).toString();
+		emit(a, { status: r.status, settled_cumulative: settled }, () => {
+			console.log(
+				r.status === 200
+					? `closed — server settled on-chain (cumulative ${last} + one price step ${priceStep})`
+					: `close returned ${r.status} — the channel may already be closed or the server refused`,
+			);
+		});
+		if (r.status !== 200) process.exitCode = EXIT.runtime;
+		return;
+	}
+	// default: status
+	const channels = listChannels();
+	emit(a, { channels }, () => {
+		const hosts = Object.keys(channels);
+		if (!hosts.length)
+			return console.log(
+				`no session channels — open one: stellar-pay session open <url> [--deposit ${DEFAULT_DEPOSIT_XLM}]`,
+			);
+		for (const [host, c] of Object.entries(channels))
+			console.log(
+				`${host}  ${c.contract.slice(0, 8)}…  deposit ${Number(BigInt(c.depositStroops)) / 1e7} XLM  opened ${c.openedAt.slice(0, 10)}`,
+			);
+	});
+}
+
 async function cmdReceipts(a: Args): Promise<void> {
 	// --verify <id>: the PGTR half — prove a row against the CHAIN, so the
 	// receipt is a portable authorization artifact, not a log line.
@@ -791,6 +905,59 @@ async function cmdOffers(a: Args, init: RequestInit): Promise<void> {
 
 async function cmdCurl(a: Args, init: RequestInit): Promise<void> {
 	if (!a.url) throw new Error("curl <url>");
+	// --session: pay through the host's registered one-way channel — every
+	// call is an OFF-CHAIN signed commitment (deposit already capped exposure
+	// at `session open`, which is where approval happened). No per-call
+	// prompt: the channel cannot pay the seller more than the deposit.
+	if (a.session) {
+		const host = hostOf(a.url);
+		const { fetch: sf, channel } = sessionFetch(host);
+		const t0 = Date.now();
+		const res = await sf(a.url, init);
+		const ms = Date.now() - t0;
+		const bodyText = await res.text();
+		const priced = res.headers.get("payment-receipt") != null;
+		if (priced) {
+			// One receipt per paid call, chained to the channel-open receipt —
+			// the attribution chain: open ← call ← call ← … ← close.
+			const openRow = listReceipts({ kind: "channel-open", limit: 10_000 })
+				.reverse()
+				.find((r) => r.detail?.host === host);
+			record({
+				kind: "payment",
+				network: channel.network,
+				protocol: "channel",
+				url: a.url,
+				payer: channel.funder,
+				payee: channel.recipient,
+				tx: null,
+				refs: openRow ? [openRow.id] : undefined,
+				detail: { session: true, offChain: true },
+			});
+		}
+		if (!res.ok && res.status !== 402) process.exitCode = EXIT.runtime;
+		if (res.status === 402) process.exitCode = EXIT.refused;
+		if (a.json) {
+			console.log(
+				JSON.stringify(
+					{
+						status: res.status,
+						content_type: res.headers.get("content-type"),
+						body: bodyText,
+						session: { host, contract: channel.contract, ms, offChain: true },
+					},
+					null,
+					1,
+				),
+			);
+			return;
+		}
+		console.error(
+			`session ${host} · ${ms} ms · off-chain commitment (channel ${channel.contract.slice(0, 8)}…)`,
+		);
+		console.log(bodyText);
+		return;
+	}
 	await ensureSecretLoaded(a.account);
 	const wallet = loadWallet();
 	// Every spend DECISION becomes a receipt row naming the rule that fired
@@ -1027,6 +1194,8 @@ WALLET
                                              send USDC; 'max' drains the balance
   history [--limit N] [--json]
   receipts [--limit N] [--verify ID] [--json]  the local ledger; --verify proves a row on-chain
+  session open <url> [--deposit 5] | status | close <url>   one-way payment channels (testnet)
+  curl <url> --session                   pay via the host's channel — off-chain per call
 
 AGENTS
   mcp                                        serve the MCP on stdio
@@ -1054,6 +1223,7 @@ const commands: Record<string, (a: Args, init: RequestInit) => Promise<void>> =
 		send: cmdSend,
 		history: cmdHistory,
 		receipts: cmdReceipts,
+		session: cmdSession,
 		verify: cmdVerify,
 		offers: cmdOffers,
 		curl: cmdCurl,

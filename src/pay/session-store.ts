@@ -58,6 +58,8 @@ type SessionFile = {
 			network: string;
 			openedAt: string;
 			openTx?: string;
+			/** last signed cumulative (stroops, string) — kept by sessionFetch */
+			lastCumulative?: string;
 		}
 	>;
 };
@@ -99,6 +101,22 @@ export function fileStore() {
 
 export function getChannel(host: string) {
 	return read().channels[host] ?? null;
+}
+
+export function listChannels() {
+	return read().channels;
+}
+
+/** Silent field update — no receipt row (receipts mark EVENTS, not bookkeeping). */
+export function updateChannel(
+	host: string,
+	patch: Partial<SessionFile["channels"][string]>,
+) {
+	const d = read();
+	const c = d.channels[host];
+	if (!c) return;
+	d.channels[host] = { ...c, ...patch };
+	write(d);
 }
 
 export function putChannel(

@@ -39,7 +39,8 @@
 		"test:session": "tsx src/sandbox/session-test.ts",
 		"test:x402": "tsx src/sandbox/x402-test.ts",
 		"test:receipts": "tsx src/sandbox/receipts-test.ts",
-		"test:vault": "tsx src/sandbox/vault-test.ts"
+		"test:vault": "tsx src/sandbox/vault-test.ts",
+		"test:session-ux": "tsx src/sandbox/session-ux-test.ts"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.3.2",
