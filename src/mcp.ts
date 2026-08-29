@@ -34,9 +34,18 @@ import {
 	type Governed,
 	type PreferInit,
 } from "./pay/governed.js";
-import { type Offer, offerUSD } from "./pay/offers.js";
+import { isStellar, type Offer, offerUSD, readOffers } from "./pay/offers.js";
 import { autoApprove, decide, explorer } from "./pay/policy.js";
+import { list as listReceiptRows, record } from "./pay/receipts.js";
 import { history, sendUSDC } from "./pay/send.js";
+import {
+	closeChannel,
+	DEFAULT_DEPOSIT_XLM,
+	hostOf,
+	openChannel,
+	sessionFetch,
+} from "./pay/session.js";
+import { getChannel, listChannels } from "./pay/session-store.js";
 import { balances, loadWallet, type Wallet } from "./pay/wallet.js";
 
 /** A spend cap from the environment must be a finite positive number — anything
@@ -482,11 +491,78 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 					])
 					.optional(),
 				prefer: z.enum(["x402", "mpp"]).optional(),
+				session: z
+					.boolean()
+					.optional()
+					.describe(
+						"pay via the host's open payment channel (see session_open): off-chain commitment per call, ~10x faster, capped by the channel deposit",
+					),
 			},
 		},
-		async ({ url, method, headers, body, prefer }) => {
+		async ({ url, method, headers, body, prefer, session }) => {
 			const blocked = await blockedTarget(url);
 			if (blocked) return json({ error: blocked });
+			if (session) {
+				// Channel path: no per-call spend gate — exposure was capped at
+				// session_open by the deposit, and the channel cannot pay the
+				// seller more than that. Receipts still land per call.
+				try {
+					const host = hostOf(url);
+					const { fetch: sf, channel } = sessionFetch(host);
+					const t0 = Date.now();
+					const res = await sf(url, {
+						method: (method ?? (body != null ? "POST" : "GET")).toUpperCase(),
+						headers: {
+							"user-agent": "stellar-pay-mcp/0.1",
+							...(body != null && typeof body !== "string"
+								? { "content-type": "application/json" }
+								: {}),
+							...(headers ?? {}),
+						},
+						body:
+							body == null
+								? undefined
+								: typeof body === "string"
+									? body
+									: JSON.stringify(body),
+						signal: AbortSignal.timeout(60_000),
+					});
+					const ms = Date.now() - t0;
+					const text = await res.text();
+					if (res.headers.get("payment-receipt") != null) {
+						const openRow = listReceiptRows({
+							kind: "channel-open",
+							limit: 10_000,
+						})
+							.reverse()
+							.find((r) => r.detail?.host === host);
+						record({
+							kind: "payment",
+							network: channel.network,
+							protocol: "channel",
+							url,
+							payer: channel.funder,
+							payee: channel.recipient,
+							tx: null,
+							refs: openRow ? [openRow.id] : undefined,
+							detail: { session: true, offChain: true, surface: "mcp" },
+						});
+					}
+					return json({
+						status: res.status,
+						body: text.slice(0, 20_000),
+						session: {
+							host,
+							contract: channel.contract,
+							ms,
+							off_chain: true,
+							last_cumulative: getChannel(host)?.lastCumulative ?? null,
+						},
+					});
+				} catch (e) {
+					return json({ error: (e as Error).message });
+				}
+			}
 			const w = getWallet();
 			const g = await getGoverned();
 			const isJson = body != null && typeof body !== "string";
@@ -686,6 +762,105 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 			const w = getWallet();
 			const b = await balances(w.publicKey, w.network);
 			return json({ public_key: w.publicKey, network: w.network, ...b });
+		},
+	);
+
+	server.registerTool(
+		"session_open",
+		{
+			description: `Open a one-way payment channel to a host: ONE on-chain deposit (default ${DEFAULT_DEPOSIT_XLM} XLM — your maximum exposure to that seller, enforced by the channel contract), then curl with session:true pays off-chain per call (~10x faster, no per-call fee). TESTNET ONLY (the channel contract is unaudited). The seller must register the returned channel_contract + commitment_pubkey_hex before session calls work — returns them for the operator.`,
+			inputSchema: {
+				url: z.string().url(),
+				deposit_xlm: z.number().positive().max(100).optional(),
+			},
+		},
+		async ({ url, deposit_xlm }) => {
+			const blocked = await blockedTarget(url);
+			if (blocked) return json({ error: blocked });
+			try {
+				const w = getWallet();
+				// The seller's payTo comes from THEIR live 402, never a catalog.
+				const probe = await fetch(url, { redirect: "manual" });
+				const offers = readOffers(probe.headers, await probe.text());
+				const payTo = offers.find((o) => isStellar(o.network))?.payTo;
+				if (probe.status !== 402 || !payTo)
+					return json({
+						error: `${url} did not answer a Stellar 402 (status ${probe.status}) — nothing to open a channel against`,
+					});
+				const r = await openChannel({
+					wallet: w,
+					url,
+					recipient: payTo,
+					depositXlm: deposit_xlm,
+				});
+				return json({
+					host: r.host,
+					channel_contract: r.contract,
+					commitment_pubkey_hex: r.commitmentPubHex,
+					deposit_xlm: deposit_xlm ?? DEFAULT_DEPOSIT_XLM,
+					open_tx: r.tx,
+					explorer: `https://stellar.expert/explorer/testnet/tx/${r.tx}`,
+					next: "give channel_contract + commitment_pubkey_hex to the seller's operator, then call curl with session:true",
+				});
+			} catch (e) {
+				return json({ error: (e as Error).message });
+			}
+		},
+	);
+
+	server.registerTool(
+		"session_status",
+		{
+			description:
+				"List open payment channels: host, contract, deposit, and the last signed cumulative (what the seller could claim if the channel closed now).",
+			inputSchema: {},
+		},
+		async () => {
+			const channels = listChannels();
+			return json({
+				channels: Object.fromEntries(
+					Object.entries(channels).map(([host, c]) => [
+						host,
+						{
+							contract: c.contract,
+							deposit_stroops: c.depositStroops,
+							last_cumulative: c.lastCumulative ?? "0",
+							opened_at: c.openedAt,
+						},
+					]),
+				),
+			});
+		},
+	);
+
+	server.registerTool(
+		"session_close",
+		{
+			description:
+				"Close a host's payment channel: signs a close commitment for the amount actually spent plus one price step (the close rides a paid request), the seller settles on-chain, and the unspent deposit refunds to your wallet automatically after settlement.",
+			inputSchema: { url: z.string().url() },
+		},
+		async ({ url }) => {
+			try {
+				const host = hostOf(url);
+				const c = getChannel(host);
+				if (!c) return json({ error: `no channel for ${host}` });
+				const last = BigInt(c.lastCumulative ?? "0");
+				const probe = await fetch(url, { redirect: "manual" });
+				const priceStep = BigInt(
+					readOffers(probe.headers, await probe.text()).find((o) =>
+						isStellar(o.network),
+					)?.amount ?? "1",
+				);
+				const r = await closeChannel({ url, lastCumulative: last, priceStep });
+				return json({
+					status: r.status,
+					settled_cumulative: (last + priceStep).toString(),
+					closed: r.status === 200,
+				});
+			} catch (e) {
+				return json({ error: (e as Error).message });
+			}
 		},
 	);
 
