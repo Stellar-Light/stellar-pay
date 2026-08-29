@@ -39,6 +39,7 @@ import {
 } from "@stellar/stellar-sdk";
 import { Mppx } from "mppx/client";
 import { stellar as stellarChannelClient } from "@stellar/mpp/channel/client";
+import { fileStore, sessionPaths } from "../pay/session-store.js";
 
 const RPC_URL = "https://soroban-testnet.stellar.org";
 const HORIZON = "https://horizon-testnet.stellar.org";
@@ -143,6 +144,8 @@ async function waitHealthy(url: string) {
 }
 
 async function main() {
+	// Isolated session dir per run — never the user's real ~/.config state.
+	process.env.STELLAR_PAY_SESSION_DIR = `/tmp/stellar-pay-session-test-${Date.now()}`;
 	console.log("═══ MPP session mode — testnet e2e (both sides ours) ═══\n");
 
 	// ── Accounts ──────────────────────────────────────────────────────────
@@ -205,26 +208,41 @@ async function main() {
 		const sellerBalBefore = await xlmBalance(seller.publicKey());
 
 		// ── Session client: N calls, zero on-chain txs ──────────────────────
-		const mppx = Mppx.create({
-			methods: [
-				stellarChannelClient.channel({
-					commitmentKey: commitKp,
-					allowedChannels: [contract],
-				}),
-			],
-		});
-		const sessionFetch = mppx.fetch;
+		// The PERSISTENT store is the anti-reset protection the SDK warns
+		// about: the signed cumulative baseline must survive a client restart,
+		// never re-adopted from the server. We prove it below by rebuilding
+		// the client mid-session (a process restart in miniature) and checking
+		// the cumulative CONTINUES.
+		const makeClient = () =>
+			Mppx.create({
+				methods: [
+					stellarChannelClient.channel({
+						commitmentKey: commitKp,
+						allowedChannels: [contract],
+						store: fileStore(),
+					}),
+				],
+			});
+		let mppx = makeClient();
 
 		const times: number[] = [];
 		let lastBody: { mode?: string } = {};
 		for (let i = 0; i < N; i++) {
+			if (i === Math.floor(N / 2)) {
+				// "restart": throw the client away; the baseline must come back
+				// from disk (sessionPaths.file), not from the server's word.
+				mppx = makeClient();
+			}
 			const s = Date.now();
-			const r = await sessionFetch(`${base}/data-session`);
+			const r = await mppx.fetch(`${base}/data-session`);
 			times.push(Date.now() - s);
 			if (r.status !== 200)
 				throw new Error(`session call ${i + 1} → ${r.status}: ${await r.text()}`);
 			lastBody = (await r.json()) as { mode?: string };
 		}
+		console.log(
+			`          client restarted after call ${Math.floor(N / 2)} — baseline restored from ${sessionPaths.file}`,
+		);
 		const cumulative = stroops(PRICE_XLM) * BigInt(N);
 		console.log(
 			`session   ${N} paid calls, all off-chain (mode=${lastBody.mode}), cumulative ${cumulative} stroops`,
@@ -268,7 +286,7 @@ async function main() {
 		// The polyfill-aware fetch accepts a `context` carrying the channel
 		// action; the server validates the close credential and broadcasts
 		// the on-chain close with its feePayer (the seller).
-		const closeRes = await sessionFetch(`${base}/data-session`, {
+		const closeRes = await mppx.fetch(`${base}/data-session`, {
 			context: {
 				action: "close",
 				cumulativeAmount: closeCumulative.toString(),

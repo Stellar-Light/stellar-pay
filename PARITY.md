@@ -60,10 +60,10 @@ checked-in `test:proxy` covers the plain-HTTP pay path end to end.
 
 | Capability | pay.sh | stellar-pay | |
 |---|---|---|---|
-| Sell / monetize an API (self-host paywall) | `gate`,`server` (YAML, self-host or Vercel) | — (use SDF's x402/MPP middleware) | covered upstream on Stellar |
+| Sell / monetize an API (self-host paywall) | `gate`,`server` (YAML, self-host or Vercel) | sandbox serves MPP charge + channel + x402 v2 (in-process facilitator) | our sandbox is a reference seller on all three protocols (`test:x402` proves the x402 route with an unmodified `@x402/fetch` client); production selling still belongs to SDF's middleware |
 | Seller onboarding, neutral | — | `verify` (checks a provider's 402 is correct + Stellar-payable) | ↑ neutral, no gateway |
 | Author a catalog listing | `skills`,`catalog scaffold`,`create_skill` | — | we probe instead of authoring |
-| High-frequency channels | `subscriptions` (session) | ○ | needs the (unaudited) one-way-channel contract + a channel-mode server — none exist yet |
+| High-frequency channels | `subscriptions` (session) | `test:session` (testnet e2e) | ✓ on testnet: channel deploy-from-hash → N off-chain commitments (persistent anti-reset store) → MPP close, 10× per-call vs charge, verified refund. Mainnet stays gated on the one-way-channel audit; no public channel-mode server exists yet besides our sandbox |
 | Visual payment debugger | web UI | runnable sandboxes (`npm run test:*`) | different shape |
 
 

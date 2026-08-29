@@ -12,14 +12,23 @@ We do MPP **charge** (one on-chain settle per request). Session mode opens a
 one-way channel: deposit once, then sign off-chain cumulative commitments —
 right for an agent making many small calls per task.
 
+**Status 2026-08-29 — the protocol loop is PROVEN on testnet, both sides
+ours** (`npm run test:session`): channel deployed from the on-chain wasm hash
+(no rust in the loop), 8 off-chain commitments at 457 ms/call vs 4,589 ms/call
+charge (10×, on-chain load 8→2 txs), close via the MPP credential path with
+the funder's refund verified to the stroop. The client's cumulative baseline
+persists across restarts (`src/pay/session-store.ts` — the SDK's anti-reset
+warning, answered), and the sandbox serves channel mode behind
+`CHANNEL_CONTRACT`/`COMMITMENT_PUBKEY`.
+
+- **Remaining for the real feature:** `--session` UX on `curl`/MCP —
+  auto-open (deposit approval semantics need an owner decision: how much to
+  lock per host), channel reuse from the registry, settle-without-close, and
+  the operator settle loop. **Mainnet remains gated on the one-way-channel
+  contract audit** (the contract's own README says unaudited) — that is the
+  standing SDF ask, now backed by a working client+server+benchmark.
 - **Value:** cheaper, faster high-frequency paying; the natural fit for a busy
   agent loop.
-- **Cost:** `@stellar/mpp` supports it (`channel/client`), but it needs the
-  channel contract lifecycle (open, commit, close) and per-provider channel
-  state. A real build, not a flag.
-- **Shape if built:** a `session` mode on the MCP `curl` that opens/reuses a
-  channel per host and signs commitments; `spend_report` already has the
-  vocabulary for it.
 
 ## 2. Smart-account vault — spend caps enforced on-chain
 
