@@ -46,6 +46,18 @@ facilitator/scheme would need to accept.
 - **Reuse, don't build:** adopt `smart-account-kit` + a published policy
   contract. We never author a Soroban contract.
 
+## 3. Phase D — agreements: escrow-backed agent work (sketch)
+
+Payments govern what an agent may spend; **agreements** govern when a payment
+releases. One agent hires another it doesn't trust: funds held in escrow,
+release on verified completion, a judge for the contested case. Sketched in
+full in [phase-d-agreements.md](./phase-d-agreements.md) — built on Trustless
+Work's live Soroban escrow (reuse, don't build; we never author a contract),
+a `job` verb family on the CLI/MCP, three-tier verification
+(hash-match / policy-approve / judge), `job.sh` benchmark. Sequenced after
+the two bets above; stays a sketch until a design partner or the census
+shows a buyer.
+
 ## Why it strengthens the SDF story
 
 Each is "on SDF's own rails": MPP session mode uses SDF's MPP spec, the vault
