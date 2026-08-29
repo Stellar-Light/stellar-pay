@@ -35,7 +35,8 @@
 		"test:keychain": "tsx src/sandbox/keychain-check.ts",
 		"test:catalog": "tsx src/sandbox/catalog-test.ts",
 		"test:send": "tsx src/sandbox/send-test.ts",
-		"test:osstore": "tsx src/sandbox/osstore-test.ts"
+		"test:osstore": "tsx src/sandbox/osstore-test.ts",
+		"test:session": "tsx src/sandbox/session-test.ts"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.3.2",
