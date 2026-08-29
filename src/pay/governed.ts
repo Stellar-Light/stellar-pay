@@ -23,6 +23,7 @@ import {
 } from "../../vendor/scrimp/index.js";
 import type { Entry } from "../catalog.js";
 import { payFetch } from "./curl.js";
+import { record } from "./receipts.js";
 import { type Offer, offerUSD, type Protocol } from "./offers.js";
 import type { Wallet } from "./wallet.js";
 
@@ -86,6 +87,21 @@ export function buildGoverned(o: {
 		for (const h of [...Object.values(HDR), SUPPRESSION_HEADER])
 			headers.delete(h);
 		if (r.paid) {
+			// Agent payments land in the SAME ledger the CLI writes: a payment
+			// row per settle, verifiable later via `receipts --verify` — the
+			// receipt substrate is shared, not per-surface.
+			record({
+				kind: "payment",
+				network: o.wallet.network,
+				protocol: r.paid.protocol,
+				url,
+				amount: r.paid.offer.amount,
+				asset: r.paid.offer.asset,
+				payer: o.wallet.publicKey,
+				payee: r.paid.offer.payTo,
+				tx: r.paid.hash,
+				detail: { surface: "mcp" },
+			});
 			const usd = offerUSD(r.paid.offer);
 			if (r.paid.hash) headers.set(HDR.hash, r.paid.hash);
 			headers.set(HDR.protocol, r.paid.protocol);
