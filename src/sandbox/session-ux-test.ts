@@ -182,13 +182,26 @@ async function main() {
 		const openRow = ledger.receipts.find((r) => r.kind === "channel-open");
 		const payRows = ledger.receipts.filter(
 			(r) => r.kind === "payment" && r.refs?.includes(openRow?.id ?? ""),
-		);
+		) as Array<{ id: string; amount?: string }>;
 		const closeRow = ledger.receipts.find((r) => r.kind === "channel-close");
 		console.log(
 			`ledger   open ${openRow?.id} ← ${payRows.length} payment(s) · close ${closeRow?.id}`,
 		);
 		if (!openRow || payRows.length !== CALLS || !closeRow)
 			throw new Error("attribution chain incomplete");
+		// Per-call amounts: each session receipt carries its cumulative delta.
+		if (!payRows.every((r) => r.amount === PRICE_STROOPS.toString()))
+			throw new Error(
+				`session receipts missing per-call amounts: ${payRows.map((r) => r.amount).join(",")}`,
+			);
+		// Tamper check: ids re-derive; then corrupt a copy mentally — the check
+		// is exercised for real in test:receipts.
+		const check = JSON.parse(cli(["receipts", "check", "--json"])) as {
+			ok: boolean;
+			rows: number;
+		};
+		console.log(`check    ledger intact: ${check.ok} (${check.rows} rows)`);
+		if (!check.ok) throw new Error("ledger tamper check failed");
 
 		console.log(
 			"\nRESULT: PASS — open (5 XLM default) → 3 off-chain payments → status → close with exact refund, full receipt chain.",

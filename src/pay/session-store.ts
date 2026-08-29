@@ -126,7 +126,9 @@ export function putChannel(
 	const d = read();
 	d.channels[host] = channel;
 	write(d);
-	receipt({ event: "channel-open", host, ...channel });
+	// No raw ledger write here: openChannel records the proper content-
+	// addressed channel-open receipt — a second id-less event row was a
+	// duplicate the tamper check rightly flagged.
 }
 
 export function dropChannel(host: string, reason: string) {
@@ -134,7 +136,7 @@ export function dropChannel(host: string, reason: string) {
 	const c = d.channels[host];
 	delete d.channels[host];
 	write(d);
-	if (c) receipt({ event: "channel-drop", host, reason, contract: c.contract });
+	if (c) void reason; // callers record the drop via receipts.record with an id
 }
 
 /** Append-only dated receipt rows — the ledger's first substrate. */

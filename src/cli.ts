@@ -50,7 +50,12 @@ import {
 	resolveHost,
 } from "./pay/policy.js";
 import { BRIDGES, EXCHANGES, onramps, partnerRamps } from "./pay/ramps.js";
-import { list as listReceipts, record, verifyOnChain } from "./pay/receipts.js";
+import {
+	checkLedger,
+	list as listReceipts,
+	record,
+	verifyOnChain,
+} from "./pay/receipts.js";
 import {
 	addTrustline,
 	history,
@@ -813,6 +818,19 @@ async function cmdSession(a: Args): Promise<void> {
 }
 
 async function cmdReceipts(a: Args): Promise<void> {
+	if (a.positional[0] === "check") {
+		const r = checkLedger();
+		emit(a, r, () => {
+			console.log(
+				r.ok
+					? `ledger intact: ${r.rows} row(s), every id re-derives from its content`
+					: `TAMPERED: ${r.bad.length} row(s) whose id does not match content`,
+			);
+			for (const b of r.bad) console.log(`  ${b.id} ≠ ${b.expected}`);
+		});
+		if (!r.ok) process.exitCode = EXIT.runtime;
+		return;
+	}
 	// --verify <id>: the PGTR half — prove a row against the CHAIN, so the
 	// receipt is a portable authorization artifact, not a log line.
 	const verifyId = a.verifyReceipt;
@@ -912,6 +930,7 @@ async function cmdCurl(a: Args, init: RequestInit): Promise<void> {
 	if (a.session) {
 		const host = hostOf(a.url);
 		const { fetch: sf, channel } = sessionFetch(host);
+		const cumBefore = BigInt(channel.lastCumulative ?? "0");
 		const t0 = Date.now();
 		const res = await sf(a.url, init);
 		const ms = Date.now() - t0;
@@ -919,7 +938,10 @@ async function cmdCurl(a: Args, init: RequestInit): Promise<void> {
 		const priced = res.headers.get("payment-receipt") != null;
 		if (priced) {
 			// One receipt per paid call, chained to the channel-open receipt —
-			// the attribution chain: open ← call ← call ← … ← close.
+			// the attribution chain: open ← call ← call ← … ← close. The amount
+			// is the cumulative DELTA this call signed (from our own store,
+			// never the server's word).
+			const cumAfter = BigInt(getChannel(host)?.lastCumulative ?? "0");
 			const openRow = listReceipts({ kind: "channel-open", limit: 10_000 })
 				.reverse()
 				.find((r) => r.detail?.host === host);
@@ -928,6 +950,7 @@ async function cmdCurl(a: Args, init: RequestInit): Promise<void> {
 				network: channel.network,
 				protocol: "channel",
 				url: a.url,
+				amount: (cumAfter - cumBefore).toString(),
 				payer: channel.funder,
 				payee: channel.recipient,
 				tx: null,
@@ -1194,6 +1217,7 @@ WALLET
                                              send USDC; 'max' drains the balance
   history [--limit N] [--json]
   receipts [--limit N] [--verify ID] [--json]  the local ledger; --verify proves a row on-chain
+  receipts check                         tamper check: every row id must re-derive from its content
   session open <url> [--deposit 5] | status | close <url>   one-way payment channels (testnet)
   curl <url> --session                   pay via the host's channel — off-chain per call
 

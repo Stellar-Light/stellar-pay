@@ -12,7 +12,7 @@
  *   npm run test:receipts
  */
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Keypair } from "@stellar/stellar-sdk";
@@ -118,10 +118,39 @@ async function main() {
 			);
 		if (!v.ok) throw new Error("on-chain verification failed");
 
-		console.log(
-			"\nRESULT: PASS — decision → payment (ref-chained) → verified on-chain from the receipt alone.",
+		// 4. Tamper-evidence, both directions: intact ledger passes; an edited
+		// amount must be CAUGHT (content-addressed ids are only worth anything
+		// if a check actually re-derives them).
+		const intact = JSON.parse(cli(["receipts", "check", "--json"])) as {
+			ok: boolean;
+		};
+		if (!intact.ok) throw new Error("intact ledger failed the check");
+		const ledgerPath = join(DIR, "receipts.jsonl");
+		const original = readFileSync(ledgerPath, "utf8");
+		writeFileSync(
+			ledgerPath,
+			original.replace('"amount":"10000"', '"amount":"99999"'),
 		);
-		console.log(readFileSync(join(DIR, "receipts.jsonl"), "utf8").trim());
+		let tampered = { ok: true };
+		try {
+			tampered = JSON.parse(cli(["receipts", "check", "--json"]));
+		} catch (e) {
+			// non-zero exit — parse stdout from the error
+			tampered = JSON.parse(
+				(e as { stdout?: string }).stdout?.toString() ?? '{"ok":true}',
+			);
+		}
+		writeFileSync(ledgerPath, original);
+		console.log(
+			`tamper   intact=pass, edited-amount detected=${tampered.ok === false}`,
+		);
+		if (tampered.ok !== false)
+			throw new Error("tamper check MISSED an edited row");
+
+		console.log(
+			"\nRESULT: PASS — decision → payment (ref-chained) → on-chain verify → tamper check catches edits.",
+		);
+		console.log(readFileSync(ledgerPath, "utf8").trim());
 	} finally {
 		child.kill();
 	}

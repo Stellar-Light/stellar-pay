@@ -467,7 +467,22 @@ Use this first for feasibility questions ("can stellar-pay do X?", "what can it 
 			try {
 				const r = g.client.endTask(task_id, { succeeded: succeeded ?? true });
 				if (openTask === task_id) openTask = null;
-				return json({ ...r, report: g.client.report({ taskId: task_id }) });
+				const report = g.client.report({ taskId: task_id });
+				// Scrimp's attribution verdict becomes ledger truth: which spend
+				// contributed vs was wasted, as a dated row future receipts (and
+				// reputation) can reference.
+				record({
+					kind: "task-outcome",
+					network: getWallet().network,
+					detail: {
+						taskId: task_id,
+						succeeded: succeeded ?? true,
+						...("contributed" in (r as object) ? (r as object) : {}),
+						report: report as unknown as Record<string, unknown>,
+						surface: "mcp",
+					},
+				});
+				return json({ ...r, report });
 			} catch (e) {
 				return json({ error: (e as Error).message });
 			}
@@ -509,6 +524,7 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 				try {
 					const host = hostOf(url);
 					const { fetch: sf, channel } = sessionFetch(host);
+					const cumBefore = BigInt(channel.lastCumulative ?? "0");
 					const t0 = Date.now();
 					const res = await sf(url, {
 						method: (method ?? (body != null ? "POST" : "GET")).toUpperCase(),
@@ -530,6 +546,7 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 					const ms = Date.now() - t0;
 					const text = await res.text();
 					if (res.headers.get("payment-receipt") != null) {
+						const cumAfter = BigInt(getChannel(host)?.lastCumulative ?? "0");
 						const openRow = listReceiptRows({
 							kind: "channel-open",
 							limit: 10_000,
@@ -541,6 +558,7 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 							network: channel.network,
 							protocol: "channel",
 							url,
+							amount: (cumAfter - cumBefore).toString(),
 							payer: channel.funder,
 							payee: channel.recipient,
 							tx: null,

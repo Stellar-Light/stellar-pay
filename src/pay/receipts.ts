@@ -30,7 +30,8 @@ export type ReceiptKind =
 	| "policy-decision"
 	| "channel-open"
 	| "channel-close"
-	| "channel-drop";
+	| "channel-drop"
+	| "task-outcome";
 
 export type ReceiptRow = {
 	id: string;
@@ -70,7 +71,10 @@ function contentId(row: Omit<ReceiptRow, "id">): string {
 export function record(row: Omit<ReceiptRow, "id" | "at">): string {
 	const at = new Date().toISOString();
 	const id = contentId({ ...row, at });
-	appendRaw({ id, ...row });
+	// The at that was HASHED must be the at that is STORED — the first
+	// version let the store stamp its own (milliseconds-later) timestamp and
+	// no id could ever re-derive. The tamper check caught its own author.
+	appendRaw({ id, at, ...row });
 	return id;
 }
 
@@ -103,6 +107,26 @@ export type VerifyResult = {
 	ok: boolean;
 	checks: Array<{ name: string; ok: boolean; note?: string }>;
 };
+
+/**
+ * Tamper check: every row's id must re-derive from its own content. The
+ * ledger is append-only JSONL, so an edited row's hash stops matching —
+ * content-addressing only means something if somebody actually re-checks.
+ */
+export function checkLedger(): {
+	ok: boolean;
+	rows: number;
+	bad: Array<{ id: string; expected: string }>;
+} {
+	const rows = list({ limit: 1_000_000 });
+	const bad: Array<{ id: string; expected: string }> = [];
+	for (const r of rows) {
+		const { id, ...rest } = r;
+		const expected = contentId(rest);
+		if (expected !== id) bad.push({ id, expected });
+	}
+	return { ok: bad.length === 0, rows: rows.length, bad };
+}
 
 /**
  * The PGTR half: prove the receipt against the CHAIN, not our own ledger.
