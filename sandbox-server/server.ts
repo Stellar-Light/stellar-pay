@@ -15,9 +15,10 @@
  *                      fees (friendbot-funded testnet account).
  *   PRICE_XLM          per-call price, default 0.001.
  */
+import * as stellarChannel from "@stellar/mpp/channel/server";
 import * as stellarServer from "@stellar/mpp/charge/server";
 import { randomBytes } from "node:crypto";
-import { Asset, Keypair, Networks } from "@stellar/stellar-sdk";
+import { Asset, Keypair, Networks, StrKey } from "@stellar/stellar-sdk";
 import express from "express";
 import { Mppx } from "mppx/express";
 import { Store } from "mppx/server";
@@ -64,6 +65,37 @@ const mppx = Mppx.create({
 	],
 });
 
+// ── Channel mode (Track 1 slice, testnet-only) ──────────────────────────────
+// A one-way payment channel turns N paid calls into ONE on-chain deposit and
+// ONE on-chain close: between them, each request is a signed off-chain
+// commitment for a strictly-increasing cumulative amount. Activated only when
+// the operator supplies a deployed channel contract — the contract is
+// deployed out-of-band (funder-authorized, deposit at deploy) because the
+// UNAUDITED one-way-channel contract stays testnet-only by policy.
+//   CHANNEL_CONTRACT   C… address of the deployed one-way-channel instance
+//   COMMITMENT_PUBKEY  hex ed25519 public key the funder signs commitments with
+const channelContract = process.env.CHANNEL_CONTRACT;
+const commitmentPubkeyHex = process.env.COMMITMENT_PUBKEY;
+const channelMppx =
+	channelContract && commitmentPubkeyHex
+		? Mppx.create({
+				secretKey: credentialSecret,
+				methods: [
+					stellarChannel.stellar.channel({
+						channel: channelContract,
+						commitmentKey: StrKey.encodeEd25519PublicKey(
+							Buffer.from(commitmentPubkeyHex, "hex"),
+						),
+						store: Store.memory(),
+						network: NETWORK,
+						// The seller sources and signs the on-chain close envelope, so
+						// the funder needs nothing on-chain after the deposit.
+						feePayer: { envelopeSigner: seller },
+					}),
+				],
+			})
+		: null;
+
 const app = express();
 
 // The challenge store is an unbounded Map upstream, and a rejected push-mode
@@ -97,7 +129,9 @@ app.get("/", (_req, res) => {
 		price_xlm: PRICE,
 		fees: "sponsored by the seller — you need no XLM beyond the payment",
 		recipient: seller.publicKey(),
-		paid_endpoints: ["/data", "/quote"],
+		paid_endpoints: channelMppx
+			? ["/data", "/quote", "/data-session (channel mode)"]
+			: ["/data", "/quote"],
 		try_it: [
 			"npx stellar-pay setup --sandbox            # funded testnet wallet, one command",
 			"npx stellar-pay offers <this-url>/data     # read the 402, pay nothing",
@@ -135,8 +169,33 @@ app.get(
 	},
 );
 
+/** Paid via CHANNEL commitments — off-chain per call, on-chain only at
+ * open (deposit) and close (settle). Testnet-only: the channel contract is
+ * unaudited, so this route never appears unless the operator deployed one. */
+if (channelMppx) {
+	app.get(
+		"/data-session",
+		channelMppx.channel({
+			amount: PRICE,
+			description: "stellar-pay sandbox channel-gated call",
+		}),
+		(_req, res) => {
+			res.json({
+				ok: true,
+				paid: true,
+				mode: "channel",
+				message:
+					"paid via an off-chain channel commitment — no on-chain transaction for this call",
+				at: new Date().toISOString(),
+			});
+		},
+	);
+}
+
 /** Liveness, free. */
-app.get("/health", (_req, res) => res.json({ ok: true, network: NETWORK }));
+app.get("/health", (_req, res) =>
+	res.json({ ok: true, network: NETWORK, channelMode: !!channelMppx }),
+);
 
 const port = Number(process.env.PORT ?? 8787);
 app.listen(port, () => {
