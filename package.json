@@ -41,7 +41,8 @@
 		"test:receipts": "tsx src/sandbox/receipts-test.ts",
 		"test:vault": "tsx src/sandbox/vault-test.ts",
 		"test:session-ux": "tsx src/sandbox/session-ux-test.ts",
-		"test:mcp-session": "tsx src/sandbox/mcp-session-test.ts"
+		"test:mcp-session": "tsx src/sandbox/mcp-session-test.ts",
+		"test:job": "tsx src/sandbox/job-test.ts"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.3.2",

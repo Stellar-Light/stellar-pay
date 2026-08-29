@@ -31,7 +31,13 @@ export type ReceiptKind =
 	| "channel-open"
 	| "channel-close"
 	| "channel-drop"
-	| "task-outcome";
+	| "task-outcome"
+	| "job-open"
+	| "job-fund"
+	| "job-deliver"
+	| "job-approve"
+	| "job-release"
+	| "job-dispute";
 
 export type ReceiptRow = {
 	id: string;
