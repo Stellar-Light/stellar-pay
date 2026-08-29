@@ -153,8 +153,14 @@ export async function openChannel(o: {
 }
 
 /** A payment-aware fetch bound to the host's registered channel: pays 402s
- * with off-chain commitments, persisting the cumulative baseline. */
-export function sessionFetch(host: string) {
+ * with off-chain commitments, persisting the cumulative baseline.
+ * (Return type is annotated because declaration emit cannot name mppx's
+ * internal Fetch type — TS2742; `npm run build` catches what --noEmit
+ * doesn't.) */
+export function sessionFetch(host: string): {
+	fetch: typeof globalThis.fetch;
+	channel: NonNullable<ReturnType<typeof getChannel>>;
+} {
 	const c = getChannel(host);
 	if (!c)
 		throw new Error(
@@ -179,7 +185,7 @@ export function sessionFetch(host: string) {
 			}),
 		],
 	});
-	return { fetch: mppx.fetch, channel: c };
+	return { fetch: mppx.fetch as typeof globalThis.fetch, channel: c };
 }
 
 /** Close via the MPP credential path: the client signs an action:'close'
