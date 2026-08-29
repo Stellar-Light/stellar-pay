@@ -23,8 +23,8 @@ import {
 } from "../../vendor/scrimp/index.js";
 import type { Entry } from "../catalog.js";
 import { payFetch } from "./curl.js";
-import { record } from "./receipts.js";
 import { type Offer, offerUSD, type Protocol } from "./offers.js";
+import { record } from "./receipts.js";
 import type { Wallet } from "./wallet.js";
 
 export type Payment = {

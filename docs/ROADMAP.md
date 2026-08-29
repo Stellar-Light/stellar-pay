@@ -54,16 +54,26 @@ facilitator/scheme would need to accept.
   `send` can already run through `kit.transfer(USDC_SAC, to, amount)`.
 - **Reuse, don't build:** adopt `smart-account-kit` + a published policy
   contract. We never author a Soroban contract.
-- **Deploy-path finding (2026-08-29):** `spike:vault` passes (all blocks
-  assemble headless), but wallet CREATION is WebAuthn-gated —
-  `kit.createWallet` mints a passkey; the documented ed25519 flow only ADDS
-  an ed25519 signer to an existing wallet. Two headless paths, pick one
-  next: (a) inject a software authenticator via the config's `webAuthn`
-  hook ("for testing" — ES256 + CBOR attestation emulation, a real but
-  bounded build), or (b) the cleaner ask upstream: an ed25519-initial-signer
-  deploy path in smart-account-kit — SDF ask #4, alongside the channel
-  audit. The refusal proof (over-cap transfer rejected on-chain) is written
-  against whichever path lands first.
+- **PROVEN on testnet (2026-08-29, `npm run test:vault`):** headless deploy
+  via a software authenticator (`src/sandbox/software-passkey.ts`, path (a)
+  — P-256 in process memory through the kit's `webAuthn` hook; no CBOR
+  needed, the kit reads the raw key from `response.publicKey`). The vault
+  shape holds end-to-end: OWNER passkey on the Default rule; AGENT ed25519
+  key ONLY on a CallContract rule scoped to the XLM SAC carrying the
+  spending-limit policy (params must go through `convertPolicyParams` — raw
+  JS params trap the VM). Under-cap transfer landed on-chain; over-cap
+  transfer REFUSED BY THE CHAIN ("would exceed the spending limit for the
+  current period") with funds untouched, recipient balance verified. Both
+  outcomes land in the receipts ledger — on-chain governance and app-layer
+  governance, one substrate. Traps recorded: spending-limit cannot install
+  on the Default rule (#3227 — it needs a token-scoped context);
+  TransactionResult is a union, never thrown — branch on `.success`;
+  `getAvailableSigners()` reads only the Default rule (hand the cap-rule
+  signer to `buildSelectedSigners` directly). SDF ask #4 (ed25519-initial-
+  signer deploy) remains the CLEANER path but no longer blocks. Remaining
+  for the real feature: vault verbs on the CLI/MCP (`vault init/fund/
+  status`), the hot-key top-up loop, and the mainnet decision — which
+  waits on the smart-account contracts' own audit posture.
 
 ## 3. Phase D — agreements: escrow-backed agent work (sketch)
 
