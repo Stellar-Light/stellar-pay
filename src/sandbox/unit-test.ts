@@ -5,6 +5,7 @@
  * shared spend decision (autoApprove).
  */
 
+import { agreementHash, buildAgreement } from "../pay/agreement.js";
 import { offerUSD, readOffers } from "../pay/offers.js";
 import { autoApprove } from "../pay/policy.js";
 
@@ -178,6 +179,60 @@ check(
 check(
 	"network pin: matching networks still approve",
 	autoApprove(usdcOffer, { network: "stellar:pubnet", maxUsd: 0.05 }).ok,
+);
+
+// --- AutoContracts v1 agreement: format conformance + hash determinism ---
+const AG = {
+	network: "stellar:testnet",
+	buyer: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+	provider: "GDQE7IXJ4HUHV6RQHIUPRJSEZE4DRS5WY577O2FY6YQ5LVWZ7JZTU2V5",
+	resolver: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+	resolverPolicy: "buyer-approves",
+	title: "test job",
+	terms: "do the thing",
+	reviewQuestion: "Did the provider deliver?",
+	allowedEvidence: ["the submission hash"],
+	resolutionEffects: [
+		["yes", "release"],
+		["no", "refund"],
+	] as Array<[string, string]>,
+	deadline: "2100-01-01T00:00:00Z",
+	tokenContract: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+	amount: 10_000_000n,
+};
+const agDoc = buildAgreement(AG);
+check(
+	"agreement: required v1 sections present, in order",
+	[
+		"standard: auto.contracts/v1",
+		"\n# Agreement\n",
+		"\n## Terms\n",
+		"\n## Review Question\n",
+		"\n## Allowed Evidence\n",
+		"\n## Resolution Effects\n",
+	].every((m) => agDoc.includes(m)) &&
+		agDoc.indexOf("## Terms") < agDoc.indexOf("## Review Question") &&
+		agDoc.indexOf("## Review Question") <
+			agDoc.indexOf("## Allowed Evidence") &&
+		agDoc.indexOf("## Allowed Evidence") <
+			agDoc.indexOf("## Resolution Effects"),
+);
+check(
+	"agreement: canonical bytes (LF, single trailing newline, no CR/BOM)",
+	agDoc.endsWith("\n") &&
+		!agDoc.endsWith("\n\n") &&
+		!agDoc.includes("\r") &&
+		!agDoc.includes("\uFEFF"),
+);
+check(
+	"agreement: keccak hash is deterministic + 0x-32-byte",
+	agreementHash(agDoc) === agreementHash(buildAgreement(AG)) &&
+		/^0x[0-9a-f]{64}$/.test(agreementHash(agDoc)),
+);
+check(
+	"agreement: a changed term changes the hash",
+	agreementHash(agDoc) !==
+		agreementHash(buildAgreement({ ...AG, terms: "do a different thing" })),
 );
 
 console.log(

@@ -70,8 +70,33 @@ async function main() {
 
 	const open = await openJob(job);
 	console.log(
-		`open     escrow ${open.contractId.slice(0, 10)}… engagement ${open.engagementId}`,
+		`open     escrow ${open.contractId.slice(0, 10)}… termsHash ${open.termsHash.slice(0, 14)}…`,
 	);
+
+	// AutoContracts cross-verification — the WHOLE POINT of the alignment:
+	// a conforming resolver reads the on-chain agreement doc, computes
+	// keccak256, and it must equal the engagement_id. Prove it here the way
+	// a resolver would, reading the doc back off the contract.
+	const { jobAgreement } = await import("../pay/job.js");
+	const { keccak256, toBytes } = await import("viem");
+	const rebuilt = jobAgreement(job);
+	const resolverHash = keccak256(toBytes(open.agreementDoc));
+	console.log(
+		`agree    doc ${open.agreementDoc.length}B · resolver keccak ${resolverHash.slice(0, 14)}… == engagement_id: ${resolverHash === open.engagementId && rebuilt.hash === open.termsHash ? "YES ✓" : "NO ✗"}`,
+	);
+	if (resolverHash !== open.engagementId || rebuilt.hash !== open.termsHash)
+		throw new Error("AutoContracts termsHash cross-verification failed");
+	// The doc must carry the required AutoContracts v1 sections.
+	for (const marker of [
+		"standard: auto.contracts/v1",
+		"# Agreement",
+		"## Terms",
+		"## Review Question",
+		"## Allowed Evidence",
+		"## Resolution Effects",
+	])
+		if (!open.agreementDoc.includes(marker))
+			throw new Error(`agreement doc missing "${marker}"`);
 	console.log(
 		`         deploy ${open.deployTx.slice(0, 10)}… init ${open.initTx.slice(0, 10)}… (TW wasm, our deploy)`,
 	);

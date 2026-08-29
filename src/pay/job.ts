@@ -44,6 +44,11 @@ import {
 	TransactionBuilder,
 	xdr,
 } from "@stellar/stellar-sdk";
+import {
+	type AgreementInput,
+	agreementHash,
+	buildAgreement,
+} from "./agreement.js";
 import { record } from "./receipts.js";
 
 const RPC_URL =
@@ -66,12 +71,54 @@ export type JobSpec = {
 	/** amount in the token's base units (i128) */
 	amount: bigint;
 	title: string;
-	/** the terms; sha256 becomes engagement_id */
+	/** the terms prose (becomes the AutoContracts `## Terms` section) */
 	spec: string;
 	/** TW's 0.3% fee recipient — REQUIRED to be TW's published address in
 	 * real usage; testnet harnesses may pass a declared placeholder */
 	twFeeAddress: string;
+	/** AutoContracts alignment (all optional; defaults make a valid v1 doc):
+	 * the bounded review question, the evidence classes the resolver may
+	 * inspect, the answer=>outcome effects, an ISO-8601 deadline, and the
+	 * resolver policy label. Defaults describe the buyer-as-approver case. */
+	reviewQuestion?: string;
+	allowedEvidence?: string[];
+	resolutionEffects?: Array<[string, string]>;
+	deadline?: string;
+	resolverPolicy?: string;
 };
+
+/** Build the AutoContracts v1 agreement doc for a job + its keccak hash.
+ * Exported so callers (and tests) can render/verify the same bytes the
+ * chain commits to. Deterministic: no timestamps beyond the caller's
+ * deadline, so the same JobSpec always yields the same hash. */
+export function jobAgreement(o: JobSpec): { doc: string; hash: string } {
+	const input: AgreementInput = {
+		network: "stellar:testnet",
+		buyer: o.buyer.publicKey(),
+		provider: o.provider,
+		resolver: o.judge ?? o.buyer.publicKey(),
+		resolverPolicy:
+			o.resolverPolicy ?? (o.judge ? "third-party-resolver" : "buyer-approves"),
+		title: o.title,
+		terms: o.spec,
+		reviewQuestion:
+			o.reviewQuestion ??
+			"Did the provider deliver the work described in Terms?",
+		allowedEvidence: o.allowedEvidence ?? [
+			"the submission hash recorded on the milestone",
+			"artifacts the provider links in the submission",
+		],
+		resolutionEffects: o.resolutionEffects ?? [
+			["yes", "release"],
+			["no", "refund"],
+		],
+		deadline: o.deadline ?? "2100-01-01T00:00:00Z",
+		tokenContract: o.tokenContract,
+		amount: o.amount,
+	};
+	const doc = buildAgreement(input);
+	return { doc, hash: agreementHash(doc) };
+}
 
 const server = () => new rpc.Server(RPC_URL);
 
@@ -116,7 +163,11 @@ async function invoke(
 /** The contract's Escrow struct as an ScVal — field names and types must
  * match storage/types.rs exactly; the contract re-validates this struct on
  * fund (their anti-TOCTOU), so one canonical builder serves both calls. */
-function escrowScVal(o: JobSpec, engagementId: string): xdr.ScVal {
+function escrowScVal(
+	o: JobSpec,
+	engagementId: string,
+	description: string,
+): xdr.ScVal {
 	const addr = (a: string) => Address.fromString(a).toScVal();
 	const str = (v: string) => xdr.ScVal.scvString(v);
 	const sym = (v: string) => xdr.ScVal.scvSymbol(v);
@@ -127,6 +178,9 @@ function escrowScVal(o: JobSpec, engagementId: string): xdr.ScVal {
 				.map(([k, v]) => new xdr.ScMapEntry({ key: sym(k), val: v })),
 		);
 	return map([
+		// engagement_id carries the AutoContracts termsHash (keccak of the
+		// agreement doc that lives in `description`) — a resolver reads the
+		// doc, hashes it, and it equals this.
 		["engagement_id", str(engagementId)],
 		["title", str(o.title)],
 		[
@@ -140,14 +194,16 @@ function escrowScVal(o: JobSpec, engagementId: string): xdr.ScVal {
 				["receiver", addr(o.provider)],
 			]),
 		],
-		["description", str(o.spec)],
+		// The FULL AutoContracts v1 agreement doc — this is what a conforming
+		// resolver ingests to answer the Review Question.
+		["description", str(description)],
 		["amount", nativeToScVal(o.amount, { type: "i128" })],
 		["platform_fee", nativeToScVal(0, { type: "u32" })],
 		[
 			"milestones",
 			xdr.ScVal.scvVec([
 				map([
-					["description", str(o.spec.slice(0, 500))],
+					["description", str(o.title)],
 					["status", str("pending")],
 					["evidence", str("")],
 					["approved", xdr.ScVal.scvBool(false)],
@@ -173,10 +229,16 @@ export async function openJob(o: JobSpec): Promise<{
 	receiptId: string;
 	deployTx: string;
 	initTx: string;
+	agreementDoc: string;
+	termsHash: string;
 }> {
 	const s = server();
+	// The AutoContracts v1 agreement IS the terms; its keccak is the
+	// engagement_id (cross-ecosystem address). The sha256 of the raw spec is
+	// kept in the receipt too, for our own provenance chain.
 	const specHash = createHash("sha256").update(o.spec).digest("hex");
-	const engagementId = `job-${specHash.slice(0, 16)}`;
+	const { doc: agreementDoc, hash: termsHash } = jobAgreement(o);
+	const engagementId = termsHash;
 
 	// 1. Deploy an instance of THEIR wasm (empty __constructor).
 	const acct = await s.getAccount(o.buyer.publicKey());
@@ -214,7 +276,7 @@ export async function openJob(o: JobSpec): Promise<{
 	const initTx = await invoke(
 		contractId,
 		"initialize_escrow",
-		[escrowScVal(o, engagementId)],
+		[escrowScVal(o, engagementId, agreementDoc)],
 		o.buyer,
 	);
 
@@ -229,14 +291,27 @@ export async function openJob(o: JobSpec): Promise<{
 		detail: {
 			contractId,
 			engagementId,
+			standard: "auto.contracts/v1",
+			termsHash,
 			specSha256: specHash,
-			judge: o.judge ?? o.buyer.publicKey(),
+			resolver: o.judge ?? o.buyer.publicKey(),
+			resolverPolicy:
+				o.resolverPolicy ??
+				(o.judge ? "third-party-resolver" : "buyer-approves"),
 			deployTx: sent.hash,
 			wasmHash: TW_ESCROW_WASM_HASH,
 			title: o.title,
 		},
 	});
-	return { contractId, engagementId, receiptId, deployTx: sent.hash, initTx };
+	return {
+		contractId,
+		engagementId,
+		receiptId,
+		deployTx: sent.hash,
+		initTx,
+		agreementDoc,
+		termsHash,
+	};
 }
 
 export async function fundJob(
@@ -246,12 +321,16 @@ export async function fundJob(
 		openReceiptId: string;
 	},
 ): Promise<{ tx: string; receiptId: string }> {
+	// The contract re-validates the EXPECTED escrow struct on fund, so this
+	// must be byte-identical to what openJob initialized — same agreement doc,
+	// same engagement_id (the termsHash openJob returned).
+	const { doc } = jobAgreement(o);
 	const tx = await invoke(
 		o.contractId,
 		"fund_escrow",
 		[
 			Address.fromString(o.buyer.publicKey()).toScVal(),
-			escrowScVal(o, o.engagementId),
+			escrowScVal(o, o.engagementId, doc),
 			nativeToScVal(o.amount, { type: "i128" }),
 		],
 		o.buyer,
