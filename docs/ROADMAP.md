@@ -54,6 +54,16 @@ facilitator/scheme would need to accept.
   `send` can already run through `kit.transfer(USDC_SAC, to, amount)`.
 - **Reuse, don't build:** adopt `smart-account-kit` + a published policy
   contract. We never author a Soroban contract.
+- **Deploy-path finding (2026-08-29):** `spike:vault` passes (all blocks
+  assemble headless), but wallet CREATION is WebAuthn-gated —
+  `kit.createWallet` mints a passkey; the documented ed25519 flow only ADDS
+  an ed25519 signer to an existing wallet. Two headless paths, pick one
+  next: (a) inject a software authenticator via the config's `webAuthn`
+  hook ("for testing" — ES256 + CBOR attestation emulation, a real but
+  bounded build), or (b) the cleaner ask upstream: an ed25519-initial-signer
+  deploy path in smart-account-kit — SDF ask #4, alongside the channel
+  audit. The refusal proof (over-cap transfer rejected on-chain) is written
+  against whichever path lands first.
 
 ## 3. Phase D — agreements: escrow-backed agent work (sketch)
 
