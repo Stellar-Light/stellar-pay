@@ -280,12 +280,35 @@ async function main() {
 		console.log(
 			`close     requested via MPP credential (${closeMs} ms) — waiting for on-chain settle…`,
 		);
-		// Give the server a beat to broadcast, then verify on Horizon.
+		// Verify on Horizon via the EXACT, fee-free signal: the contract's close
+		// pays the recipient the cumulative and auto-refunds the funder the
+		// remainder IN THE SAME TX — so the funder must be credited exactly
+		// deposit − closeCumulative. (The seller's raw balance delta is the
+		// wrong meter: as feePayer it also pays broadcast fees.)
 		await new Promise((r) => setTimeout(r, 6000));
+		const expectedRefund = DEPOSIT_STROOPS - closeCumulative;
+		let refunded = false;
+		for (let i = 0; i < 10 && !refunded; i++) {
+			const r = await fetch(
+				`${HORIZON}/accounts/${funder.publicKey()}/effects?limit=10&order=desc`,
+			);
+			const d = (await r.json()) as {
+				_embedded?: { records?: Array<{ type: string; amount?: string }> };
+			};
+			refunded = (d._embedded?.records ?? []).some(
+				(e) =>
+					e.type === "account_credited" &&
+					stroops(e.amount ?? "0") === expectedRefund,
+			);
+			if (!refunded) await new Promise((r2) => setTimeout(r2, 2000));
+		}
 		const sellerBalAfter = await xlmBalance(seller.publicKey());
 		const delta = sellerBalAfter - sellerBalBefore;
 		console.log(
-			`verify    seller balance delta ${delta} stroops (session cumulative was ${cumulative}${delta >= cumulative ? " — settled ≥ cumulative ✓" : " — NOT yet ≥ cumulative"})`,
+			`verify    funder refunded exactly ${expectedRefund} stroops (deposit − close cumulative): ${refunded ? "YES ✓" : "NOT FOUND"}`,
+		);
+		console.log(
+			`          seller raw delta ${delta} stroops = ${cumulative + stroops(PRICE_XLM)} close payout + ${stroops(PRICE_XLM) * BigInt(CHARGE_CALLS)} charge income − broadcast fees (seller is feePayer)`,
 		);
 		console.log(
 			`          funder https://stellar.expert/explorer/testnet/account/${funder.publicKey()}`,
@@ -308,13 +331,15 @@ async function main() {
 		console.log(
 			`  speedup: ${(cMean / sMean).toFixed(1)}× per call · on-chain load: ${N}→2 txs`,
 		);
-		if (delta < cumulative) {
+		if (!refunded) {
 			console.log(
-				"\nRESULT: PARTIAL — off-chain session path PASSED; close settle needs the action wiring (see notes).",
+				"\nRESULT: PARTIAL — off-chain session path PASSED; close refund not observed on Horizon.",
 			);
 			process.exitCode = 1;
 		} else {
-			console.log("\nRESULT: PASS — full lifecycle verified on testnet.");
+			console.log(
+				"\nRESULT: PASS — full lifecycle (open → off-chain session → close + exact refund) verified on testnet.",
+			);
 		}
 	} finally {
 		child.kill();
