@@ -204,7 +204,7 @@ const agDoc = buildAgreement(AG);
 check(
 	"agreement: required v1 sections present, in order",
 	[
-		"standard: auto.contracts/v1",
+		"format: stellar-pay/agreement-v1",
 		"\n# Agreement\n",
 		"\n## Terms\n",
 		"\n## Review Question\n",
