@@ -16,9 +16,12 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    # Windows currently trips a libuv assertion in a test's process teardown
-    # (not in the code under test); advisory until it can be run on a real box.
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    # Windows is BLOCKING as of 2026-08-30. It was advisory because two real
+    # bugs made it permanently red — a libuv assertion in a test's teardown,
+    # and an OS-store backend that had never once worked — and an advisory job
+    # is how both stayed invisible: three failures were stacked, each hiding
+    # the next. All three are fixed and the job passes 7/7 on Windows DPAPI, so
+    # the flag comes off. A red Windows job should stop a merge now.
     steps:
       - uses: actions/checkout@v4
       - name: Install libsecret (Linux OS store)
