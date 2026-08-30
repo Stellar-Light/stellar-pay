@@ -9,10 +9,11 @@
  * requirements — release on valid, refund on not. No human adjudication in
  * the happy path; the dispute path stays for the contested one.
  *
- * This is exactly the missing piece in bounty platforms (GrantFox pays USDC
- * for "validate products, test features" with unspecified verification;
- * hackathons pay winners off spreadsheets): the escrow, the evidence
- * contract, and the automatic judge, as a neutral layer they could adopt.
+ * The general shape any buyer of verified work needs — an individual, an
+ * agent, a program operator, or a bounty platform (e.g. grant/bounty sites
+ * that pay for validation work with unspecified verification mechanics;
+ * hackathons paying winners off spreadsheets): escrow at post, an evidence
+ * contract, and an automatic judge — adoptable as a neutral layer.
  *
  * v1 is a DIRECTED bounty: the escrow needs its provider role at init, so
  * the flow is post (descriptor, off-chain) → assign (claimer chosen —
