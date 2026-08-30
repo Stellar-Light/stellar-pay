@@ -105,7 +105,9 @@ import { verifyEndpoint } from "./pay/verify.js";
 import { balances, loadWallet } from "./pay/wallet.js";
 import {
 	awaitPayout,
+	buildFeed,
 	fetchFeed,
+	type OpenBountyListing,
 	submitPacket,
 	vetListing,
 } from "./pay/worker.js";
@@ -1076,6 +1078,7 @@ async function cmdBounty(a: Args): Promise<void> {
   bounty assign <bounty.json> --provider G…        (buyer wallet: escrow + fund, directed)
   bounty open <bounty.json>                        (buyer wallet: escrow + fund, open race)
   bounty submit --contract C… --evidence ev.json   (worker wallet: directed evidence on-chain)
+  bounty feed <bounty.json> --contract C… [--out feed.json]   (buyer: publish a versioned feed workers can discover)
   bounty commit --contract C… --evidence ev.json [--out commit.json]   (worker: publish the HASH first — beats evidence theft)
   bounty pack --contract C… --evidence ev.json [--nonce N] [--out sub.json] [--send --to URL]   (worker: reveal)
   bounty list --from <url|file>                    (worker: fetch a feed, VET each listing against the chain)
@@ -1214,6 +1217,37 @@ worker submits with: bounty submit --contract ${r.contractId} --evidence ev.json
 			console.log(
 				`OPEN bounty escrowed ${d.amount} at ${r.contractId}
 workers race with: bounty pack --contract ${r.contractId} --evidence ev.json`,
+			),
+		);
+		return;
+	}
+
+	if (sub === "feed") {
+		// Publish a feed: append a posted bounty to one, or create it. A buyer
+		// serves the file at any URL; workers vet every row against the chain,
+		// so a feed needs no trust and no permission from us.
+		const file = a.positional[1];
+		if (!file || !a.contract) return usage();
+		const d = readJsonFile<BountyDescriptor>(file, "bounty descriptor");
+		const outPath = a.out ?? "feed.json";
+		let existing: OpenBountyListing[] = [];
+		try {
+			const prior = JSON.parse(readFileSync(outPath, "utf8")) as
+				| { bounties?: OpenBountyListing[] }
+				| OpenBountyListing[];
+			existing = Array.isArray(prior) ? prior : (prior.bounties ?? []);
+		} catch {
+			// no feed there yet — this call creates it
+		}
+		const bounties = [
+			...existing.filter((b) => b.contractId !== a.contract),
+			{ contractId: a.contract, descriptor: d },
+		];
+		const feed = buildFeed(bounties);
+		writeFileSync(outPath, JSON.stringify(feed, null, 1));
+		emit(a, feed, () =>
+			console.log(
+				`${outPath}: ${feed.bounties.length} bounty(s), ${feed.format} schema ${feed.schema_version}\nserve it at any URL; workers read it with: bounty list --from <url>`,
 			),
 		);
 		return;

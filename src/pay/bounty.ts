@@ -317,6 +317,19 @@ export async function bountyStatus(o: {
 import { createHash as _ch, randomBytes as _rb } from "node:crypto";
 import { Keypair as _KP } from "@stellar/stellar-sdk";
 
+// PRIOR ART, checked before minting this format (2026-08-30), because the
+// cheap mistake here is inventing a private shape by reflex:
+//   - ERC-8195 (Task Market Protocol) defines five procurement modes —
+//     Bounty, Claim, Pitch, Benchmark, Auction — with deterministic task ids
+//     and on-chain deliverable hashes. It has NO commit-reveal step, so there
+//     is no container to adopt for this.
+//   - Ricardian practice (autocontracts, ClawBank) covers the AGREEMENT, not
+//     submission ordering.
+//   - pay.sh has no work layer at all.
+// So this stays ours, by absence rather than by preference. If TMP or anyone
+// else specifies commit-reveal, this is a serialization change and nothing
+// more: the digest already commits to (format, contract, worker, evidence,
+// nonce), which is the union of what such a spec would need.
 const COMMIT_FORMAT = "stellar-pay/commit-v1" as const;
 
 /** A COMMIT: "I already have evidence whose hash is X" — published BEFORE the
@@ -431,6 +444,10 @@ export type OpenSubmission = {
  * submissions pass through a party you do not control; without it the
  * fallbacks are sending evidence to the RESOLVER rather than the buyer (the
  * one party that profits from stealing it) and plain arrival order. */
+// Maps to ERC-8195's claim/submission step by rename; the delta is that our
+// evidence is a JSON document rather than a write-once `bytes32` deliverable
+// hash — richer, and therefore not drop-in compatible. Keep the field names
+// close enough that an exporter is mechanical.
 const SUBMISSION_FORMAT = "stellar-pay/submission-v1" as const;
 
 function submissionDigest(

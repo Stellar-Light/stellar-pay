@@ -77,6 +77,35 @@ export type OpenBountyListing = {
 	descriptor: BountyDescriptor;
 };
 
+/** A published bounty feed.
+ *
+ * We consumed feeds without ever defining one, which meant every buyer had to
+ * invent a shape and no worker could rely on any of it.
+ *
+ * The envelope deliberately borrows pay.sh's catalog field names —
+ * `schema_version` (a plain "1") and `generated_at` — rather than inventing
+ * our own spelling for the same two ideas. Nothing is gained by being
+ * different here, and an aggregator that already reads their index needs no
+ * new vocabulary to read ours. Match on interfaces, diverge on products. */
+export type BountyFeed = {
+	format: "stellar-pay/bounty-feed-v1";
+	schema_version: "1";
+	generated_at: string;
+	bounties: OpenBountyListing[];
+};
+
+export const BOUNTY_FEED_FORMAT = "stellar-pay/bounty-feed-v1" as const;
+
+/** Author a feed. A buyer serves this at any URL; nothing about it needs us. */
+export function buildFeed(bounties: OpenBountyListing[]): BountyFeed {
+	return {
+		format: BOUNTY_FEED_FORMAT,
+		schema_version: "1",
+		generated_at: new Date().toISOString(),
+		bounties,
+	};
+}
+
 export type VetCheck = { name: string; ok: boolean; note: string };
 
 /** Fetch a bounty feed — a URL or a local file holding either a bare array
@@ -129,6 +158,20 @@ export async function fetchFeed(
 	}
 	// `null` is valid JSON and is NOT an object you can read `.bounties` off —
 	// a stranger's feed answering `null` crashed with a raw TypeError.
+	// Three accepted shapes, most-specific first: the versioned envelope, a
+	// bare {bounties:[…]}, or a bare array. The looser two stay readable
+	// because feeds already exist in the wild and breaking them would be
+	// gratuitous; an unknown schema_version is refused rather than guessed at.
+	const env = parsed as Partial<BountyFeed> | null;
+	if (
+		env &&
+		typeof env === "object" &&
+		env.format === BOUNTY_FEED_FORMAT &&
+		env.schema_version !== "1"
+	)
+		throw new Error(
+			`feed ${from}: schema_version "${env.schema_version}" is not one this client reads (expected "1")`,
+		);
 	const rows = Array.isArray(parsed)
 		? parsed
 		: typeof parsed === "object" && parsed !== null

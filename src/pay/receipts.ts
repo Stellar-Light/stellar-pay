@@ -85,6 +85,15 @@ function contentId(row: Omit<ReceiptRow, "id">): string {
 
 /** Append a row; returns its id so later rows can reference it. */
 export function record(row: Omit<ReceiptRow, "id" | "at">): string {
+	// A ref must name a receipt that EXISTS. Call sites pass `prev ?? ""` in
+	// places where there is no predecessor, which wrote refs:[""] — a link to
+	// nothing, in the one structure whose whole job is provenance. Drop blanks
+	// here, at the single door every row goes through, rather than trusting
+	// ~20 call sites to remember.
+	if (row.refs) {
+		const refs = row.refs.filter((r) => typeof r === "string" && r.trim());
+		row = refs.length ? { ...row, refs } : { ...row, refs: undefined };
+	}
 	const at = new Date().toISOString();
 	const id = contentId({ ...row, at });
 	// The at that was HASHED must be the at that is STORED — the first
@@ -118,6 +127,27 @@ const HORIZON: Record<string, string> = {
 	"stellar:testnet": "https://horizon-testnet.stellar.org",
 	"stellar:pubnet": "https://horizon.stellar.org",
 };
+
+/** The most recent receipt of a kind for a contract — how a LATER command
+ * finds the row it continues. `bounty watch` runs in its own process, minutes
+ * after `bounty pack`, so the chain cannot be threaded through memory: the
+ * ledger has to be able to answer "what came before this". */
+export function lastFor(
+	kind: ReceiptKind,
+	contractId: string,
+): ReceiptRow | null {
+	const rows = list({ kind });
+	for (let i = rows.length - 1; i >= 0; i--) {
+		const r = rows[i];
+		if (
+			r &&
+			(r.detail as { contractId?: string } | undefined)?.contractId ===
+				contractId
+		)
+			return r;
+	}
+	return null;
+}
 
 export type VerifyResult = {
 	ok: boolean;
