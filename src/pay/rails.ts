@@ -34,7 +34,9 @@ export type EscrowParams = {
 	description: string;
 };
 
-/** What a resolver needs to read back off an escrow. */
+/** What a resolver — or a stranger vetting a listing — reads off an escrow.
+ * `amount` is the TERMS amount (set at init); `balance` is what the escrow
+ * actually HOLDS — "funded" means balance, never amount. */
 export type EscrowState = {
 	description: string;
 	evidence: string;
@@ -43,8 +45,13 @@ export type EscrowState = {
 	released: boolean;
 	disputed: boolean;
 	amount: bigint;
+	balance: bigint;
 	buyer: string;
 	provider: string;
+	resolver: string;
+	tokenContract: string;
+	/** the terms address: sha256 of the agreement doc, pinned at init */
+	engagementId: string;
 };
 
 export interface EscrowRails {

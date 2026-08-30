@@ -42,6 +42,8 @@ export type ReceiptKind =
 	| "job-resolved"
 	| "bounty-assign"
 	| "bounty-open-post"
+	| "bounty-work-submit"
+	| "bounty-income"
 	| "vault-create"
 	| "vault-topup"
 	| "vault-draw";

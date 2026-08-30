@@ -142,3 +142,15 @@ export {
 	type VaultRecord,
 	vaultStatus,
 } from "./pay/vault.js";
+// The WORKER side — how an agent earns: discover listings, vet them against
+// the chain (never trust the feed), submit signed evidence, collect.
+export {
+	awaitPayout,
+	checkListing,
+	fetchFeed,
+	type OpenBountyListing,
+	type PayoutResult,
+	submitPacket,
+	type VetCheck,
+	vetListing,
+} from "./pay/worker.js";

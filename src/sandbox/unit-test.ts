@@ -5,10 +5,19 @@
  * shared spend decision (autoApprove).
  */
 
+import { Keypair } from "@stellar/stellar-sdk";
 import { agreementHash, buildAgreement } from "../pay/agreement.js";
-import { verificationEvidencePolicy } from "../pay/bounty.js";
+import {
+	bountyJobSpec,
+	openBountyTerms,
+	postBounty,
+	verificationEvidencePolicy,
+} from "../pay/bounty.js";
+import { jobAgreement } from "../pay/job.js";
 import { offerUSD, readOffers } from "../pay/offers.js";
 import { autoApprove } from "../pay/policy.js";
+import type { EscrowState } from "../pay/rails.js";
+import { checkListing } from "../pay/worker.js";
 
 const PUBNET_USDC = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
 const b64url = (s: string) =>
@@ -293,6 +302,76 @@ check(
 		amount: 0n,
 	}) === "no",
 );
+
+// --- worker vet: the stranger's trust check (checkListing, pure) ---
+{
+	const buyerKP = Keypair.random();
+	const resolverKP = Keypair.random();
+	const d = postBounty({
+		buyer: buyerKP.publicKey(),
+		resolver: resolverKP.publicKey(),
+		title: "vet unit",
+		items: ["a", "b"],
+		instructions: "check them",
+		amount: 10_000_000n,
+		tokenContract: "CTOKEN",
+		submitUrl: "http://127.0.0.1:1/submit",
+	});
+	// Drift guard: the public re-derivation must equal what postOpenBounty
+	// actually escrows (the Keypair-based path) — forever.
+	const viaKeypair = jobAgreement(
+		bountyJobSpec(d, buyerKP, buyerKP.publicKey()),
+	);
+	check(
+		"worker vet: openBountyTerms re-derives the escrowed terms exactly",
+		openBountyTerms(d).hash === viaKeypair.hash,
+	);
+
+	const honest: EscrowState = {
+		description: viaKeypair.doc,
+		evidence: "",
+		milestoneStatus: "",
+		approved: false,
+		released: false,
+		disputed: false,
+		amount: 10_000_000n,
+		balance: 10_000_000n,
+		buyer: buyerKP.publicKey(),
+		provider: buyerKP.publicKey(),
+		resolver: resolverKP.publicKey(),
+		tokenContract: "CTOKEN",
+		engagementId: viaKeypair.hash,
+	};
+	const listing = { contractId: "CESCROW", descriptor: d };
+	check(
+		"worker vet: consistent chain state → all checks pass",
+		checkListing(honest, listing).ok,
+	);
+	const failed = (s: EscrowState, l = listing) =>
+		checkListing(s, l)
+			.checks.filter((c) => !c.ok)
+			.map((c) => c.name)
+			.join(",");
+	check(
+		"worker vet: tampered feed amount → descriptor/struct checks fail",
+		failed(honest, {
+			contractId: "CESCROW",
+			descriptor: { ...d, amount: "100000000" },
+		}) === "descriptor-matches-terms,struct-matches",
+	);
+	check(
+		"worker vet: unfunded pot → funded fails",
+		failed({ ...honest, balance: 0n }) === "funded",
+	);
+	check(
+		"worker vet: settled escrow → open fails",
+		failed({ ...honest, balance: 0n, released: true }) === "funded,open",
+	);
+	check(
+		"worker vet: description not matching engagement_id → terms-pinned fails",
+		failed({ ...honest, description: `${viaKeypair.doc} ` }) === "terms-pinned",
+	);
+}
 
 console.log(
 	`\n${fail === 0 ? "ALL PASS" : `${fail} FAILED`} — ${pass}/${pass + fail} unit checks on the money-path functions`,

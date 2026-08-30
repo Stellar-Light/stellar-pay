@@ -32,6 +32,7 @@ import {
 	disputeJob,
 	fundJob,
 	type JobSpec,
+	jobAgreement,
 	openJob,
 	readEscrowAs,
 	resolveDisputeJob,
@@ -56,6 +57,9 @@ export type BountyDescriptor = {
 	resolver: string;
 	/** the buyer who will fund (G…) */
 	buyer: string;
+	/** open-claim only: where signed submission packets POST (optional —
+	 * absent means the transport is out of band) */
+	submitUrl?: string;
 };
 
 /** Post = author the descriptor (off-chain, shareable). The bounty's terms
@@ -69,6 +73,7 @@ export function postBounty(o: {
 	amount: bigint;
 	tokenContract: string;
 	maxEvidenceAgeDays?: number;
+	submitUrl?: string;
 }): BountyDescriptor {
 	if (o.items.length === 0) throw new Error("a bounty needs at least one item");
 	return {
@@ -82,6 +87,7 @@ export function postBounty(o: {
 		maxEvidenceAgeDays: o.maxEvidenceAgeDays ?? 7,
 		resolver: o.resolver,
 		buyer: o.buyer,
+		...(o.submitUrl ? { submitUrl: o.submitUrl } : {}),
 	};
 }
 
@@ -253,7 +259,9 @@ export async function bountyStatus(o: {
 		// not submitted yet, or not JSON — reported as null, never a throw
 	}
 	return {
-		funded: esc.amount > 0n,
+		// balance, not amount: the terms amount is set at init whether or not
+		// the pot was ever funded (a settled escrow also reads unfunded here).
+		funded: esc.balance > 0n,
 		submitted: esc.evidence.trim() !== "",
 		released: esc.released,
 		disputed: esc.disputed,
@@ -336,6 +344,18 @@ export async function postOpenBounty(o: {
 		openReceiptId: open.receiptId,
 		fundTx: fund.tx,
 	};
+}
+
+/** Re-derive an open bounty's agreement terms from PUBLIC info only — the
+ * descriptor. Same code path postOpenBounty runs (jobAgreement never signs,
+ * it only reads public keys), so `openBountyTerms(d).hash` equalling the
+ * escrow's on-chain engagement_id proves the chain pinned EXACTLY these
+ * terms — a stranger's tamper check before spending any work. */
+export function openBountyTerms(d: BountyDescriptor): {
+	doc: string;
+	hash: string;
+} {
+	return jobAgreement(bountyJobSpec(d, _KP.fromPublicKey(d.buyer), d.buyer));
 }
 
 /** A worker builds a signed submission packet (no chain interaction). */

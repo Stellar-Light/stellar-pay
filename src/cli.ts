@@ -95,6 +95,12 @@ import {
 } from "./pay/vault.js";
 import { verifyEndpoint } from "./pay/verify.js";
 import { balances, loadWallet } from "./pay/wallet.js";
+import {
+	awaitPayout,
+	fetchFeed,
+	submitPacket,
+	vetListing,
+} from "./pay/worker.js";
 
 type Args = {
 	cmd: string;
@@ -140,6 +146,12 @@ type Args = {
 	submissionFiles?: string[];
 	out?: string;
 	token?: string;
+	/** worker verbs: feed source, packet inbox, watch timeout */
+	fromFeed?: string;
+	toUrl?: string;
+	submitUrl?: string;
+	send: boolean;
+	timeoutSec?: number;
 };
 
 // Documented, stable exit codes so a wrapper script can branch without parsing
@@ -174,6 +186,7 @@ function parse(argv: string[]): Args {
 		session: false,
 		positional: [],
 		force: false,
+		send: false,
 	};
 	for (let i = 1; i < argv.length; i++) {
 		const t = argv[i] ?? "";
@@ -236,7 +249,14 @@ function parse(argv: string[]): Args {
 			a.submissionFiles = (next() ?? "").split(",").filter(Boolean);
 		else if (t === "--out") a.out = next();
 		else if (t === "--token") a.token = next();
-		else if (!t.startsWith("-")) {
+		else if (t === "--from") a.fromFeed = next();
+		else if (t === "--to") a.toUrl = next();
+		else if (t === "--submit-url") a.submitUrl = next();
+		else if (t === "--send") a.send = true;
+		else if (t === "--timeout-sec") {
+			const n = Number(next());
+			if (Number.isFinite(n) && n > 0) a.timeoutSec = n;
+		} else if (!t.startsWith("-")) {
 			// Keep EVERY bare token in order: the first is the subcommand/url,
 			// later ones are paths (`account export --name main backup.json`).
 			if (!a.url) a.url = t;
@@ -946,10 +966,83 @@ async function cmdBounty(a: Args): Promise<void> {
   bounty assign <bounty.json> --provider G…        (buyer wallet: escrow + fund, directed)
   bounty open <bounty.json>                        (buyer wallet: escrow + fund, open race)
   bounty submit --contract C… --evidence ev.json   (worker wallet: directed evidence on-chain)
-  bounty pack --contract C… --evidence ev.json [--out sub.json]   (worker wallet: signed open-race packet, no chain)
+  bounty pack --contract C… --evidence ev.json [--out sub.json] [--send --to URL]   (worker wallet: signed open-race packet)
+  bounty list --from <url|file>                    (worker: fetch a feed, VET each listing against the chain)
+  bounty watch --contract C… [--timeout-sec N]     (worker: wait for settlement; did WE get paid?)
   bounty dispute --contract C…                     (buyer wallet: unlock refund/open settlement)
   bounty resolve <bounty.json> --contract C… [--submissions s1.json,s2.json]   (resolver wallet)
   bounty status --contract C…`);
+
+	if (sub === "list") {
+		if (!a.fromFeed) return usage();
+		await ensureSecretLoaded(a.account);
+		const w = loadWallet();
+		const listings = await fetchFeed(a.fromFeed);
+		const rows: Array<{
+			contractId: string;
+			title?: string;
+			amount?: string;
+			token?: string;
+			submitUrl: string | null;
+			valid: boolean;
+			failed: string[];
+		}> = [];
+		for (const listing of listings) {
+			const vet = await vetListing({ listing, source: w.keypair });
+			rows.push({
+				contractId: listing.contractId,
+				title: listing.descriptor?.title,
+				amount: listing.descriptor?.amount,
+				token: listing.descriptor?.tokenContract,
+				submitUrl: listing.descriptor?.submitUrl ?? null,
+				valid: vet.ok,
+				failed: vet.checks.filter((c) => !c.ok).map((c) => c.name),
+			});
+		}
+		emit(a, { feed: a.fromFeed, listings: rows }, () => {
+			if (rows.length === 0) return console.log("feed is empty");
+			for (const r of rows)
+				console.log(
+					`${r.valid ? "VALID  " : "REFUSED"} ${r.contractId.slice(0, 10)}… "${r.title}" pays ${r.amount}${
+						r.valid
+							? r.submitUrl
+								? `\n        submit to ${r.submitUrl}`
+								: ""
+							: `  (${r.failed.join(", ")})`
+					}`,
+				);
+			console.error(
+				"\nVALID = the CHAIN backs the claim (terms pinned, pot funded, still open). Never work a REFUSED row.",
+			);
+		});
+		return;
+	}
+
+	if (sub === "watch") {
+		if (!a.contract) return usage();
+		await ensureSecretLoaded(a.account);
+		const w = loadWallet();
+		const r = await awaitPayout({
+			contractId: a.contract,
+			worker: w.keypair,
+			timeoutMs: (a.timeoutSec ?? 300) * 1000,
+		});
+		emit(
+			a,
+			r.paid ? { ...r, amountStroops: r.amountStroops.toString() } : r,
+			() =>
+				console.log(
+					r.paid
+						? `PAID ${Number(r.amountStroops) / 1e7} XLM-units (tx ${r.tx ?? "n/a"}) — receipted as bounty-income`
+						: r.reason === "timeout"
+							? "not settled within the timeout"
+							: "settled, but not to us — lost the race or refunded",
+				),
+		);
+		if (!r.paid)
+			process.exitCode = r.reason === "timeout" ? EXIT.runtime : EXIT.refused;
+		return;
+	}
 
 	if (sub === "post") {
 		if (!a.title || !a.items?.length || !a.instructions || !a.amountXlm)
@@ -964,6 +1057,7 @@ async function cmdBounty(a: Args): Promise<void> {
 			instructions: a.instructions,
 			amount: BigInt(Math.round(a.amountXlm * 10_000_000)),
 			tokenContract: a.token ?? XLM_SAC_TESTNET_CLI,
+			submitUrl: a.submitUrl,
 		});
 		if (a.out) writeFileSync(a.out, JSON.stringify(d, null, 1));
 		emit(a, d, () => {
@@ -1021,6 +1115,24 @@ workers race with: bounty pack --contract ${r.contractId} --evidence ev.json`,
 		await ensureSecretLoaded(a.account);
 		const w = loadWallet();
 		if (sub === "pack") {
+			if (a.send) {
+				if (!a.toUrl)
+					return usageError(
+						"--send needs --to <url> (the bounty's submitUrl — see `bounty list`)",
+					);
+				const r = await submitPacket({
+					worker: w.keypair,
+					contractId: a.contract,
+					evidence,
+					url: a.toUrl,
+				});
+				emit(a, { status: r.status, worker: r.packet.worker }, () =>
+					console.log(
+						`packet submitted to ${a.toUrl} (HTTP ${r.status}) — now: bounty watch --contract ${a.contract}`,
+					),
+				);
+				return;
+			}
 			const packet = makeSubmission({
 				worker: w.keypair,
 				contractId: a.contract,
@@ -1514,6 +1626,7 @@ WALLET
   receipts check                         tamper check: every row id must re-derive from its content
   session open <url> [--deposit 5] | status | close <url>   one-way payment channels (testnet)
   bounty post|assign|open|submit|pack|dispute|resolve|status   escrowed verification bounties (testnet)
+  bounty list --from <feed>   |   bounty watch --contract C…   earn: vet listings against the CHAIN, get paid
   vault create|topup|draw|status         fund an agent behind an ON-CHAIN spend cap (testnet)
   curl <url> --session                   pay via the host's channel — off-chain per call
 

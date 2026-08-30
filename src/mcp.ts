@@ -62,6 +62,12 @@ import {
 import { getChannel, listChannels } from "./pay/session-store.js";
 import { drawFromVault, vaultStatus } from "./pay/vault.js";
 import { balances, loadWallet, type Wallet } from "./pay/wallet.js";
+import {
+	awaitPayout,
+	fetchFeed,
+	submitPacket,
+	vetListing,
+} from "./pay/worker.js";
 
 /** A spend cap from the environment must be a finite positive number — anything
  * else (typo, empty string) falls back to the default instead of parsing to
@@ -1046,6 +1052,98 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 				const w = getWallet();
 				return json(
 					await bountyStatus({ contractId: contract_id, source: w.keypair }),
+				);
+			} catch (e) {
+				return json({ error: (e as Error).message });
+			}
+		},
+	);
+
+	server.registerTool(
+		"bounty_feed",
+		{
+			description:
+				"EARN: fetch a bounty feed (URL or file path) and VET every listing against the CHAIN before any work: terms pinned (the escrow's agreement hashes to its engagement_id AND re-derives from the descriptor), struct fields match the descriptor's claims (token/amount/resolver), the pot is actually FUNDED, and nobody has settled or disputed it. A feed row is a claim; only rows with valid=true are backed by the chain. NEVER work a row with valid=false — its failed checks are listed. TESTNET ONLY.",
+			inputSchema: { from: z.string() },
+		},
+		async ({ from }) => {
+			try {
+				const w = getWallet();
+				const listings = await fetchFeed(from);
+				const rows = [];
+				for (const listing of listings) {
+					const vet = await vetListing({ listing, source: w.keypair });
+					rows.push({
+						contractId: listing.contractId,
+						title: listing.descriptor?.title,
+						items: listing.descriptor?.items,
+						instructions: listing.descriptor?.instructions,
+						amount: listing.descriptor?.amount,
+						token: listing.descriptor?.tokenContract,
+						maxEvidenceAgeDays: listing.descriptor?.maxEvidenceAgeDays,
+						submitUrl: listing.descriptor?.submitUrl ?? null,
+						valid: vet.ok,
+						failedChecks: vet.checks.filter((c) => !c.ok),
+					});
+				}
+				return json({ feed: from, listings: rows });
+			} catch (e) {
+				return json({ error: (e as Error).message });
+			}
+		},
+	);
+
+	server.registerTool(
+		"bounty_submit_packet",
+		{
+			description:
+				"EARN: sign your evidence into an open-race packet (ed25519 binds it to YOUR payout address) and POST it to the bounty's submit_url from bounty_feed. Do the work FIRST — evidence must cover every bounty item exactly once (item, url, verdict, checkedAt ISO, excerpt) or the resolver refuses it. Then bounty_watch to learn whether you won.",
+			inputSchema: {
+				contract_id: z.string(),
+				evidence: evidenceShape,
+				submit_url: z.string(),
+			},
+		},
+		async ({ contract_id, evidence, submit_url }) => {
+			try {
+				const w = getWallet();
+				const r = await submitPacket({
+					worker: w.keypair,
+					contractId: contract_id,
+					evidence: evidence as EvidenceEntry[],
+					url: submit_url,
+				});
+				return json({
+					status: r.status,
+					worker: r.packet.worker,
+					receiptId: r.receiptId,
+				});
+			} catch (e) {
+				return json({ error: (e as Error).message });
+			}
+		},
+	);
+
+	server.registerTool(
+		"bounty_watch",
+		{
+			description:
+				"EARN: wait for a bounty escrow to settle and report whether YOUR wallet was paid (blocks up to timeout_sec, default 300). paid=true carries the credited amount and tx, receipted as bounty-income — your on-chain earnings record. paid=false with reason lost-or-refunded is an honest outcome of an open race.",
+			inputSchema: {
+				contract_id: z.string(),
+				timeout_sec: z.number().int().positive().max(600).optional(),
+			},
+		},
+		async ({ contract_id, timeout_sec }) => {
+			try {
+				const w = getWallet();
+				const r = await awaitPayout({
+					contractId: contract_id,
+					worker: w.keypair,
+					timeoutMs: (timeout_sec ?? 300) * 1000,
+				});
+				return json(
+					r.paid ? { ...r, amountStroops: r.amountStroops.toString() } : r,
 				);
 			} catch (e) {
 				return json({ error: (e as Error).message });

@@ -276,6 +276,30 @@ export const trustlessWorkRails: EscrowRails = {
 		// biome-ignore lint/suspicious/noExplicitAny: decoded contract struct
 		const e = scValToNative(retval) as any;
 		const m0 = e.milestones?.[0] ?? {};
+
+		// The TW struct has NO balance field — the pot exists only as the
+		// escrow contract's balance ON THE TOKEN. Ask the token: it is the
+		// ground truth (a struct field would be self-reported anyway).
+		const token = String(e.trustline?.address ?? "");
+		let balance = 0n;
+		if (token) {
+			const btx = new TransactionBuilder(acct, {
+				fee: BASE_FEE,
+				networkPassphrase: Networks.TESTNET,
+			})
+				.addOperation(
+					new Contract(token).call(
+						"balance",
+						Address.fromString(o.contractId).toScVal(),
+					),
+				)
+				.setTimeout(30)
+				.build();
+			const bsim = await s.simulateTransaction(btx);
+			if (!rpc.Api.isSimulationError(bsim) && bsim.result?.retval)
+				balance = BigInt(scValToNative(bsim.result.retval) as bigint);
+		}
+
 		return {
 			description: String(e.description ?? ""),
 			evidence: String(m0.evidence ?? ""),
@@ -284,8 +308,12 @@ export const trustlessWorkRails: EscrowRails = {
 			released: Boolean(e.flags?.released),
 			disputed: Boolean(e.flags?.disputed),
 			amount: BigInt(e.amount ?? 0),
+			balance,
 			buyer: String(e.roles?.platform ?? e.roles?.approver ?? ""),
 			provider: String(e.roles?.receiver ?? ""),
+			resolver: String(e.roles?.dispute_resolver ?? ""),
+			tokenContract: token,
+			engagementId: String(e.engagement_id ?? ""),
 		};
 	},
 };
