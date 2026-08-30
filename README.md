@@ -1,11 +1,12 @@
 <p align="center"><b>stellar-pay</b></p>
-<p align="center"><b>The neutral, self-custody layer for human-to-agent work on Stellar — an agent CLI and a toolkit.</b></p>
+<p align="center"><b>Pay any HTTP 402 API from your own Stellar wallet — x402 and MPP, no gateway, no account.</b><br>
+The neutral, self-custody layer for human-to-agent work: paying today, escrowed jobs in testnet preview.</p>
 <p align="center">
   <a href="https://www.npmjs.com/package/stellar-pay"><img src="https://img.shields.io/npm/v/stellar-pay" alt="npm"></a>
   <a href="https://github.com/Stellar-Light/stellar-pay/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT"></a>
   <a href="https://github.com/Stellar-Light/stellar-pay/actions/workflows/probe.yml"><img src="https://img.shields.io/github/actions/workflow/status/Stellar-Light/stellar-pay/probe.yml?label=daily%20probe" alt="probe"></a>
 </p>
-<p align="center"><a href="#try-it-now">Try it</a> · <a href="#-pay-for-any-api">Pay</a> · <a href="#-the-work-layer-testnet">Work</a> · <a href="#-fund-an-agent-the-vault-testnet">Fund</a> · <a href="#-a-catalog-thats-evidence-not-a-listing">Catalog</a> · <a href="#-for-agents-mcp-claude-code-raven">Agents</a> · <a href="#the-benchmark-we-hold-ourselves-to">Benchmark</a> · <a href="#not-built-yet--and-why">Not built yet</a></p>
+<p align="center"><b>mainnet:</b> <a href="#try-it-now">Try it</a> · <a href="#-pay-for-any-api">Pay any API</a> · <a href="#-a-catalog-thats-evidence-not-a-listing">Catalog</a> · <a href="#-for-agents-mcp-claude-code-raven">Agents</a> · <a href="#-wallet">Wallet</a><br><b>testnet preview:</b> <a href="#-the-work-layer--escrowed-jobs-testnet-preview">Escrowed jobs</a> · <a href="#-fund-an-agent-the-vault-testnet">Vault</a> — <a href="#the-benchmark-we-hold-ourselves-to">Benchmark</a> · <a href="#not-built-yet--and-why">Gaps</a></p>
 
 ---
 
@@ -30,9 +31,14 @@ flowchart LR
     L -.->|"the substrate for"| REP["Reputation<br/>design phase"]
 ```
 
-Every box is testnet-proven with on-chain checks (see
-[Proof you can run](#-proof-you-can-run)); the payment client and catalog also
-run on mainnet. Direction and the quality bar live in
+**What you can use today, plainly.** The **payment client is the product**:
+paying 402s (x402 + MPP), the probed catalog, the wallet, the spend policy and
+the `run` proxy all work on **mainnet**, and that is what `npm install
+stellar-pay` gives you. The **work layer** below — jobs, agreements, bounties,
+the vault, payment channels — is **testnet-only**, because it reuses contracts
+that are not audited (see [`docs/ECOSYSTEM-ASKS.md`](docs/ECOSYSTEM-ASKS.md)).
+It is real and proven end to end, and it is a preview, not something to run a
+business on this week. Direction and the quality bar live in
 [`docs/SPINE.md`](docs/SPINE.md).
 
 ## Try it now
@@ -126,12 +132,18 @@ request through the same pay loop: on a 402 it reads the offer, pays, retries
 — the tool just sees the 200. The proxy is gated by a per-run auth token, its
 CA key lives only in memory, and it dies with the command.
 
-## 🤝 The work layer (testnet)
+## 🤝 The work layer — escrowed jobs (testnet preview)
 
-Paying per-request is half the thesis. The other half is **work**: hiring an
-agent you don't trust, or earning as one. Money escrows before work starts,
-the terms are pinned by hash on-chain, evidence is judged by a declared
-policy, and payment follows the verdict — no platform in the middle.
+Paying per-request is the floor. The layer above it is **work**: hiring an
+agent you don't trust, or earning as one. The primitive is an **escrowed job
+under a hash-committed agreement** — money escrows before work starts, the
+terms are pinned on-chain, evidence is judged by a declared policy, and
+payment follows the verdict, with no platform in the middle.
+
+**Verification bounties are the first application built on that primitive**,
+not the point of it: they are a job whose evidence contract is a checklist, so
+they are the easiest shape to demo end to end. The same escrow, agreements and
+resolver underneath serve any job with a checkable deliverable.
 
 ```mermaid
 sequenceDiagram
@@ -152,51 +164,38 @@ sequenceDiagram
     Note over W,B: both ledgers receipt their half
 ```
 
-**Hire** (the buyer side):
+A buyer posts and escrows, a worker discovers and proves the work, a resolver
+judges by the declared policy — the full command set is in
+[Using stellar-pay](#using-stellar-pay):
 
 ```sh
-stellar-pay bounty post --title "verify 3 rows" --items a,b,c \
-  --instructions "…" --amount-xlm 1 --resolver G… --submit-url https://… --out bounty.json
-stellar-pay bounty open bounty.json        # escrow + fund — BEFORE a winner exists
-stellar-pay bounty assign bounty.json --provider G…   # or: directed at one worker
-stellar-pay bounty resolve bounty.json --contract C… --submissions s1.json,s2.json
+stellar-pay bounty post … --out bounty.json   # author the terms
+stellar-pay bounty open bounty.json           # escrow + fund BEFORE a winner exists
+stellar-pay bounty list --from <feed-url>     # worker: vet every listing against the CHAIN
+stellar-pay bounty commit / pack / watch      # worker: commit, reveal, get paid
+stellar-pay bounty resolve … --submissions … --commits …   # resolver settles
 ```
 
-**Earn** (the worker side):
+What makes this trustworthy without a platform — the four properties that
+matter more than the verb list:
 
-```sh
-stellar-pay bounty list --from <feed-url>       # vet every listing against the CHAIN
-stellar-pay bounty pack --contract C… --evidence ev.json --send --to <submitUrl>
-stellar-pay bounty watch --contract C…          # did WE get paid? receipted as income
-```
-
-What makes this trustworthy without a platform:
-
-- **Agreements are chain-pinned.** Terms live in a hash-committed document
-  (`stellar-pay/agreement-v1`); its sha256 **is** the escrow's engagement id.
-  A worker re-derives the terms from the descriptor alone and checks the
-  hash against the chain — a feed that lies about pay or scope is caught
-  before any work is spent (proven: the e2e feeds the worker a tampered
-  descriptor claiming 10× the pot; it is refused).
+- **Agreements are chain-pinned.** The terms document's sha256 **is** the
+  escrow's engagement id, so a worker re-derives the terms from public data
+  and checks them against the chain. A feed that lies about pay or scope is
+  caught before any work is spent — proven: the e2e feeds the worker a
+  tampered listing claiming 10× the pot, and it is refused.
 - **Funded means funded.** The vet asks the *token contract* what the escrow
-  actually holds — not the terms, not the feed.
-- **Evidence is bound to its author.** Submissions are ed25519-signed over
-  `sha256(contractId | evidence)` — re-submitting someone else's work under
-  your own payout address fails the signature check (proven in a live race).
-  The honest limit, asserted in that same test: a thief who *obtains* the
-  evidence can re-sign it under their own key, so evidence is sent to the
-  resolver rather than the buyer, and commit-reveal is listed below as the
-  real fix.
-- **Judgments are declared and receipted.** The resolver runs the policy the
-  agreement names (deterministic schema/coverage checks, hash match, or a
-  delegated judge), and every judgment lands in the ledger with the policy
-  label and the evidence it saw.
-- **Escrow rails are a commodity we rent**, behind a swappable seam
-  ([`src/pay/rails.ts`](src/pay/rails.ts)). Today: [Trustless
-  Work](https://www.trustlesswork.com/)'s live Soroban escrow, integrated
-  keyless (straight at the contract — no API key; their 0.3% protocol fee
-  applies on settlement). If SDF ships a native escrow primitive, adopting it
-  is one new file, not a rewrite.
+  holds — not the terms, not the feed — and checks who holds the approve and
+  release seats, so a buyer cannot look neutral and pay itself.
+- **The author of the work wins it.** Publish a hash first, reveal later, and
+  the earliest committer wins; someone who only sees the evidence at reveal
+  time cannot overtake them. (Signatures alone can't do this — the unit suite
+  asserts the thief winning the plain race and losing under commit-reveal.)
+- **Judgments are declared and receipted**, with the policy label and the
+  evidence the resolver saw. And the escrow itself is a **commodity we rent**
+  behind a swappable seam ([`src/pay/rails.ts`](src/pay/rails.ts)) — today
+  [Trustless Work](https://www.trustlesswork.com/)'s Soroban escrow,
+  integrated keyless, their 0.3% fee applying on settlement.
 
 Jobs without the bounty wrapper (`openJob`/`fundJob`/`deliverJob`/…) are the
 library's lower layer — same escrow, same agreements, custom terms.
@@ -403,7 +402,7 @@ Each row links to its section — full flags there, not a pointer to the pitch.
 |---|---|
 | **[Pass-through commands](#pass-through-commands)** | `curl`, `offers`, and `run -- <anything>` |
 | **[Sessions](#sessions-pay-per-call-off-chain-testnet)** | `session open/status/close`, `curl --session` |
-| **[The work layer](#-the-work-layer-testnet)** | `bounty post/assign/open/list/pack/submit/dispute/resolve/watch/status` |
+| **[Escrowed jobs](#-the-work-layer--escrowed-jobs-testnet-preview)** | `bounty post/assign/open/list/commit/pack/submit/dispute/resolve/watch/status` — testnet |
 | **[The vault](#-fund-an-agent-the-vault-testnet)** | `vault create/topup/draw/status` |
 | **[Receipts](#-receipts-the-evidence-substrate)** | `receipts`, `receipts check`, `--verify` |
 | **[Manage accounts](#-wallet)** | `setup --save`, the `account` family, `--account`, `send`, `history` |
