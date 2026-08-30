@@ -263,7 +263,10 @@ function keychainGet(name: string): string {
 	if (store === "dpapi") {
 		const f = dpapiFile(name).replace(/\\/g, "\\\\");
 		return pwsh(
-			`$e = Get-Content -Path "${f}" -Raw; ` +
+			// .Trim() is required, not tidiness: Set-Content writes a trailing
+			// CRLF, Get-Content -Raw hands it back, and ConvertTo-SecureString
+			// rejects the result with "Input string was not in a correct format".
+			`$e = (Get-Content -Path "${f}" -Raw).Trim(); ` +
 				`$sec = ConvertTo-SecureString $e; ` +
 				`[Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))`,
 		);
