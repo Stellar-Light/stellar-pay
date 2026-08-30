@@ -98,6 +98,32 @@ arc every financial system walks.
   overfits noise. The receipts substrate keeps accumulating regardless —
   building the RECORD costs nothing; it's the SCORE that waits.
 
+## Prior art to study during the design phase (from the 2026-08-30 link sweep)
+
+- **ERC-8004** — live on Ethereum mainnet, and the container everyone writes
+  to (Circle's registries, Nookplot's portable feedback). It is identity +
+  reputation + validation REGISTRIES, deliberately not judgment — Circle's
+  own words: containers, not credibility. Two takeaways: (1) portability is
+  won by a shared container standard, and Stellar has no equivalent (our
+  named SDF gap); (2) design our record so it could EXPORT into an
+  8004-shaped container later without adopting its trust assumptions.
+- **Nookplot** — the richest agent-trust stack seen so far: wallet identity,
+  graph-weighted endorsement reputation written to ERC-8004, permissionless
+  verifiers scoring 4 dimensions paid from an epoch pool, escrow-backed
+  hiring (2.5% fee), 30-day permissionless 50/50 dispute expiry, NOOK
+  staking multipliers. Study it as the OPPOSITE integrity trade to ours:
+  endorsements + paid verifier scores are rich but cheap-to-game (rings,
+  collusion — exactly Circle's warning); token staking is circular skin-in-
+  the-game. Their 50/50 expireDisputed deadlock-breaker is genuinely
+  clever and worth stealing the SHAPE of.
+- **OKX AI × Solana** — a live custodial agent marketplace ("discover work,
+  get hired, transact, reputation on-chain"): the platform pole is shipping
+  h→a hiring TODAY. Confirms the wedge and the urgency; our counter remains
+  neutrality + self-custody + costly-to-fake outcomes.
+- **Space and Time / EigenCloud** — the verification layer keeps growing
+  flavors (verifiable data before paying; AVS-attested compute). Both are
+  candidate tier-2 evidence sources for resolvers someday, not now.
+
 ## The one decision already safe to take
 
 Keep writing receipts exactly as we do — content-addressed, ref-chained,
