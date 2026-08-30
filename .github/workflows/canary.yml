@@ -25,15 +25,32 @@ jobs:
           # /data MUST answer 402 — a 200 would mean it stopped charging.
           [ "$H" = "200" ] && [ "$D" = "402" ]
 
+      # The catalog is a live claim too, and it failed exactly the way the
+      # sandbox once did: the publish job broke, every row went stale, `search`
+      # answered "no live match" for six days, and the only signal was a red
+      # cron nobody read. Watch the PUBLISHED artifact, not the job.
+      - name: The published catalog must be fresh
+        id: catalog
+        run: |
+          curl -sS --max-time 30 -o snap.json https://raw.githubusercontent.com/Stellar-Light/stellar-pay/catalog/catalog.json || echo '[]' > snap.json
+          NEWEST=$(jq -r '[.[]?.lastCheckedAt // empty] | max // "1970-01-01T00:00:00Z"' snap.json)
+          AGE=$(( ( $(date -u +%s) - $(date -u -d "$NEWEST" +%s) ) / 3600 ))
+          echo "rows=$(jq 'length' snap.json) newest=$NEWEST age=${AGE}h"
+          echo "age=$AGE" >> "$GITHUB_OUTPUT"
+          # 48h is the client's own freshness window: past it the default view
+          # is EMPTY and discovery is dead for every user and every agent.
+          [ "$AGE" -lt 48 ]
+
       - name: Open an issue when the demo is down
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
           H: ${{ steps.probe.outputs.health }}
           D: ${{ steps.probe.outputs.data }}
+          AGE: ${{ steps.catalog.outputs.age }}
         run: |
-          TITLE="canary: sandbox is down (health $H, /data $D)"
-          if gh issue list --state open --search "canary: sandbox is down in:title" --json number --jq 'length' | grep -qv '^0$'; then
+          TITLE="canary: live surface degraded (health $H, /data $D, catalog ${AGE:-?}h)"
+          if gh issue list --state open --search "canary: live surface degraded in:title" --json number --jq 'length' | grep -qv '^0$'; then
             echo "already reported"; exit 0
           fi
-          gh issue create --title "$TITLE" --body "$(printf 'The hosted sandbox is not answering as expected.\n\n- /health: **%s** (want 200)\n- /data: **%s** (want 402)\n\nThe README headline command depends on this endpoint. Past causes: the fly.io hosting lapsed, or the machine was stopped.\n\n_opened automatically by the canary workflow._' "$H" "$D")"
+          gh issue create --title "$TITLE" --body "$(printf 'A live surface is not answering as expected.\n\n- sandbox /health: **%s** (want 200)\n- sandbox /data: **%s** (want 402)\n- published catalog, newest row: **%sh** old (want < 48h)\n\nThe README headline command depends on the sandbox; `search` and the MCP `search_catalog` depend on the catalog snapshot — past 48h the default view is EMPTY and discovery is dead. Past causes: fly.io hosting lapsed; the machine was stopped; the probe job lost its STELLAR_PAY_ALLOW_DB env and failed silently for six days.\n\n_opened automatically by the canary workflow._' "$H" "$D" "$AGE")"

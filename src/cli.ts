@@ -24,7 +24,21 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { daysAlive, loadCatalog, searchCatalog } from "./catalog.js";
+import {
+	assignBounty,
+	type BountyDescriptor,
+	bountyStatus,
+	type EvidenceEntry,
+	makeSubmission,
+	type OpenSubmission,
+	postBounty,
+	postOpenBounty,
+	resolveBounty,
+	resolveOpenBounty,
+	submitBounty,
+} from "./pay/bounty.js";
 import { payFetch } from "./pay/curl.js";
+import { disputeJob } from "./pay/job.js";
 import {
 	accountPublicKey,
 	addAccount,
@@ -37,6 +51,7 @@ import {
 } from "./pay/keystore.js";
 import {
 	describeOffer,
+	isStellar,
 	type Offer,
 	offerUSD,
 	readOffers,
@@ -50,6 +65,12 @@ import {
 } from "./pay/policy.js";
 import { BRIDGES, EXCHANGES, onramps, partnerRamps } from "./pay/ramps.js";
 import {
+	checkLedger,
+	list as listReceipts,
+	record,
+	verifyOnChain,
+} from "./pay/receipts.js";
+import {
 	addTrustline,
 	history,
 	payUri,
@@ -58,8 +79,28 @@ import {
 	setupWallet,
 	topupInfo,
 } from "./pay/send.js";
+import {
+	closeChannel,
+	DEFAULT_DEPOSIT_XLM,
+	hostOf,
+	openChannel,
+	sessionFetch,
+} from "./pay/session.js";
+import { getChannel, listChannels } from "./pay/session-store.js";
+import {
+	createVault,
+	drawFromVault,
+	topupVault,
+	vaultStatus,
+} from "./pay/vault.js";
 import { verifyEndpoint } from "./pay/verify.js";
 import { balances, loadWallet } from "./pay/wallet.js";
+import {
+	awaitPayout,
+	fetchFeed,
+	submitPacket,
+	vetListing,
+} from "./pay/worker.js";
 
 type Args = {
 	cmd: string;
@@ -86,6 +127,31 @@ type Args = {
 	/** --force: replace an existing account of the same name */
 	force: boolean;
 	limit?: number;
+	/** receipts --verify <id>: prove one ledger row against the chain */
+	verifyReceipt?: string;
+	/** curl --session: pay via the host's registered one-way channel */
+	session: boolean;
+	/** session open --deposit <xlm>: channel deposit (default 5) */
+	deposit?: number;
+	/** bounty verbs */
+	title?: string;
+	items?: string[];
+	instructions?: string;
+	amountXlm?: number;
+	resolverAddr?: string;
+	provider?: string;
+	contract?: string;
+	capXlm?: number;
+	evidenceFile?: string;
+	submissionFiles?: string[];
+	out?: string;
+	token?: string;
+	/** worker verbs: feed source, packet inbox, watch timeout */
+	fromFeed?: string;
+	toUrl?: string;
+	submitUrl?: string;
+	send: boolean;
+	timeoutSec?: number;
 };
 
 // Documented, stable exit codes so a wrapper script can branch without parsing
@@ -117,8 +183,10 @@ function parse(argv: string[]): Args {
 		buy: false,
 		keychain: false,
 		maxUsdSet: false,
+		session: false,
 		positional: [],
 		force: false,
+		send: false,
 	};
 	for (let i = 1; i < argv.length; i++) {
 		const t = argv[i] ?? "";
@@ -158,11 +226,55 @@ function parse(argv: string[]): Args {
 		else if (t === "--limit") {
 			const n = Number(next());
 			if (Number.isInteger(n) && n > 0) a.limit = n;
+		} else if (t === "--verify") a.verifyReceipt = next();
+		else if (t === "--session") a.session = true;
+		else if (t === "--deposit") {
+			const n = Number(next());
+			if (Number.isFinite(n) && n > 0) a.deposit = n;
+		} else if (t === "--title") a.title = next();
+		else if (t === "--items")
+			a.items = (next() ?? "").split(",").filter(Boolean);
+		else if (t === "--instructions") a.instructions = next();
+		else if (t === "--amount-xlm") {
+			const n = Number(next());
+			if (Number.isFinite(n) && n > 0) a.amountXlm = n;
+		} else if (t === "--cap-xlm") {
+			const n = Number(next());
+			if (Number.isFinite(n) && n > 0) a.capXlm = n;
+		} else if (t === "--resolver") a.resolverAddr = next();
+		else if (t === "--provider") a.provider = next();
+		else if (t === "--contract") a.contract = next();
+		else if (t === "--evidence") a.evidenceFile = next();
+		else if (t === "--submissions")
+			a.submissionFiles = (next() ?? "").split(",").filter(Boolean);
+		else if (t === "--out") a.out = next();
+		else if (t === "--token") a.token = next();
+		else if (t === "--from") a.fromFeed = next();
+		else if (t === "--to") a.toUrl = next();
+		else if (t === "--submit-url") a.submitUrl = next();
+		else if (t === "--send") a.send = true;
+		else if (t === "--timeout-sec") {
+			const n = Number(next());
+			if (Number.isFinite(n) && n > 0) a.timeoutSec = n;
 		} else if (!t.startsWith("-")) {
 			// Keep EVERY bare token in order: the first is the subcommand/url,
 			// later ones are paths (`account export --name main backup.json`).
 			if (!a.url) a.url = t;
 			a.positional.push(t);
+		} else {
+			// An unrecognised flag is a USAGE ERROR, never something to skip.
+			// Silently dropping them meant `--max-usd=0.05` (the = form) left the
+			// ceiling at the $0.10 default — a 2x widening of the exact control
+			// the user was trying to tighten — and a typo like `--sandox` ran the
+			// command against MAINNET. Fail loudly instead, the way every serious
+			// CLI parser does.
+			const eq = t.indexOf("=");
+			const hint =
+				eq > 0
+					? `did you mean "${t.slice(0, eq)} ${t.slice(eq + 1)}"? (this CLI takes space-separated values, not --flag=value)`
+					: 'run "stellar-pay --help" for the flags this command accepts';
+			console.error(`unknown option "${t}" — ${hint}`);
+			process.exit(EXIT.usage);
 		}
 	}
 	return a;
@@ -253,6 +365,12 @@ async function cmdRun(a: Args): Promise<void> {
 		wallet,
 		prefer: a.prefer,
 		approve,
+		// The wrapped child's 402s follow redirects too: re-run the per-host
+		// spend policy on every hop, so a 302 cannot walk a payment onto a host
+		// the operator denied (or one an allowlist never named).
+		guard: (u) =>
+			resolveHost(u, { requested: a.maxUsd, requestedExplicit: a.maxUsdSet })
+				.blocked,
 		onPaid: (p) =>
 			console.error(
 				`  ✓ paid ${p.usd != null ? `$${p.usd.toFixed(4)}` : "?"} via ${p.protocol.toUpperCase()} for ${p.url}${p.hash ? ` · ${explorer(wallet.network, p.hash)}` : ""}`,
@@ -659,7 +777,7 @@ async function cmdSend(a: Args): Promise<void> {
 	const line = `send ${amount} USDC to ${named ? `${target} (${to.slice(0, 6)}…${to.slice(-4)})` : `${to.slice(0, 6)}…${to.slice(-4)}`} on ${w.network}`;
 	if (!a.yes && !(await ask(line))) {
 		console.error("not sent");
-		process.exitCode = 2;
+		process.exitCode = EXIT.refused;
 		return;
 	}
 	const r = await sendUSDC(w, to, amount);
@@ -690,6 +808,484 @@ async function cmdHistory(a: Args): Promise<void> {
 		for (const h of rows)
 			console.log(
 				`${h.at.slice(0, 10)}  ${h.direction === "sent" ? "→" : "←"} ${h.amount.padStart(12)} ${h.asset.padEnd(5)} ${h.direction === "sent" ? "to" : "from"} ${h.counterparty.slice(0, 6)}…${h.counterparty.slice(-4)}`,
+			);
+	});
+}
+
+async function cmdSession(a: Args): Promise<void> {
+	// positional[0] is the subcommand (`account export <path>` precedent).
+	const sub = a.positional[0] ?? "";
+	// `session open <url>`: the deposit IS the spend — approval before deploy.
+	if (sub === "open") {
+		const url = a.positional[1];
+		if (!url || !URL.canParse(url))
+			return usageError("usage: stellar-pay session open <url> [--deposit 5]");
+		await ensureSecretLoaded(a.account);
+		const wallet = loadWallet();
+		// The seller's receiving account comes from THEIR OWN 402 — never from
+		// a catalog or a flag someone could spoof.
+		const probe = await fetch(url, { redirect: "manual" });
+		const offers = readOffers(probe.headers, await probe.text());
+		const payTo = offers.find((o) => isStellar(o.network))?.payTo;
+		if (probe.status !== 402 || !payTo)
+			return usageError(
+				`${url} did not answer a Stellar 402 (status ${probe.status}) — nothing to open a channel against`,
+			);
+		const depositXlm = a.deposit ?? DEFAULT_DEPOSIT_XLM;
+		const line = `open a payment channel to ${hostOf(url)}: deposit ${depositXlm} XLM (max exposure), recipient ${payTo.slice(0, 6)}…`;
+		if (!a.yes && wallet.network !== "stellar:testnet") {
+			if (!(await ask(line))) {
+				process.exitCode = EXIT.refused;
+				return;
+			}
+		} else console.error(`${line} (approved)`);
+		const r = await openChannel({ wallet, url, recipient: payTo, depositXlm });
+		emit(
+			a,
+			{
+				host: r.host,
+				contract: r.contract,
+				commitment_pubkey_hex: r.commitmentPubHex,
+				deposit_xlm: depositXlm,
+				tx: r.tx,
+				explorer: `https://stellar.expert/explorer/testnet/tx/${r.tx}`,
+			},
+			() => {
+				console.log(`channel  ${r.contract}`);
+				console.log(
+					`deposit  ${depositXlm} XLM (your max exposure to ${r.host})`,
+				);
+				console.log(
+					`tx       https://stellar.expert/explorer/testnet/tx/${r.tx}`,
+				);
+				console.log(
+					`\nGive the seller these (our sandbox takes them as env):\n  CHANNEL_CONTRACT=${r.contract}\n  COMMITMENT_PUBKEY=${r.commitmentPubHex}\n\nThen: stellar-pay curl <url> --session`,
+				);
+			},
+		);
+		return;
+	}
+	if (sub === "close") {
+		const url = a.positional[1];
+		if (!url || !URL.canParse(url))
+			return usageError("usage: stellar-pay session close <url>");
+		const c = getChannel(hostOf(url));
+		if (!c) return usageError(`no channel for ${hostOf(url)}`);
+		// Best-known cumulative: tracked by sessionFetch from the client's own
+		// signed events (never adopted from the server). The close must cover
+		// its own request, so read one price step from the live 402.
+		const last = BigInt(c.lastCumulative ?? "0");
+		const probe = await fetch(url, { redirect: "manual" });
+		const priceStep = BigInt(
+			readOffers(probe.headers, await probe.text()).find((o) =>
+				isStellar(o.network),
+			)?.amount ?? "1",
+		);
+		const r = await closeChannel({ url, lastCumulative: last, priceStep });
+		const settled = (last + priceStep).toString();
+		emit(a, { status: r.status, settled_cumulative: settled }, () => {
+			console.log(
+				r.status === 200
+					? `closed — server settled on-chain (cumulative ${last} + one price step ${priceStep})`
+					: `close returned ${r.status} — the channel may already be closed or the server refused`,
+			);
+		});
+		if (r.status !== 200) process.exitCode = EXIT.runtime;
+		return;
+	}
+	// default: status
+	const channels = listChannels();
+	emit(a, { channels }, () => {
+		const hosts = Object.keys(channels);
+		if (!hosts.length)
+			return console.log(
+				`no session channels — open one: stellar-pay session open <url> [--deposit ${DEFAULT_DEPOSIT_XLM}]`,
+			);
+		for (const [host, c] of Object.entries(channels))
+			console.log(
+				`${host}  ${c.contract.slice(0, 8)}…  deposit ${Number(BigInt(c.depositStroops)) / 1e7} XLM  opened ${c.openedAt.slice(0, 10)}`,
+			);
+	});
+}
+
+const XLM_SAC_TESTNET_CLI =
+	"CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
+
+function readJsonFile<T>(path: string, what: string): T {
+	try {
+		return JSON.parse(readFileSync(path, "utf8")) as T;
+	} catch (e) {
+		throw new Error(
+			`could not read ${what} from ${path}: ${(e as Error).message}`,
+		);
+	}
+}
+
+async function cmdVault(a: Args): Promise<void> {
+	const sub = a.positional[0] ?? "";
+	const usage = () =>
+		usageError(`usage:
+  vault create --cap-xlm N     deploy the vault; THIS wallet becomes the capped agent (testnet)
+  vault topup --amount-xlm N   move funds wallet → vault (behind the cap)
+  vault draw --amount-xlm N    agent draws float to its own key — the CHAIN enforces the cap
+  vault status                 config + on-chain balance`);
+	await ensureSecretLoaded(a.account);
+	const wallet = loadWallet();
+	if (sub === "create") {
+		if (!a.amountXlm && !a.capXlm) return usage();
+		const rec = await createVault({
+			wallet,
+			capXlm: a.capXlm ?? a.amountXlm ?? 0,
+		});
+		emit(a, rec, () =>
+			console.log(
+				`vault ${rec.contractId}
+cap ${Number(rec.capStroops) / 1e7} XLM per ~day · agent = this wallet
+fund it: vault topup --amount-xlm N`,
+			),
+		);
+		return;
+	}
+	if (sub === "topup") {
+		if (!a.amountXlm) return usage();
+		const r = await topupVault({ wallet, amountXlm: a.amountXlm });
+		emit(a, r, () => console.log(`topped up: ${r.hash}`));
+		return;
+	}
+	if (sub === "draw") {
+		if (!a.amountXlm) return usage();
+		const r = await drawFromVault({ wallet, amountXlm: a.amountXlm });
+		emit(a, r, () =>
+			console.log(
+				r.ok
+					? `drawn: ${r.hash}`
+					: `REFUSED BY THE CHAIN: ${r.refusal} — the cap held`,
+			),
+		);
+		if (!r.ok) process.exitCode = EXIT.refused;
+		return;
+	}
+	if (sub === "status") {
+		const st = await vaultStatus({ wallet });
+		emit(a, st, () =>
+			console.log(
+				`vault ${st.vault}
+balance ${Number(st.balanceStroops) / 1e7} XLM · cap ${Number(st.capStroops) / 1e7} XLM/~day · agent ${st.agent}`,
+			),
+		);
+		return;
+	}
+	return usage();
+}
+
+async function cmdBounty(a: Args): Promise<void> {
+	const sub = a.positional[0] ?? "";
+	const usage = () =>
+		usageError(`usage:
+  bounty post --title T --items a,b --instructions "…" --amount-xlm N [--resolver G…] [--token C…] [--out bounty.json]
+  bounty assign <bounty.json> --provider G…        (buyer wallet: escrow + fund, directed)
+  bounty open <bounty.json>                        (buyer wallet: escrow + fund, open race)
+  bounty submit --contract C… --evidence ev.json   (worker wallet: directed evidence on-chain)
+  bounty pack --contract C… --evidence ev.json [--out sub.json] [--send --to URL]   (worker wallet: signed open-race packet)
+  bounty list --from <url|file>                    (worker: fetch a feed, VET each listing against the chain)
+  bounty watch --contract C… [--timeout-sec N]     (worker: wait for settlement; did WE get paid?)
+  bounty dispute --contract C…                     (buyer wallet: unlock refund/open settlement)
+  bounty resolve <bounty.json> --contract C… [--submissions s1.json,s2.json]   (resolver wallet)
+  bounty status --contract C…`);
+
+	if (sub === "list") {
+		if (!a.fromFeed) return usage();
+		await ensureSecretLoaded(a.account);
+		const w = loadWallet();
+		const listings = await fetchFeed(a.fromFeed);
+		const rows: Array<{
+			contractId: string;
+			title?: string;
+			amount?: string;
+			token?: string;
+			submitUrl: string | null;
+			valid: boolean;
+			failed: string[];
+		}> = [];
+		for (const listing of listings) {
+			const vet = await vetListing({ listing, source: w.keypair });
+			rows.push({
+				contractId: listing.contractId,
+				title: listing.descriptor?.title,
+				amount: listing.descriptor?.amount,
+				token: listing.descriptor?.tokenContract,
+				submitUrl: listing.descriptor?.submitUrl ?? null,
+				valid: vet.ok,
+				failed: vet.checks.filter((c) => !c.ok).map((c) => c.name),
+			});
+		}
+		emit(a, { feed: a.fromFeed, listings: rows }, () => {
+			if (rows.length === 0) return console.log("feed is empty");
+			for (const r of rows)
+				console.log(
+					`${r.valid ? "VALID  " : "REFUSED"} ${r.contractId.slice(0, 10)}… "${r.title}" pays ${r.amount}${
+						r.valid
+							? r.submitUrl
+								? `\n        submit to ${r.submitUrl}`
+								: ""
+							: `  (${r.failed.join(", ")})`
+					}`,
+				);
+			console.error(
+				"\nVALID = the CHAIN backs the claim (terms pinned, pot funded, still open). Never work a REFUSED row.",
+			);
+		});
+		return;
+	}
+
+	if (sub === "watch") {
+		if (!a.contract) return usage();
+		await ensureSecretLoaded(a.account);
+		const w = loadWallet();
+		const r = await awaitPayout({
+			contractId: a.contract,
+			worker: w.keypair,
+			timeoutMs: (a.timeoutSec ?? 300) * 1000,
+		});
+		emit(
+			a,
+			r.paid ? { ...r, amountStroops: r.amountStroops.toString() } : r,
+			() =>
+				console.log(
+					r.paid
+						? `PAID ${Number(r.amountStroops) / 1e7} XLM-units (tx ${r.tx ?? "n/a"}) — receipted as bounty-income`
+						: r.reason === "timeout"
+							? "not settled within the timeout"
+							: "settled, but not to us — lost the race or refunded",
+				),
+		);
+		if (!r.paid)
+			process.exitCode = r.reason === "timeout" ? EXIT.runtime : EXIT.refused;
+		return;
+	}
+
+	if (sub === "post") {
+		if (!a.title || !a.items?.length || !a.instructions || !a.amountXlm)
+			return usage();
+		await ensureSecretLoaded(a.account);
+		const w = loadWallet();
+		const d = postBounty({
+			buyer: w.publicKey,
+			resolver: a.resolverAddr ?? w.publicKey,
+			title: a.title,
+			items: a.items,
+			instructions: a.instructions,
+			amount: BigInt(Math.round(a.amountXlm * 10_000_000)),
+			tokenContract: a.token ?? XLM_SAC_TESTNET_CLI,
+			submitUrl: a.submitUrl,
+		});
+		if (a.out) writeFileSync(a.out, JSON.stringify(d, null, 1));
+		emit(a, d, () => {
+			console.log(JSON.stringify(d, null, 1));
+			if (a.out) console.error(`written to ${a.out}`);
+			if (!a.resolverAddr)
+				console.error(
+					"note: resolver defaults to YOU — you will not be able to refund via dispute (the resolver cannot dispute its own escrow); pass --resolver for a neutral judge",
+				);
+		});
+		return;
+	}
+
+	if (sub === "assign" || sub === "open") {
+		const file = a.positional[1];
+		if (!file) return usage();
+		const d = readJsonFile<BountyDescriptor>(file, "bounty descriptor");
+		await ensureSecretLoaded(a.account);
+		const w = loadWallet();
+		if (w.network !== "stellar:testnet")
+			return usageError(
+				"bounties are testnet-only (the escrow contract is unaudited; mainnet is gated on that audit)",
+			);
+		if (sub === "assign") {
+			if (!a.provider) return usage();
+			const r = await assignBounty({
+				descriptor: d,
+				buyer: w.keypair,
+				provider: a.provider,
+			});
+			emit(a, r, () =>
+				console.log(
+					`escrowed ${d.amount} to ${r.contractId}
+fund tx ${r.fundTx}
+worker submits with: bounty submit --contract ${r.contractId} --evidence ev.json`,
+				),
+			);
+			return;
+		}
+		const r = await postOpenBounty({ descriptor: d, buyer: w.keypair });
+		emit(a, r, () =>
+			console.log(
+				`OPEN bounty escrowed ${d.amount} at ${r.contractId}
+workers race with: bounty pack --contract ${r.contractId} --evidence ev.json`,
+			),
+		);
+		return;
+	}
+
+	if (sub === "submit" || sub === "pack") {
+		if (!a.contract || !a.evidenceFile) return usage();
+		const evidence = readJsonFile<EvidenceEntry[]>(a.evidenceFile, "evidence");
+		if (!Array.isArray(evidence))
+			return usageError("evidence must be a JSON array");
+		await ensureSecretLoaded(a.account);
+		const w = loadWallet();
+		if (sub === "pack") {
+			if (a.send) {
+				if (!a.toUrl)
+					return usageError(
+						"--send needs --to <url> (the bounty's submitUrl — see `bounty list`)",
+					);
+				const r = await submitPacket({
+					worker: w.keypair,
+					contractId: a.contract,
+					evidence,
+					url: a.toUrl,
+				});
+				emit(a, { status: r.status, worker: r.packet.worker }, () =>
+					console.log(
+						`packet submitted to ${a.toUrl} (HTTP ${r.status}) — now: bounty watch --contract ${a.contract}`,
+					),
+				);
+				return;
+			}
+			const packet = makeSubmission({
+				worker: w.keypair,
+				contractId: a.contract,
+				evidence,
+			});
+			if (a.out) writeFileSync(a.out, JSON.stringify(packet, null, 1));
+			emit(a, packet, () => {
+				console.log(JSON.stringify(packet, null, 1));
+				if (a.out)
+					console.error(
+						`written to ${a.out} — hand it to the bounty's resolver`,
+					);
+			});
+			return;
+		}
+		const r = await submitBounty({
+			provider: w.keypair,
+			contractId: a.contract,
+			evidence,
+			prevReceiptId: "",
+		});
+		emit(a, r, () => console.log(`evidence on-chain: ${r.tx}`));
+		return;
+	}
+
+	if (sub === "dispute") {
+		if (!a.contract) return usage();
+		await ensureSecretLoaded(a.account);
+		const w = loadWallet();
+		const r = await disputeJob({ signer: w.keypair, contractId: a.contract });
+		emit(a, r, () => console.log(`disputed: ${r.tx}`));
+		return;
+	}
+
+	if (sub === "resolve") {
+		const file = a.positional[1];
+		if (!file || !a.contract) return usage();
+		const d = readJsonFile<BountyDescriptor>(file, "bounty descriptor");
+		await ensureSecretLoaded(a.account);
+		const w = loadWallet();
+		if (a.submissionFiles?.length) {
+			const submissions = a.submissionFiles.map((f) =>
+				readJsonFile<OpenSubmission>(f, "submission packet"),
+			);
+			const r = await resolveOpenBounty({
+				descriptor: d,
+				resolver: w.keypair,
+				contractId: a.contract,
+				submissions,
+			});
+			emit(a, r, () =>
+				console.log(
+					r.winner
+						? `winner ${r.winner} paid (txs: ${r.txs.join(", ")})`
+						: `no valid submission — pot returned to the buyer (txs: ${r.txs.join(", ")})`,
+				),
+			);
+			return;
+		}
+		const r = await resolveBounty({
+			descriptor: d,
+			resolver: w.keypair,
+			contractId: a.contract,
+		});
+		emit(a, r, () =>
+			console.log(
+				`answered "${r.answer}" → ${r.outcome} (txs: ${r.txs.join(", ")})`,
+			),
+		);
+		return;
+	}
+
+	if (sub === "status") {
+		if (!a.contract) return usage();
+		await ensureSecretLoaded(a.account);
+		const w = loadWallet();
+		const st = await bountyStatus({
+			contractId: a.contract,
+			source: w.keypair,
+		});
+		emit(a, st, () =>
+			console.log(
+				`funded=${st.funded} submitted=${st.submitted} released=${st.released} disputed=${st.disputed} evidence=${st.evidence?.length ?? 0} entries`,
+			),
+		);
+		return;
+	}
+	return usage();
+}
+
+async function cmdReceipts(a: Args): Promise<void> {
+	if (a.positional[0] === "check") {
+		const r = checkLedger();
+		emit(a, r, () => {
+			console.log(
+				r.ok
+					? `ledger intact: ${r.rows} row(s), every id re-derives from its content`
+					: `TAMPERED: ${r.bad.length} row(s) whose id does not match content`,
+			);
+			for (const b of r.bad) console.log(`  ${b.id} ≠ ${b.expected}`);
+		});
+		if (!r.ok) process.exitCode = EXIT.runtime;
+		return;
+	}
+	// --verify <id>: the PGTR half — prove a row against the CHAIN, so the
+	// receipt is a portable authorization artifact, not a log line.
+	const verifyId = a.verifyReceipt;
+	if (verifyId) {
+		const row = listReceipts({ limit: 10_000 }).find((r) =>
+			r.id.startsWith(verifyId),
+		);
+		if (!row) {
+			console.error(`no receipt with id ${verifyId}`);
+			process.exitCode = EXIT.usage;
+			return;
+		}
+		const v = await verifyOnChain(row);
+		emit(a, { receipt: row, ...v }, () => {
+			for (const c of v.checks)
+				console.log(
+					`  ${c.ok ? "✓" : "✗"} ${c.name}${c.note ? ` — ${c.note}` : ""}`,
+				);
+			console.log(v.ok ? "VERIFIED on-chain" : "NOT verified");
+		});
+		if (!v.ok) process.exitCode = EXIT.runtime;
+		return;
+	}
+	const rows = listReceipts({ limit: a.limit ?? 20 });
+	emit(a, { receipts: rows }, () => {
+		if (!rows.length) return console.log("no receipts yet");
+		for (const r of rows)
+			console.log(
+				`${r.at.slice(0, 19)}  ${r.id}  ${r.kind.padEnd(15)} ${r.amount ?? ""} ${r.url ?? r.detail?.rule ?? ""}${r.refs?.length ? `  ⤴ ${r.refs.join(",")}` : ""}`,
 			);
 	});
 }
@@ -753,8 +1349,80 @@ async function cmdOffers(a: Args, init: RequestInit): Promise<void> {
 
 async function cmdCurl(a: Args, init: RequestInit): Promise<void> {
 	if (!a.url) throw new Error("curl <url>");
+	// --session: pay through the host's registered one-way channel — every
+	// call is an OFF-CHAIN signed commitment (deposit already capped exposure
+	// at `session open`, which is where approval happened). No per-call
+	// prompt: the channel cannot pay the seller more than the deposit.
+	if (a.session) {
+		const host = hostOf(a.url);
+		const { fetch: sf, channel } = sessionFetch(host);
+		const cumBefore = BigInt(channel.lastCumulative ?? "0");
+		const t0 = Date.now();
+		const res = await sf(a.url, init);
+		const ms = Date.now() - t0;
+		const bodyText = await res.text();
+		const priced = res.headers.get("payment-receipt") != null;
+		if (priced) {
+			// One receipt per paid call, chained to the channel-open receipt —
+			// the attribution chain: open ← call ← call ← … ← close. The amount
+			// is the cumulative DELTA this call signed (from our own store,
+			// never the server's word).
+			const cumAfter = BigInt(getChannel(host)?.lastCumulative ?? "0");
+			const openRow = listReceipts({ kind: "channel-open", limit: 10_000 })
+				.reverse()
+				.find((r) => r.detail?.host === host);
+			record({
+				kind: "payment",
+				network: channel.network,
+				protocol: "channel",
+				url: a.url,
+				amount: (cumAfter - cumBefore).toString(),
+				payer: channel.funder,
+				payee: channel.recipient,
+				tx: null,
+				refs: openRow ? [openRow.id] : undefined,
+				detail: { session: true, offChain: true },
+			});
+		}
+		if (!res.ok && res.status !== 402) process.exitCode = EXIT.runtime;
+		if (res.status === 402) process.exitCode = EXIT.refused;
+		if (a.json) {
+			console.log(
+				JSON.stringify(
+					{
+						status: res.status,
+						content_type: res.headers.get("content-type"),
+						body: bodyText,
+						session: { host, contract: channel.contract, ms, offChain: true },
+					},
+					null,
+					1,
+				),
+			);
+			return;
+		}
+		console.error(
+			`session ${host} · ${ms} ms · off-chain commitment (channel ${channel.contract.slice(0, 8)}…)`,
+		);
+		console.log(bodyText);
+		return;
+	}
 	await ensureSecretLoaded(a.account);
 	const wallet = loadWallet();
+	// Every spend DECISION becomes a receipt row naming the rule that fired
+	// (policy-as-artifact); the payment row that may follow references it.
+	let decisionId: string | undefined;
+	const logDecision = (o: Offer, allowed: boolean, rule: string) => {
+		decisionId = record({
+			kind: "policy-decision",
+			network: wallet.network,
+			url: a.url,
+			amount: o.amount,
+			asset: o.asset,
+			payee: o.payTo,
+			detail: { allowed, rule },
+		});
+	};
 	const approve = async (o: Offer, url: string) => {
 		const line = `pay ${describeOffer(o)} for ${a.method} ${a.url}`;
 		// The per-host policy (deny / allowlist / host ceiling) applies on EVERY
@@ -765,13 +1433,19 @@ async function cmdCurl(a: Args, init: RequestInit): Promise<void> {
 		});
 		if (gate.blocked) {
 			console.error(`${line}\n  refused: ${gate.blocked}`);
+			logDecision(o, false, `host-policy: ${gate.blocked}`);
 			return false;
 		}
-		if (!a.yes && wallet.network !== "stellar:testnet") return ask(line);
+		if (!a.yes && wallet.network !== "stellar:testnet") {
+			const human = await ask(line);
+			logDecision(o, human, human ? "human-approved" : "human-declined");
+			return human;
+		}
 		const v = autoApprove(o, { network: wallet.network, maxUsd: gate.maxUsd });
 		console.error(
 			`${line}${v.ok ? " (approved)" : `\n  refused: ${v.reason}`}`,
 		);
+		logDecision(o, v.ok, v.ok ? "auto-approve" : v.reason);
 		return v.ok;
 	};
 	const r = await payFetch(a.url, init, {
@@ -785,6 +1459,20 @@ async function cmdCurl(a: Args, init: RequestInit): Promise<void> {
 		prefer: a.prefer,
 	});
 	const bodyText = await r.res.text();
+	if (r.paid) {
+		record({
+			kind: "payment",
+			network: wallet.network,
+			protocol: r.paid.protocol,
+			url: a.url,
+			amount: r.paid.offer.amount,
+			asset: r.paid.offer.asset,
+			payer: wallet.publicKey,
+			payee: r.paid.offer.payTo,
+			tx: r.paid.hash,
+			refs: decisionId ? [decisionId] : undefined,
+		});
+	}
 	const usd = r.paid ? offerUSD(r.paid.offer) : null;
 	const paid = r.paid
 		? {
@@ -954,6 +1642,13 @@ WALLET
   send <G…address|account-name> --amount <USDC|max> [--yes]
                                              send USDC; 'max' drains the balance
   history [--limit N] [--json]
+  receipts [--limit N] [--verify ID] [--json]  the local ledger; --verify proves a row on-chain
+  receipts check                         tamper check: every row id must re-derive from its content
+  session open <url> [--deposit 5] | status | close <url>   one-way payment channels (testnet)
+  bounty post|assign|open|submit|pack|dispute|resolve|status   escrowed verification bounties (testnet)
+  bounty list --from <feed>   |   bounty watch --contract C…   earn: vet listings against the CHAIN, get paid
+  vault create|topup|draw|status         fund an agent behind an ON-CHAIN spend cap (testnet)
+  curl <url> --session                   pay via the host's channel — off-chain per call
 
 AGENTS
   mcp                                        serve the MCP on stdio
@@ -980,6 +1675,10 @@ const commands: Record<string, (a: Args, init: RequestInit) => Promise<void>> =
 		topup: cmdTopup,
 		send: cmdSend,
 		history: cmdHistory,
+		receipts: cmdReceipts,
+		session: cmdSession,
+		bounty: cmdBounty,
+		vault: cmdVault,
 		verify: cmdVerify,
 		offers: cmdOffers,
 		curl: cmdCurl,

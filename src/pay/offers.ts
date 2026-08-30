@@ -141,11 +141,18 @@ export function readOffers(headers: Headers, body: string): Offer[] {
 	});
 }
 
-/** USD value when the asset is USDC on Stellar (7 decimals); null otherwise. */
+/** USD value when the asset is USDC on Stellar (7 decimals); null otherwise.
+ *
+ * A non-numeric amount MUST come back null, never NaN. `amount` is a string a
+ * hostile seller controls ("abc", "1,000000000"), and NaN passes every `>`
+ * ceiling test — it was approved by autoApprove AND it poisoned the MCP's
+ * session budget permanently once added to the running total. null routes to
+ * the "unpriceable, refuse" path instead. */
 export function offerUSD(o: Offer): number | null {
 	if (!o.amount || !o.asset) return null;
 	if (USDC_SAC[o.network] !== o.asset) return null;
-	return Number(o.amount) / 10_000_000;
+	const usd = Number(o.amount) / 10_000_000;
+	return Number.isFinite(usd) ? usd : null;
 }
 
 export function describeOffer(o: Offer): string {

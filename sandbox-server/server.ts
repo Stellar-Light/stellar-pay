@@ -15,9 +15,18 @@
  *                      fees (friendbot-funded testnet account).
  *   PRICE_XLM          per-call price, default 0.001.
  */
+import * as stellarChannel from "@stellar/mpp/channel/server";
 import * as stellarServer from "@stellar/mpp/charge/server";
 import { randomBytes } from "node:crypto";
-import { Asset, Keypair, Networks } from "@stellar/stellar-sdk";
+import { Asset, Keypair, Networks, StrKey } from "@stellar/stellar-sdk";
+import { x402Facilitator } from "@x402/core/facilitator";
+import {
+	decodePaymentSignatureHeader,
+	encodePaymentRequiredHeader,
+	encodePaymentResponseHeader,
+} from "@x402/core/http";
+import { createEd25519Signer } from "@x402/stellar";
+import { ExactStellarScheme as X402FacilitatorScheme } from "@x402/stellar/exact/facilitator";
 import express from "express";
 import { Mppx } from "mppx/express";
 import { Store } from "mppx/server";
@@ -64,6 +73,37 @@ const mppx = Mppx.create({
 	],
 });
 
+// ── Channel mode (Track 1 slice, testnet-only) ──────────────────────────────
+// A one-way payment channel turns N paid calls into ONE on-chain deposit and
+// ONE on-chain close: between them, each request is a signed off-chain
+// commitment for a strictly-increasing cumulative amount. Activated only when
+// the operator supplies a deployed channel contract — the contract is
+// deployed out-of-band (funder-authorized, deposit at deploy) because the
+// UNAUDITED one-way-channel contract stays testnet-only by policy.
+//   CHANNEL_CONTRACT   C… address of the deployed one-way-channel instance
+//   COMMITMENT_PUBKEY  hex ed25519 public key the funder signs commitments with
+const channelContract = process.env.CHANNEL_CONTRACT;
+const commitmentPubkeyHex = process.env.COMMITMENT_PUBKEY;
+const channelMppx =
+	channelContract && commitmentPubkeyHex
+		? Mppx.create({
+				secretKey: credentialSecret,
+				methods: [
+					stellarChannel.stellar.channel({
+						channel: channelContract,
+						commitmentKey: StrKey.encodeEd25519PublicKey(
+							Buffer.from(commitmentPubkeyHex, "hex"),
+						),
+						store: Store.memory(),
+						network: NETWORK,
+						// The seller sources and signs the on-chain close envelope, so
+						// the funder needs nothing on-chain after the deposit.
+						feePayer: { envelopeSigner: seller },
+					}),
+				],
+			})
+		: null;
+
 const app = express();
 
 // The challenge store is an unbounded Map upstream, and a rejected push-mode
@@ -97,7 +137,12 @@ app.get("/", (_req, res) => {
 		price_xlm: PRICE,
 		fees: "sponsored by the seller — you need no XLM beyond the payment",
 		recipient: seller.publicKey(),
-		paid_endpoints: ["/data", "/quote"],
+		paid_endpoints: [
+			"/data",
+			"/quote",
+			"/data-x402 (x402 v2)",
+			...(channelMppx ? ["/data-session (channel mode)"] : []),
+		],
 		try_it: [
 			"npx stellar-pay setup --sandbox            # funded testnet wallet, one command",
 			"npx stellar-pay offers <this-url>/data     # read the 402, pay nothing",
@@ -135,8 +180,126 @@ app.get(
 	},
 );
 
+// ── x402 v2 mode (the third protocol, same seller, same XLM) ────────────────
+// The sandbox's MPP endpoints can't be listed in an x402 Bazaar (stellarsight
+// runs conformance with unmodified @x402 clients), so /data-x402 serves the
+// same paid call over x402 v2 `exact` with an IN-PROCESS facilitator — no
+// external service, all crypto from @x402/stellar. Research tie: the settle
+// response we return in PAYMENT-RESPONSE *is* a receipt — the PGTR-pattern
+// artifact (payment receipt as proof-of-action) our strategy builds on.
+const x402Fac = new x402Facilitator().register(
+	"stellar:testnet",
+	new X402FacilitatorScheme([createEd25519Signer(seller.secret())], {
+		areFeesSponsored: true,
+	}),
+);
+const X402_PRICE_STROOPS = String(
+	Math.round(Number(PRICE) * 10_000_000),
+);
+const x402Requirements = (url: string) => ({
+	scheme: "exact" as const,
+	network: "stellar:testnet" as const,
+	asset: XLM_SAC,
+	amount: X402_PRICE_STROOPS,
+	payTo: seller.publicKey(),
+	maxTimeoutSeconds: 120,
+	extra: {
+		assetCode: "XLM",
+		humanAmount: `${PRICE} XLM`,
+		areFeesSponsored: true,
+	},
+	// deliberately last: spread-safe if the type grows
+	resource: url,
+});
+const x402PaymentRequired = (url: string, error?: string) => ({
+	x402Version: 2,
+	...(error ? { error } : {}),
+	resource: {
+		url,
+		description: "stellar-pay sandbox paid call (x402 v2)",
+		serviceName: "stellar-pay-sandbox",
+		mimeType: "application/json",
+	},
+	accepts: [x402Requirements(url)],
+});
+
+app.get("/data-x402", async (req, res) => {
+	const url = `https://${req.headers.host ?? "localhost"}/data-x402`;
+	const send402 = (error?: string) => {
+		const pr = x402PaymentRequired(url, error);
+		res
+			.status(402)
+			.setHeader("PAYMENT-REQUIRED", encodePaymentRequiredHeader(pr as never))
+			// v1-compat JSON body; the header is the canonical v2 transport
+			.json(pr);
+	};
+	const header =
+		req.get("PAYMENT-SIGNATURE") ?? req.get("X-PAYMENT") ?? undefined;
+	if (!header) return send402();
+	let payload: ReturnType<typeof decodePaymentSignatureHeader>;
+	try {
+		payload = decodePaymentSignatureHeader(header);
+	} catch (e) {
+		return send402(`invalid payment header: ${(e as Error).message}`);
+	}
+	// Never trust echoed money fields — verify against OUR requirements.
+	const reqs = x402Requirements(url) as never;
+	try {
+		const v = await x402Fac.verify(payload as never, reqs);
+		if (!(v as { isValid?: boolean }).isValid)
+			return send402(
+				`payment invalid: ${(v as { invalidReason?: string }).invalidReason ?? "unspecified"}`,
+			);
+		const settle = await x402Fac.settle(payload as never, reqs);
+		if (!(settle as { success?: boolean }).success)
+			return send402(
+				`settlement failed: ${(settle as { errorReason?: string }).errorReason ?? "unspecified"}`,
+			);
+		res
+			.setHeader(
+				"PAYMENT-RESPONSE",
+				encodePaymentResponseHeader(settle as never),
+			)
+			.json({
+				ok: true,
+				paid: true,
+				mode: "x402",
+				message: "you just paid for this on Stellar testnet via x402 v2",
+				transaction: (settle as { transaction?: string }).transaction,
+				at: new Date().toISOString(),
+			});
+	} catch (e) {
+		return send402(`facilitator error: ${(e as Error).message}`);
+	}
+});
+
+/** Paid via CHANNEL commitments — off-chain per call, on-chain only at
+ * open (deposit) and close (settle). Testnet-only: the channel contract is
+ * unaudited, so this route never appears unless the operator deployed one. */
+if (channelMppx) {
+	app.get(
+		"/data-session",
+		channelMppx.channel({
+			amount: PRICE,
+			description: "stellar-pay sandbox channel-gated call",
+		}),
+		(_req, res) => {
+			res.json({
+				ok: true,
+				paid: true,
+				mode: "channel",
+				message:
+					"paid via an off-chain channel commitment — no on-chain transaction for this call",
+				at: new Date().toISOString(),
+			});
+		},
+	);
+}
+
 /** Liveness, free. */
-app.get("/health", (_req, res) => res.json({ ok: true, network: NETWORK }));
+app.get("/health", (_req, res) =>
+	res.json({ ok: true, network: NETWORK, channelMode: !!channelMppx }),
+);
 
 const port = Number(process.env.PORT ?? 8787);
 app.listen(port, () => {

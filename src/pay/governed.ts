@@ -24,6 +24,7 @@ import {
 import type { Entry } from "../catalog.js";
 import { payFetch } from "./curl.js";
 import { type Offer, offerUSD, type Protocol } from "./offers.js";
+import { record } from "./receipts.js";
 import type { Wallet } from "./wallet.js";
 
 export type Payment = {
@@ -59,8 +60,13 @@ export function buildGoverned(o: {
 	catalog: Entry[];
 	approve: (offer: Offer, url: string) => Promise<boolean>;
 	refusalReason: (offer: Offer, url: string) => string;
-	/** re-checked on each redirect hop (SSRF / per-host policy) */
-	guard?: (url: string) => Promise<string | null> | string | null;
+	/** Re-checked on EVERY redirect hop (SSRF + per-host policy). REQUIRED, not
+	 * optional: the MCP shipped without one, so a 302 from an approved public
+	 * host to 169.254.169.254 was followed and its body handed to the agent —
+	 * and a `deny: true` host became payable by redirecting to it. An optional
+	 * security parameter is one a caller forgets silently. Pass `() => null`
+	 * only in a test that means "no guard". */
+	guard: (url: string) => Promise<string | null> | string | null;
 	prefer?: "x402" | "mpp";
 	budgetPerCall: number;
 }): Governed {
@@ -86,6 +92,21 @@ export function buildGoverned(o: {
 		for (const h of [...Object.values(HDR), SUPPRESSION_HEADER])
 			headers.delete(h);
 		if (r.paid) {
+			// Agent payments land in the SAME ledger the CLI writes: a payment
+			// row per settle, verifiable later via `receipts --verify` — the
+			// receipt substrate is shared, not per-surface.
+			record({
+				kind: "payment",
+				network: o.wallet.network,
+				protocol: r.paid.protocol,
+				url,
+				amount: r.paid.offer.amount,
+				asset: r.paid.offer.asset,
+				payer: o.wallet.publicKey,
+				payee: r.paid.offer.payTo,
+				tx: r.paid.hash,
+				detail: { surface: "mcp" },
+			});
 			const usd = offerUSD(r.paid.offer);
 			if (r.paid.hash) headers.set(HDR.hash, r.paid.hash);
 			headers.set(HDR.protocol, r.paid.protocol);

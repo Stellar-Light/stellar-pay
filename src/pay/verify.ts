@@ -9,6 +9,7 @@
  * a stellar-pay client can pay them — so it's the seller's path into the
  * catalog without going through anyone's gateway.
  */
+import { Asset, Networks } from "@stellar/stellar-sdk";
 import { isStellar, type Offer, readOffers, USDC_SAC } from "./offers.js";
 
 export type Check = { ok: boolean; label: string; detail: string };
@@ -80,13 +81,22 @@ export async function verifyEndpoint(
 
 	const o = stellar ?? null;
 	if (o) {
-		const sacSet = new Set(Object.values(USDC_SAC));
+		// A payable asset is a real SAC the client can actually hold and value:
+		// the USDC SAC, or the network's NATIVE XLM SAC (our own sandbox prices
+		// in XLM so friendbot wallets can pay — flagging that as broken was a
+		// validator bug, caught by running verify against our own live seller).
+		const usdcSet = new Set(Object.values(USDC_SAC));
+		const xlmSet = new Set([
+			Asset.native().contractId(Networks.PUBLIC),
+			Asset.native().contractId(Networks.TESTNET),
+		]);
+		const known = !!o.asset && (usdcSet.has(o.asset) || xlmSet.has(o.asset));
 		add(
-			!!o.asset && sacSet.has(o.asset),
-			"asset is the USDC SAC",
-			o.asset && sacSet.has(o.asset)
-				? `asset=${o.asset.slice(0, 8)}… (USDC SAC)`
-				: `asset=${o.asset ?? "none"} — for USDC name the Stellar Asset Contract (${(USDC_SAC["stellar:pubnet"] ?? "").slice(0, 10)}… on pubnet), not "USDC" or the classic issuer`,
+			known,
+			"asset is a known SAC (USDC or native XLM)",
+			known
+				? `asset=${(o.asset ?? "").slice(0, 8)}… (${usdcSet.has(o.asset ?? "") ? "USDC" : "native XLM"} SAC)`
+				: `asset=${o.asset ?? "none"} — name a Stellar Asset Contract (USDC ${(USDC_SAC["stellar:pubnet"] ?? "").slice(0, 10)}… on pubnet, or the native XLM SAC), not "USDC" or the classic issuer`,
 		);
 		add(
 			!!o.payTo,
