@@ -411,9 +411,11 @@ export async function resolveOpenBounty(o: {
 	resolver: Keypair;
 	contractId: string;
 	submissions: OpenSubmission[];
-	/** a party with standing (the buyer) raises the dispute that unlocks
-	 * distribution-based settlement */
-	disputeRaiser: Keypair;
+	/** a party with standing (the buyer) to raise the dispute that unlocks
+	 * distribution-based settlement. Optional when the escrow is ALREADY
+	 * disputed (CLI flows: the buyer runs `bounty dispute` in its own call —
+	 * the resolver cannot raise a dispute on its own escrow, contract #40). */
+	disputeRaiser?: Keypair;
 }): Promise<{
 	winner: string | null;
 	txs: string[];
@@ -425,18 +427,28 @@ export async function resolveOpenBounty(o: {
 	const { winner, judged } = pickWinner(o.contractId, o.submissions, policy);
 
 	const txs: string[] = [];
-	const d = await disputeJob({
-		signer: o.disputeRaiser,
-		contractId: o.contractId,
-	});
-	txs.push(d.tx);
+	let disputeReceiptId: string | undefined;
+	const state = await readEscrowAs(o.contractId, o.resolver);
+	if (state.released) throw new Error("bounty already settled");
+	if (!state.disputed) {
+		if (!o.disputeRaiser)
+			throw new Error(
+				"escrow is not disputed and no disputeRaiser given — the buyer must run the dispute first (the resolver cannot dispute its own escrow)",
+			);
+		const d = await disputeJob({
+			signer: o.disputeRaiser,
+			contractId: o.contractId,
+		});
+		txs.push(d.tx);
+		disputeReceiptId = d.receiptId;
+	}
 	const payee = winner?.worker ?? o.descriptor.buyer;
 	const rd = await resolveDisputeJob({
 		disputeResolver: o.resolver,
 		contractId: o.contractId,
 		twFeeAddress: o.descriptor.buyer,
 		distributions: [[payee, BigInt(o.descriptor.amount)]],
-		prevReceiptId: d.receiptId,
+		prevReceiptId: disputeReceiptId,
 	});
 	txs.push(rd.tx);
 

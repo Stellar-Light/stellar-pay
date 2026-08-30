@@ -79,11 +79,21 @@ async function main() {
 		await wait();
 		await client.connect(transport);
 		const tools = (await client.listTools()).tools.map((t) => t.name);
-		for (const t of ["session_open", "session_status", "session_close"])
+		for (const t of [
+			"session_open",
+			"session_status",
+			"session_close",
+			"bounty_post",
+			"bounty_assign",
+			"bounty_open",
+			"bounty_submit",
+			"bounty_pack",
+			"bounty_dispute",
+			"bounty_resolve",
+			"bounty_status",
+		])
 			if (!tools.includes(t)) throw new Error(`tool ${t} missing`);
-		console.log(
-			"tools    session_open / session_status / session_close present",
-		);
+		console.log("tools    session_* (3) + bounty_* (8) present");
 
 		// 1. OPEN through the agent tool (default 5 XLM deposit).
 		const open = text(

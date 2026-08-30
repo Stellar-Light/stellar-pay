@@ -24,7 +24,21 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { daysAlive, loadCatalog, searchCatalog } from "./catalog.js";
+import {
+	assignBounty,
+	type BountyDescriptor,
+	bountyStatus,
+	type EvidenceEntry,
+	makeSubmission,
+	type OpenSubmission,
+	postBounty,
+	postOpenBounty,
+	resolveBounty,
+	resolveOpenBounty,
+	submitBounty,
+} from "./pay/bounty.js";
 import { payFetch } from "./pay/curl.js";
+import { disputeJob } from "./pay/job.js";
 import {
 	accountPublicKey,
 	addAccount,
@@ -107,6 +121,18 @@ type Args = {
 	session: boolean;
 	/** session open --deposit <xlm>: channel deposit (default 5) */
 	deposit?: number;
+	/** bounty verbs */
+	title?: string;
+	items?: string[];
+	instructions?: string;
+	amountXlm?: number;
+	resolverAddr?: string;
+	provider?: string;
+	contract?: string;
+	evidenceFile?: string;
+	submissionFiles?: string[];
+	out?: string;
+	token?: string;
 };
 
 // Documented, stable exit codes so a wrapper script can branch without parsing
@@ -185,7 +211,22 @@ function parse(argv: string[]): Args {
 		else if (t === "--deposit") {
 			const n = Number(next());
 			if (Number.isFinite(n) && n > 0) a.deposit = n;
-		} else if (!t.startsWith("-")) {
+		} else if (t === "--title") a.title = next();
+		else if (t === "--items")
+			a.items = (next() ?? "").split(",").filter(Boolean);
+		else if (t === "--instructions") a.instructions = next();
+		else if (t === "--amount-xlm") {
+			const n = Number(next());
+			if (Number.isFinite(n) && n > 0) a.amountXlm = n;
+		} else if (t === "--resolver") a.resolverAddr = next();
+		else if (t === "--provider") a.provider = next();
+		else if (t === "--contract") a.contract = next();
+		else if (t === "--evidence") a.evidenceFile = next();
+		else if (t === "--submissions")
+			a.submissionFiles = (next() ?? "").split(",").filter(Boolean);
+		else if (t === "--out") a.out = next();
+		else if (t === "--token") a.token = next();
+		else if (!t.startsWith("-")) {
 			// Keep EVERY bare token in order: the first is the subcommand/url,
 			// later ones are paths (`account export --name main backup.json`).
 			if (!a.url) a.url = t;
@@ -817,6 +858,192 @@ async function cmdSession(a: Args): Promise<void> {
 	});
 }
 
+const XLM_SAC_TESTNET_CLI =
+	"CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
+
+function readJsonFile<T>(path: string, what: string): T {
+	try {
+		return JSON.parse(readFileSync(path, "utf8")) as T;
+	} catch (e) {
+		throw new Error(
+			`could not read ${what} from ${path}: ${(e as Error).message}`,
+		);
+	}
+}
+
+async function cmdBounty(a: Args): Promise<void> {
+	const sub = a.positional[0] ?? "";
+	const usage = () =>
+		usageError(`usage:
+  bounty post --title T --items a,b --instructions "…" --amount-xlm N [--resolver G…] [--token C…] [--out bounty.json]
+  bounty assign <bounty.json> --provider G…        (buyer wallet: escrow + fund, directed)
+  bounty open <bounty.json>                        (buyer wallet: escrow + fund, open race)
+  bounty submit --contract C… --evidence ev.json   (worker wallet: directed evidence on-chain)
+  bounty pack --contract C… --evidence ev.json [--out sub.json]   (worker wallet: signed open-race packet, no chain)
+  bounty dispute --contract C…                     (buyer wallet: unlock refund/open settlement)
+  bounty resolve <bounty.json> --contract C… [--submissions s1.json,s2.json]   (resolver wallet)
+  bounty status --contract C…`);
+
+	if (sub === "post") {
+		if (!a.title || !a.items?.length || !a.instructions || !a.amountXlm)
+			return usage();
+		await ensureSecretLoaded(a.account);
+		const w = loadWallet();
+		const d = postBounty({
+			buyer: w.publicKey,
+			resolver: a.resolverAddr ?? w.publicKey,
+			title: a.title,
+			items: a.items,
+			instructions: a.instructions,
+			amount: BigInt(Math.round(a.amountXlm * 10_000_000)),
+			tokenContract: a.token ?? XLM_SAC_TESTNET_CLI,
+		});
+		if (a.out) writeFileSync(a.out, JSON.stringify(d, null, 1));
+		emit(a, d, () => {
+			console.log(JSON.stringify(d, null, 1));
+			if (a.out) console.error(`written to ${a.out}`);
+			if (!a.resolverAddr)
+				console.error(
+					"note: resolver defaults to YOU — you will not be able to refund via dispute (the resolver cannot dispute its own escrow); pass --resolver for a neutral judge",
+				);
+		});
+		return;
+	}
+
+	if (sub === "assign" || sub === "open") {
+		const file = a.positional[1];
+		if (!file) return usage();
+		const d = readJsonFile<BountyDescriptor>(file, "bounty descriptor");
+		await ensureSecretLoaded(a.account);
+		const w = loadWallet();
+		if (w.network !== "stellar:testnet")
+			return usageError(
+				"bounties are testnet-only (the escrow contract is unaudited; mainnet is gated on that audit)",
+			);
+		if (sub === "assign") {
+			if (!a.provider) return usage();
+			const r = await assignBounty({
+				descriptor: d,
+				buyer: w.keypair,
+				provider: a.provider,
+			});
+			emit(a, r, () =>
+				console.log(
+					`escrowed ${d.amount} to ${r.contractId}
+fund tx ${r.fundTx}
+worker submits with: bounty submit --contract ${r.contractId} --evidence ev.json`,
+				),
+			);
+			return;
+		}
+		const r = await postOpenBounty({ descriptor: d, buyer: w.keypair });
+		emit(a, r, () =>
+			console.log(
+				`OPEN bounty escrowed ${d.amount} at ${r.contractId}
+workers race with: bounty pack --contract ${r.contractId} --evidence ev.json`,
+			),
+		);
+		return;
+	}
+
+	if (sub === "submit" || sub === "pack") {
+		if (!a.contract || !a.evidenceFile) return usage();
+		const evidence = readJsonFile<EvidenceEntry[]>(a.evidenceFile, "evidence");
+		if (!Array.isArray(evidence))
+			return usageError("evidence must be a JSON array");
+		await ensureSecretLoaded(a.account);
+		const w = loadWallet();
+		if (sub === "pack") {
+			const packet = makeSubmission({
+				worker: w.keypair,
+				contractId: a.contract,
+				evidence,
+			});
+			if (a.out) writeFileSync(a.out, JSON.stringify(packet, null, 1));
+			emit(a, packet, () => {
+				console.log(JSON.stringify(packet, null, 1));
+				if (a.out)
+					console.error(
+						`written to ${a.out} — hand it to the bounty's resolver`,
+					);
+			});
+			return;
+		}
+		const r = await submitBounty({
+			provider: w.keypair,
+			contractId: a.contract,
+			evidence,
+			prevReceiptId: "",
+		});
+		emit(a, r, () => console.log(`evidence on-chain: ${r.tx}`));
+		return;
+	}
+
+	if (sub === "dispute") {
+		if (!a.contract) return usage();
+		await ensureSecretLoaded(a.account);
+		const w = loadWallet();
+		const r = await disputeJob({ signer: w.keypair, contractId: a.contract });
+		emit(a, r, () => console.log(`disputed: ${r.tx}`));
+		return;
+	}
+
+	if (sub === "resolve") {
+		const file = a.positional[1];
+		if (!file || !a.contract) return usage();
+		const d = readJsonFile<BountyDescriptor>(file, "bounty descriptor");
+		await ensureSecretLoaded(a.account);
+		const w = loadWallet();
+		if (a.submissionFiles?.length) {
+			const submissions = a.submissionFiles.map((f) =>
+				readJsonFile<OpenSubmission>(f, "submission packet"),
+			);
+			const r = await resolveOpenBounty({
+				descriptor: d,
+				resolver: w.keypair,
+				contractId: a.contract,
+				submissions,
+			});
+			emit(a, r, () =>
+				console.log(
+					r.winner
+						? `winner ${r.winner} paid (txs: ${r.txs.join(", ")})`
+						: `no valid submission — pot returned to the buyer (txs: ${r.txs.join(", ")})`,
+				),
+			);
+			return;
+		}
+		const r = await resolveBounty({
+			descriptor: d,
+			resolver: w.keypair,
+			contractId: a.contract,
+		});
+		emit(a, r, () =>
+			console.log(
+				`answered "${r.answer}" → ${r.outcome} (txs: ${r.txs.join(", ")})`,
+			),
+		);
+		return;
+	}
+
+	if (sub === "status") {
+		if (!a.contract) return usage();
+		await ensureSecretLoaded(a.account);
+		const w = loadWallet();
+		const st = await bountyStatus({
+			contractId: a.contract,
+			source: w.keypair,
+		});
+		emit(a, st, () =>
+			console.log(
+				`funded=${st.funded} submitted=${st.submitted} released=${st.released} disputed=${st.disputed} evidence=${st.evidence?.length ?? 0} entries`,
+			),
+		);
+		return;
+	}
+	return usage();
+}
+
 async function cmdReceipts(a: Args): Promise<void> {
 	if (a.positional[0] === "check") {
 		const r = checkLedger();
@@ -1219,6 +1446,7 @@ WALLET
   receipts [--limit N] [--verify ID] [--json]  the local ledger; --verify proves a row on-chain
   receipts check                         tamper check: every row id must re-derive from its content
   session open <url> [--deposit 5] | status | close <url>   one-way payment channels (testnet)
+  bounty post|assign|open|submit|pack|dispute|resolve|status   escrowed verification bounties (testnet)
   curl <url> --session                   pay via the host's channel — off-chain per call
 
 AGENTS
@@ -1248,6 +1476,7 @@ const commands: Record<string, (a: Args, init: RequestInit) => Promise<void>> =
 		history: cmdHistory,
 		receipts: cmdReceipts,
 		session: cmdSession,
+		bounty: cmdBounty,
 		verify: cmdVerify,
 		offers: cmdOffers,
 		curl: cmdCurl,

@@ -30,10 +30,24 @@ import {
 	searchCatalog,
 } from "./catalog.js";
 import {
+	assignBounty,
+	type BountyDescriptor,
+	bountyStatus,
+	type EvidenceEntry,
+	makeSubmission,
+	type OpenSubmission,
+	postBounty,
+	postOpenBounty,
+	resolveBounty,
+	resolveOpenBounty,
+	submitBounty,
+} from "./pay/bounty.js";
+import {
 	buildGoverned,
 	type Governed,
 	type PreferInit,
 } from "./pay/governed.js";
+import { disputeJob } from "./pay/job.js";
 import { isStellar, type Offer, offerUSD, readOffers } from "./pay/offers.js";
 import { autoApprove, decide, explorer } from "./pay/policy.js";
 import { list as listReceiptRows, record } from "./pay/receipts.js";
@@ -780,6 +794,227 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 			const w = getWallet();
 			const b = await balances(w.publicKey, w.network);
 			return json({ public_key: w.publicKey, network: w.network, ...b });
+		},
+	);
+
+	const XLM_SAC_TESTNET_MCP =
+		"CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
+	const evidenceShape = z
+		.array(
+			z.object({
+				item: z.string(),
+				url: z.string().url(),
+				verdict: z.string().min(1),
+				checkedAt: z.string(),
+				excerpt: z.string().min(1),
+			}),
+		)
+		.describe("one entry per bounty item: what you checked and the proof");
+
+	server.registerTool(
+		"bounty_post",
+		{
+			description:
+				"Author a verification-bounty descriptor (off-chain, shareable): the items to verify, the instructions, the payout, and the resolver that will judge. Escrow happens at bounty_assign (directed) or bounty_open (open race). TESTNET ONLY. If resolver is omitted it defaults to YOUR address — then refunds via dispute are impossible (a resolver cannot dispute its own escrow), so prefer a neutral resolver.",
+			inputSchema: {
+				title: z.string().min(1),
+				items: z.array(z.string().min(1)).min(1),
+				instructions: z.string().min(1),
+				amount_xlm: z.number().positive().max(1000),
+				resolver: z.string().optional(),
+				token_contract: z.string().optional(),
+			},
+		},
+		async ({
+			title,
+			items,
+			instructions,
+			amount_xlm,
+			resolver,
+			token_contract,
+		}) => {
+			try {
+				const w = getWallet();
+				const d = postBounty({
+					buyer: w.publicKey,
+					resolver: resolver ?? w.publicKey,
+					title,
+					items,
+					instructions,
+					amount: BigInt(Math.round(amount_xlm * 10_000_000)),
+					tokenContract: token_contract ?? XLM_SAC_TESTNET_MCP,
+				});
+				return json({ descriptor: d });
+			} catch (e) {
+				return json({ error: (e as Error).message });
+			}
+		},
+	);
+
+	server.registerTool(
+		"bounty_assign",
+		{
+			description:
+				"DIRECTED bounty: escrow + fund the descriptor for one chosen provider. Your wallet is the buyer and must match descriptor.buyer. Returns the escrow contract id the provider submits against.",
+			inputSchema: {
+				descriptor: z.record(z.string(), z.unknown()),
+				provider: z.string(),
+			},
+		},
+		async ({ descriptor, provider }) => {
+			try {
+				const w = getWallet();
+				const r = await assignBounty({
+					descriptor: descriptor as unknown as BountyDescriptor,
+					buyer: w.keypair,
+					provider,
+				});
+				return json(r);
+			} catch (e) {
+				return json({ error: (e as Error).message });
+			}
+		},
+	);
+
+	server.registerTool(
+		"bounty_open",
+		{
+			description:
+				"OPEN-RACE bounty: escrow + fund the descriptor with no winner chosen — anyone may race by handing the resolver a signed packet (bounty_pack). First valid evidence wins the pot (minus the 0.3% protocol fee).",
+			inputSchema: { descriptor: z.record(z.string(), z.unknown()) },
+		},
+		async ({ descriptor }) => {
+			try {
+				const w = getWallet();
+				const r = await postOpenBounty({
+					descriptor: descriptor as unknown as BountyDescriptor,
+					buyer: w.keypair,
+				});
+				return json(r);
+			} catch (e) {
+				return json({ error: (e as Error).message });
+			}
+		},
+	);
+
+	server.registerTool(
+		"bounty_submit",
+		{
+			description:
+				"DIRECTED bounty: put your evidence on-chain as the assigned provider. Evidence must cover every bounty item exactly once (item, url, verdict, checkedAt ISO, excerpt) or the resolver will refuse it.",
+			inputSchema: { contract_id: z.string(), evidence: evidenceShape },
+		},
+		async ({ contract_id, evidence }) => {
+			try {
+				const w = getWallet();
+				const r = await submitBounty({
+					provider: w.keypair,
+					contractId: contract_id,
+					evidence: evidence as EvidenceEntry[],
+					prevReceiptId: "",
+				});
+				return json(r);
+			} catch (e) {
+				return json({ error: (e as Error).message });
+			}
+		},
+	);
+
+	server.registerTool(
+		"bounty_pack",
+		{
+			description:
+				"OPEN-RACE bounty: build a SIGNED submission packet (no chain interaction). The ed25519 signature binds your evidence to YOUR payout address — hand the packet to the bounty's resolver. Stolen/re-wrapped evidence fails the signature check.",
+			inputSchema: { contract_id: z.string(), evidence: evidenceShape },
+		},
+		async ({ contract_id, evidence }) => {
+			try {
+				const w = getWallet();
+				return json(
+					makeSubmission({
+						worker: w.keypair,
+						contractId: contract_id,
+						evidence: evidence as EvidenceEntry[],
+					}),
+				);
+			} catch (e) {
+				return json({ error: (e as Error).message });
+			}
+		},
+	);
+
+	server.registerTool(
+		"bounty_dispute",
+		{
+			description:
+				"Raise the dispute on a bounty escrow (buyer/provider standing required — the resolver cannot dispute its own escrow). Needed before a refund or an open-race settlement when you are the buyer.",
+			inputSchema: { contract_id: z.string() },
+		},
+		async ({ contract_id }) => {
+			try {
+				const w = getWallet();
+				const r = await disputeJob({
+					signer: w.keypair,
+					contractId: contract_id,
+				});
+				return json(r);
+			} catch (e) {
+				return json({ error: (e as Error).message });
+			}
+		},
+	);
+
+	server.registerTool(
+		"bounty_resolve",
+		{
+			description:
+				"Judge a bounty as its RESOLVER (your wallet must match descriptor.resolver). Directed mode: omit submissions — the on-chain evidence is judged, release or refund follows. Open mode: pass the signed packets — first valid submission wins via the dispute path (the escrow must already be disputed by the buyer, see bounty_dispute). Every judgment is receipted with the policy that decided it.",
+			inputSchema: {
+				descriptor: z.record(z.string(), z.unknown()),
+				contract_id: z.string(),
+				submissions: z.array(z.record(z.string(), z.unknown())).optional(),
+			},
+		},
+		async ({ descriptor, contract_id, submissions }) => {
+			try {
+				const w = getWallet();
+				if (submissions?.length) {
+					const r = await resolveOpenBounty({
+						descriptor: descriptor as unknown as BountyDescriptor,
+						resolver: w.keypair,
+						contractId: contract_id,
+						submissions: submissions as unknown as OpenSubmission[],
+					});
+					return json(r);
+				}
+				const r = await resolveBounty({
+					descriptor: descriptor as unknown as BountyDescriptor,
+					resolver: w.keypair,
+					contractId: contract_id,
+				});
+				return json({ answer: r.answer, outcome: r.outcome, txs: r.txs });
+			} catch (e) {
+				return json({ error: (e as Error).message });
+			}
+		},
+	);
+
+	server.registerTool(
+		"bounty_status",
+		{
+			description:
+				"Read a bounty escrow's state: funded, submitted, released, disputed, and the parsed evidence entries if present.",
+			inputSchema: { contract_id: z.string() },
+		},
+		async ({ contract_id }) => {
+			try {
+				const w = getWallet();
+				return json(
+					await bountyStatus({ contractId: contract_id, source: w.keypair }),
+				);
+			} catch (e) {
+				return json({ error: (e as Error).message });
+			}
 		},
 	);
 
