@@ -150,6 +150,7 @@ type Args = {
 	fromFeed?: string;
 	toUrl?: string;
 	submitUrl?: string;
+	deadlineDays?: number;
 	send: boolean;
 	timeoutSec?: number;
 };
@@ -256,7 +257,10 @@ function parse(argv: string[]): Args {
 		else if (t === "--from") a.fromFeed = next();
 		else if (t === "--to") a.toUrl = next();
 		else if (t === "--submit-url") a.submitUrl = next();
-		else if (t === "--send") a.send = true;
+		else if (t === "--deadline-days") {
+			const n = Number(next());
+			if (Number.isFinite(n) && n > 0) a.deadlineDays = n;
+		} else if (t === "--send") a.send = true;
 		else if (t === "--timeout-sec") {
 			const n = Number(next());
 			if (Number.isFinite(n) && n > 0) a.timeoutSec = n;
@@ -303,6 +307,18 @@ function emit(a: Args, obj: unknown, human: () => void): void {
 	else human();
 }
 
+/** process.env minus every secret, for ANY child we spawn. `ensureSecretLoaded`
+ * writes the decrypted wallet secret into process.env, so an inherited
+ * environment hands it to whatever we launch. */
+function strippedEnv(): Record<string, string> {
+	return Object.fromEntries(
+		Object.entries(process.env).filter(
+			([k]) =>
+				!/^(STELLAR_SECRET_KEY|STELLAR_PAY_PASSPHRASE|DATABASE_URI)$/i.test(k),
+		),
+	) as Record<string, string>;
+}
+
 function openBrowser(url: string): void {
 	const cmd =
 		process.platform === "darwin"
@@ -311,7 +327,11 @@ function openBrowser(url: string): void {
 				? "cmd"
 				: "xdg-open";
 	const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
-	spawn(cmd, args, { stdio: "ignore", detached: true }).unref();
+	spawn(cmd, args, {
+		stdio: "ignore",
+		detached: true,
+		env: strippedEnv(),
+	}).unref();
 }
 
 async function ask(q: string): Promise<boolean> {
@@ -396,12 +416,7 @@ async function cmdRun(a: Args): Promise<void> {
 	// Strip case-insensitively: on win32, process.env READS are case-insensitive
 	// (a mis-cased var still satisfies loadWallet) but rest-spread keys are
 	// literal, so an exact-case destructure would leak `Stellar_Secret_Key`.
-	const childEnv = Object.fromEntries(
-		Object.entries(process.env).filter(
-			([k]) =>
-				!/^(STELLAR_SECRET_KEY|STELLAR_PAY_PASSPHRASE|DATABASE_URI)$/i.test(k),
-		),
-	);
+	const childEnv = strippedEnv();
 	const child = spawn(command, cmdArgs, {
 		stdio: "inherit",
 		env: { ...childEnv, ...proxyEnv(proxy.port, proxy.caPath, proxy.token) },
@@ -438,12 +453,7 @@ async function cmdAgent(a: Args): Promise<void> {
 	// command is: the MCP server we mount holds the wallet and does the signing,
 	// so the child needs no key material. `run` already stripped these; the
 	// launchers did not.
-	const childEnv = Object.fromEntries(
-		Object.entries(process.env).filter(
-			([k]) =>
-				!/^(STELLAR_SECRET_KEY|STELLAR_PAY_PASSPHRASE|DATABASE_URI)$/i.test(k),
-		),
-	);
+	const childEnv = strippedEnv();
 	if (a.cmd === "goose") {
 		// goose mounts a stdio MCP per-invocation via --with-extension.
 		const ext = server
@@ -992,7 +1002,7 @@ async function cmdBounty(a: Args): Promise<void> {
 	const sub = a.positional[0] ?? "";
 	const usage = () =>
 		usageError(`usage:
-  bounty post --title T --items a,b --instructions "…" --amount-xlm N [--resolver G…] [--token C…] [--out bounty.json]
+  bounty post --title T --items a,b --instructions "…" --amount-xlm N [--resolver G…] [--token C…] [--deadline-days N] [--out bounty.json]
   bounty assign <bounty.json> --provider G…        (buyer wallet: escrow + fund, directed)
   bounty open <bounty.json>                        (buyer wallet: escrow + fund, open race)
   bounty submit --contract C… --evidence ev.json   (worker wallet: directed evidence on-chain)
@@ -1088,6 +1098,7 @@ async function cmdBounty(a: Args): Promise<void> {
 			amount: BigInt(Math.round(a.amountXlm * 10_000_000)),
 			tokenContract: a.token ?? XLM_SAC_TESTNET_CLI,
 			submitUrl: a.submitUrl,
+			deadlineDays: a.deadlineDays,
 		});
 		if (a.out) writeFileSync(a.out, JSON.stringify(d, null, 1));
 		emit(a, d, () => {
@@ -1741,6 +1752,12 @@ async function main() {
 
 main().catch((e) => {
 	const msg = (e as Error).message ?? String(e);
+	// --json is a CONTRACT: a caller that asked for machine output must get
+	// parseable JSON on failure too, not an empty stdout and a prose line on
+	// stderr. (Caught by the meta-audit on `bounty watch --json`, whose new
+	// refuse-without-a-baseline throw unwound to here.)
+	if (process.argv.slice(2).includes("--json"))
+		console.log(JSON.stringify({ error: msg }, null, 1));
 	console.error(`error: ${msg}`);
 	// A missing wallet is a distinct, recoverable condition (set a key), not a
 	// generic crash — give agents a code they can branch on.

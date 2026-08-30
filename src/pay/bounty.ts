@@ -57,6 +57,11 @@ export type BountyDescriptor = {
 	tokenContract: string;
 	/** evidence freshness bound (ISO duration in days) */
 	maxEvidenceAgeDays: number;
+	/** ISO 8601 with an explicit offset. After it, a bounty with no evidence
+	 * resolves to refund — the only exit that does not need a counterparty to
+	 * still be alive. Optional: absent means the agreement's far-future
+	 * default, i.e. no expiry. */
+	deadline?: string;
 	/** the resolver that will judge (G…) — declared up front */
 	resolver: string;
 	/** the buyer who will fund (G…) */
@@ -85,6 +90,9 @@ export function postBounty(o: {
 	tokenContract: string;
 	maxEvidenceAgeDays?: number;
 	submitUrl?: string;
+	/** days from now until the bounty expires (converted to an absolute,
+	 * offset-explicit instant so every party reads the same moment) */
+	deadlineDays?: number;
 }): BountyDescriptor {
 	if (o.items.length === 0) throw new Error("a bounty needs at least one item");
 	return {
@@ -99,6 +107,13 @@ export function postBounty(o: {
 		resolver: o.resolver,
 		buyer: o.buyer,
 		...(o.submitUrl ? { submitUrl: o.submitUrl } : {}),
+		...(o.deadlineDays
+			? {
+					deadline: new Date(
+						Date.now() + o.deadlineDays * 86_400_000,
+					).toISOString(),
+				}
+			: {}),
 	};
 }
 
@@ -130,6 +145,7 @@ ${d.items.map((i) => `- ${i}`).join("\n")}`,
 			["no", "refund"],
 		],
 		resolverPolicy: "evidence-schema:verification-v1",
+		...(d.deadline ? { deadline: d.deadline } : {}),
 		twFeeAddress: buyer.publicKey(),
 	};
 }
@@ -302,6 +318,11 @@ import { createHash as _ch } from "node:crypto";
 import { Keypair as _KP } from "@stellar/stellar-sdk";
 
 export type OpenSubmission = {
+	/** wire-format marker. Two independent installs must agree on this packet,
+	 * so it carries its version and the version is INSIDE the signed digest.
+	 * Without it, a packet signed by an older build fails verification as
+	 * "bad-signature" — indistinguishable from a forgery. */
+	format: "stellar-pay/submission-v1";
 	bountyContract: string;
 	worker: string;
 	evidence: EvidenceEntry[];
@@ -325,13 +346,17 @@ export type OpenSubmission = {
  * buyer, who is the one party with a motive to steal the work and refund
  * itself, and (b) commit-reveal ordering, which is the real fix and is
  * roadmapped, not built. See README "Not built yet". */
+const SUBMISSION_FORMAT = "stellar-pay/submission-v1" as const;
+
 function submissionDigest(
 	contractId: string,
 	worker: string,
 	evidence: EvidenceEntry[],
 ): Buffer {
 	return _ch("sha256")
-		.update(`${contractId}|${worker}|${JSON.stringify(evidence)}`)
+		.update(
+			`${SUBMISSION_FORMAT}|${contractId}|${worker}|${JSON.stringify(evidence)}`,
+		)
 		.digest();
 }
 
@@ -395,6 +420,7 @@ export function makeSubmission(o: {
 		submissionDigest(o.contractId, o.worker.publicKey(), o.evidence),
 	);
 	return {
+		format: SUBMISSION_FORMAT,
 		bountyContract: o.contractId,
 		worker: o.worker.publicKey(),
 		evidence: o.evidence,
@@ -416,6 +442,17 @@ export function pickWinner(
 	const judged: Array<{ worker: string; valid: boolean; reason: string }> = [];
 	let winner: OpenSubmission | null = null;
 	for (const s of submissions) {
+		if (s.format !== SUBMISSION_FORMAT) {
+			// Say what is actually wrong. Reporting a version mismatch as
+			// "bad-signature" tells a worker they cheated when they merely used a
+			// different build.
+			judged.push({
+				worker: s.worker,
+				valid: false,
+				reason: `unsupported-format:${String(s.format ?? "none")}`,
+			});
+			continue;
+		}
 		if (s.bountyContract !== contractId) {
 			judged.push({ worker: s.worker, valid: false, reason: "wrong-bounty" });
 			continue;

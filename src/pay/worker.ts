@@ -22,9 +22,14 @@
  * A listing failing ANY check is refused with the reason. An agent must
  * never work an unfunded or tampered promise.
  *
- * Submission transport: packets are self-authenticating (ed25519 over
- * sha256(contractId | evidence)), so the transport needs no trust — v1 POSTs
- * to the descriptor's `submitUrl` (any inbox the buyer operates).
+ * Submission transport: packets are ed25519-signed over
+ * sha256(contractId | worker | evidence), which stops a packet being re-wrapped
+ * under someone else's payout address — it does NOT stop a party who SEES the
+ * evidence from re-signing the same content as their own. So the transport is
+ * NOT trustless: post to the descriptor's `submitUrl`, which should be the
+ * RESOLVER's inbox (the declared neutral party), never the buyer's — the buyer
+ * is the one party that profits from stealing the work. Commit-reveal is the
+ * real fix and is not built; see README "Not built yet".
  */
 import { readFileSync } from "node:fs";
 import { Asset, type Keypair, Networks } from "@stellar/stellar-sdk";
@@ -57,10 +62,30 @@ export async function fetchFeed(from: string): Promise<OpenBountyListing[]> {
 	if (/^https?:\/\//.test(from)) {
 		const r = await fetch(from, { signal: AbortSignal.timeout(10_000) });
 		if (!r.ok) throw new Error(`feed ${from}: HTTP ${r.status}`);
-		text = await r.text();
-		// A feed is a stranger's server; bound what we'll parse.
-		if (text.length > 2_000_000)
-			throw new Error(`feed ${from}: over 2MB — refusing to parse`);
+		// A feed is a stranger's server, so bound the read AS IT ARRIVES.
+		// Buffering first and checking length after is not a limit: a hostile
+		// feed streaming gigabytes was bounded only by the abort timeout.
+		const MAX = 2_000_000;
+		const declared = Number(r.headers.get("content-length") ?? "");
+		if (Number.isFinite(declared) && declared > MAX)
+			throw new Error(
+				`feed ${from}: declares ${declared} bytes, over the 2MB cap`,
+			);
+		const reader = r.body?.getReader();
+		if (!reader) throw new Error(`feed ${from}: no body`);
+		const chunks: Uint8Array[] = [];
+		let seen = 0;
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			seen += value.byteLength;
+			if (seen > MAX) {
+				await reader.cancel();
+				throw new Error(`feed ${from}: exceeded the 2MB cap mid-stream`);
+			}
+			chunks.push(value);
+		}
+		text = Buffer.concat(chunks).toString("utf8");
 	} else {
 		text = readFileSync(from, "utf8");
 	}

@@ -185,9 +185,18 @@ export function parseAgreement(doc: string): {
 	const front = doc.match(/^---\n([\s\S]*?)\n---\n/)?.[1] ?? "";
 	const deadline = front.match(/^deadline:\s*"?([^"\n]+)"?/m)?.[1]?.trim();
 
+	// A deadline decides money, so it must name ONE instant for everybody. A
+	// date-only value parses as UTC midnight and an offset-less datetime parses
+	// as the READER's local time — the same document would expire at different
+	// moments for buyer, provider and resolver. Require an explicit Z/±HH:MM.
+	const explicitOffset =
+		!!deadline && /(?:Z|[+-]\d{2}:?\d{2})$/.test(deadline.trim());
 	return {
 		reviewQuestion: section("Review Question"),
 		resolutionEffects: effects,
-		deadline: deadline && !Number.isNaN(Date.parse(deadline)) ? deadline : null,
+		deadline:
+			deadline && explicitOffset && !Number.isNaN(Date.parse(deadline))
+				? deadline
+				: null,
 	};
 }

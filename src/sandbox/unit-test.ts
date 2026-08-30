@@ -13,7 +13,9 @@ import {
 } from "../pay/agreement.js";
 import {
 	bountyJobSpec,
+	makeSubmission,
 	openBountyTerms,
+	pickWinner,
 	postBounty,
 	verificationEvidencePolicy,
 } from "../pay/bounty.js";
@@ -362,6 +364,63 @@ check(
 			JSON.stringify(parsed.resolutionEffects),
 		);
 	}
+}
+
+// --- deadline must name ONE instant for every party ---
+{
+	const mk = (dl: string) =>
+		parseAgreement(buildAgreement({ ...AG, deadline: dl }));
+	check(
+		"deadline: explicit Z is accepted",
+		mk("2100-01-01T00:00:00Z").deadline === "2100-01-01T00:00:00Z",
+	);
+	check(
+		"deadline: explicit offset is accepted",
+		mk("2100-01-01T00:00:00+02:00").deadline === "2100-01-01T00:00:00+02:00",
+	);
+	check(
+		"deadline: date-only is REFUSED (would mean a different instant per party)",
+		mk("2100-01-01").deadline === null,
+	);
+	check(
+		"deadline: offset-less datetime is REFUSED (parses as LOCAL time)",
+		mk("2100-01-01T00:00:00").deadline === null,
+	);
+}
+
+// --- submission packets are a versioned wire format, bound in the signature ---
+{
+	const kp = Keypair.random();
+	const ev = [
+		{
+			item: "a",
+			url: "https://x.test/a",
+			verdict: "ok",
+			checkedAt: new Date().toISOString(),
+			excerpt: "proof",
+		},
+	];
+	const CID = "CDBI3TWNGMK6TFE4LANL4E2CFZ4QPGM7HBTKWQCDG2WNBYX2VMQ4ZBWI";
+	const sub = makeSubmission({ worker: kp, contractId: CID, evidence: ev });
+	const pol = verificationEvidencePolicy({
+		items: ["a"],
+		maxEvidenceAgeDays: 7,
+	});
+	check(
+		"submission: carries its format",
+		sub.format === "stellar-pay/submission-v1",
+	);
+	check(
+		"submission: a valid packet wins",
+		pickWinner(CID, [sub], pol).winner?.worker === kp.publicKey(),
+	);
+	const wrongFormat = { ...sub, format: "stellar-pay/submission-v0" as never };
+	const j = pickWinner(CID, [wrongFormat], pol).judged[0];
+	check(
+		"submission: an unknown format says so, not 'bad-signature'",
+		j?.valid === false && String(j?.reason).startsWith("unsupported-format:"),
+		String(j?.reason),
+	);
 }
 
 // --- worker vet: the stranger's trust check (checkListing, pure) ---

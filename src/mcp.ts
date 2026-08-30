@@ -95,6 +95,26 @@ let sessionSpentUsd = 0;
 // await and written after it, so N concurrent tool calls all passed one $1
 // gate; a reservation closes that window.
 let sessionReservedUsd = 0;
+// What each in-flight call reserved, keyed by url. The approve gate adds a
+// hold before paying; EVERY exit path must give it back. Releasing by
+// snapshot-and-restore would be wrong under concurrency (it would wipe a
+// sibling call's hold), so each call pops the exact amount it pushed.
+// Concurrent calls to the SAME url quote the same price, so popping any of
+// that url's entries returns the right number.
+const reservations = new Map<string, number[]>();
+function holdReservation(url: string, usd: number): void {
+	sessionReservedUsd += usd;
+	const q = reservations.get(url) ?? [];
+	q.push(usd);
+	reservations.set(url, q);
+}
+function releaseReservation(url: string): void {
+	const q = reservations.get(url);
+	const usd = q?.pop();
+	if (usd == null) return;
+	if (q?.length === 0) reservations.delete(url);
+	sessionReservedUsd = Math.max(0, sessionReservedUsd - usd);
+}
 // Server-generated, single-use, expiring confirm tokens for send_usdc — so the
 // confirmation can't be forged from to+amount or replayed.
 const pendingSends = new Map<
@@ -222,7 +242,7 @@ const approveGate =
 					`This would exceed the session budget ($${(SESSION_BUDGET - sessionSpentUsd - sessionReservedUsd).toFixed(4)} of $${SESSION_BUDGET} left).`,
 				)) === true
 			);
-		sessionReservedUsd += offerUSD(o) ?? MAX_PER_CALL;
+		holdReservation(url, offerUSD(o) ?? MAX_PER_CALL);
 		return true;
 	};
 const gateRefusal = (o: Offer, url: string) => {
@@ -641,6 +661,12 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 				// A transport/payment error must come back as a tool result, not
 				// an uncaught MCP protocol fault (matches the other tools).
 				return json({ error: `request failed: ${(e as Error).message}` });
+			} finally {
+				// The approve gate may have reserved budget for this call. Give it
+				// back on EVERY exit — paid, refused, or thrown. Leaking the hold
+				// meant ~20 failed payments exhausted a $1 session budget with
+				// $0.00 actually spent, and nothing ever refunded it.
+				releaseReservation(url);
 			}
 			const out: Record<string, unknown> = {
 				status: res.status,
@@ -671,12 +697,6 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 					w.network !== "stellar:testnet"
 				)
 					sessionSpentUsd += paid.usd;
-				// release the reservation this payment was approved under
-				if (w.network !== "stellar:testnet")
-					sessionReservedUsd = Math.max(
-						0,
-						sessionReservedUsd - (paid.usd ?? MAX_PER_CALL),
-					);
 				payments.push({
 					at: new Date().toISOString(),
 					url,

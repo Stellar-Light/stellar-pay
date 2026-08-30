@@ -100,7 +100,14 @@ export async function resolveJob(o: {
 	// state the refund path needs (the buyer raises the dispute, the resolver
 	// resolves it). Throwing on `disputed` deadlocked our own documented flow:
 	// `bounty dispute` then `bounty resolve` could never complete.
-	if (esc.released) throw new Error(`escrow ${o.contractId} already released`);
+	// A drained escrow is settled even when the flags say otherwise: after a
+	// dispute-refund, testnet reports released=false disputed=false balance=0.
+	// Without the balance test a second call re-disputes an empty escrow and
+	// fails deep in the contract with an opaque error instead of saying so.
+	if (esc.released || esc.balance === 0n)
+		throw new Error(
+			`escrow ${o.contractId} is already settled (released=${esc.released}, balance=${esc.balance})`,
+		);
 
 	// The description is what the policy reads and what decides the money, so
 	// bind it to what the chain pinned before trusting a byte of it.
