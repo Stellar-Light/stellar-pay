@@ -6,10 +6,20 @@ thing IS, so a new build either serves the loop below or it doesn't ship.
 
 ## One sentence
 
-**stellar-pay is the neutral, self-custody toolkit for human-to-agent work on
-Stellar** — one CLI/MCP where you fund an agent safely, hire it for real work
-under an escrowed agreement, get that work verified and paid automatically,
-and carry provable reputation from what it completed.
+**stellar-pay is the neutral, self-custody layer for human-to-agent work on
+Stellar — an agent CLI and a toolkit** where you fund an agent safely, hire it
+for real work under an escrowed agreement, get that work verified and paid
+automatically, and carry provable reputation from what it completed.
+
+Three things at once, deliberately:
+- an **agent CLI** (the pay.sh-shaped client an agent or human runs — `curl`,
+  `session`, `job`, `receipts`, and the MCP that exposes them as agent tools),
+- a **toolkit** (the same capabilities as importable modules — `pay/job`,
+  `pay/resolver`, `pay/rails`, `pay/reputation` — a builder drops into their
+  own agent),
+- a **layer** (neutral and self-custody: consumes every rails provider, takes
+  no fee, holds no keys — the coordination layer the ecosystem builds on,
+  not a platform it depends on).
 
 ## The thesis (why this and not "a payments CLI")
 
