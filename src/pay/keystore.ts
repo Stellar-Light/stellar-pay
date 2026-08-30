@@ -65,9 +65,13 @@ function read(): Store {
 	}
 }
 function write(s: Store): void {
-	mkdirSync(dirname(FILE), { recursive: true });
-	writeFileSync(FILE, JSON.stringify(s, null, 2));
-	chmodSync(FILE, 0o600); // owner-only, even though the secret is encrypted
+	mkdirSync(dirname(FILE), { recursive: true, mode: 0o700 });
+	// mode ON THE WRITE, not a chmod after it: writeFileSync creates the file at
+	// the process umask first, so a group/world-readable window existed between
+	// the two calls on every save. (The contents are encrypted; the window is
+	// still free to close.)
+	writeFileSync(FILE, JSON.stringify(s, null, 2), { mode: 0o600 });
+	chmodSync(FILE, 0o600); // idempotent: an EXISTING file keeps its old mode
 }
 
 // --- OS keychain backend (macOS `security`; no native dependency) --------------

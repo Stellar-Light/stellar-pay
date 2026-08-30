@@ -202,20 +202,41 @@ export async function closeChannel(o: {
 	const host = hostOf(o.url);
 	const { fetch: f, channel } = sessionFetch(host);
 	const closeCumulative = o.lastCumulative + o.priceStep;
+	// The close rides a PAID request whose price the seller states, so the
+	// amount we are about to sign is partly the seller's number. The deposit is
+	// the ceiling the channel contract enforces; refuse to sign past it here
+	// rather than discovering it on-chain.
+	const deposit = BigInt(channel.depositStroops);
+	if (closeCumulative > deposit)
+		throw new Error(
+			`refusing to sign a close for ${closeCumulative} stroops: the channel's deposit is ${deposit}. The seller asked for more than this channel can owe.`,
+		);
 	const res = await f(o.url, {
 		context: {
 			action: "close",
 			cumulativeAmount: closeCumulative.toString(),
 		},
 	} as RequestInit);
+	// Receipt what HAPPENED. Writing "channel-close" before knowing the server
+	// accepted it put a settlement in the ledger that may never have settled;
+	// a non-2xx is recorded as the attempt it was.
+	const accepted = res.status >= 200 && res.status < 300;
 	const receiptId = record({
-		kind: "channel-close",
+		kind: accepted ? "channel-close" : "policy-decision",
 		network: channel.network,
 		url: o.url,
 		amount: closeCumulative.toString(),
 		payer: channel.funder,
 		payee: channel.recipient,
-		detail: { host, contract: channel.contract, status: res.status },
+		detail: accepted
+			? { host, contract: channel.contract, status: res.status }
+			: {
+					allowed: false,
+					rule: "channel close refused by the seller",
+					host,
+					contract: channel.contract,
+					status: res.status,
+				},
 	});
 	return { status: res.status, receiptId };
 }

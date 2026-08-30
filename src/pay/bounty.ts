@@ -515,6 +515,13 @@ export async function resolveOpenBounty(o: {
 	const txs: string[] = [];
 	let disputeReceiptId: string | undefined;
 	const state = await readEscrowAs(o.contractId, o.resolver);
+	// Judge by the terms the CHAIN pinned, not by whatever descriptor was
+	// handed to us: items and freshness come from this object and they decide
+	// who gets paid. Same assertion resolveJob makes on the directed path.
+	if (openBountyTerms(o.descriptor).hash !== state.engagementId)
+		throw new Error(
+			`descriptor does not match escrow ${o.contractId}: re-derived terms hash ${openBountyTerms(o.descriptor).hash} vs on-chain engagement_id ${state.engagementId}`,
+		);
 	if (state.released) throw new Error("bounty already settled");
 	if (!state.disputed) {
 		if (!o.disputeRaiser)
@@ -538,16 +545,23 @@ export async function resolveOpenBounty(o: {
 	});
 	txs.push(rd.tx);
 
+	// The chain takes the 0.3% protocol fee on the dispute path too, so the
+	// winner is credited pot − fee. Receipting the full pot overstated income
+	// in the exact ledger a reputation story will be read from.
+	const pot = BigInt(o.descriptor.amount);
+	const credited = pot - (pot * 30n) / 10_000n;
 	const receiptId = record({
 		kind: "job-resolved",
 		network: "stellar:testnet",
 		payer: o.resolver.publicKey(),
 		payee,
-		amount: o.descriptor.amount,
+		amount: credited.toString(),
 		detail: {
 			contractId: o.contractId,
 			mode: "open-claim",
 			policy: "evidence-schema:verification-v1",
+			pot: o.descriptor.amount,
+			protocolFeeBps: 30,
 			submissions: judged,
 			winner: winner?.worker ?? null,
 			outcome: winner ? "paid-winner" : "returned-to-buyer",

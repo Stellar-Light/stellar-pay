@@ -296,8 +296,18 @@ export const trustlessWorkRails: EscrowRails = {
 				.setTimeout(30)
 				.build();
 			const bsim = await s.simulateTransaction(btx);
-			if (!rpc.Api.isSimulationError(bsim) && bsim.result?.retval)
-				balance = BigInt(scValToNative(bsim.result.retval) as bigint);
+			// A failed simulation is NOT a zero balance. Returning 0 here made
+			// awaitPayout see balance===0 as "the escrow settled and you lost",
+			// on nothing more than an RPC hiccup.
+			if (rpc.Api.isSimulationError(bsim))
+				throw new Error(
+					`balance simulation failed for ${o.contractId}: ${bsim.error}`,
+				);
+			if (!bsim.result?.retval)
+				throw new Error(
+					`balance simulation returned nothing for ${o.contractId}`,
+				);
+			balance = BigInt(scValToNative(bsim.result.retval) as bigint);
 		}
 
 		return {

@@ -23,6 +23,7 @@
  */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { Asset, Networks } from "@stellar/stellar-sdk";
 import { receipt as appendRaw, sessionPaths } from "./session-store.js";
 
 export type ReceiptKind =
@@ -175,17 +176,36 @@ export async function verifyOnChain(row: ReceiptRow): Promise<VerifyResult> {
 		if (!fx.ok) return fail("effects-read", `Horizon ${fx.status}`);
 		const d = (await fx.json()) as {
 			_embedded?: {
-				records?: Array<{ type: string; account?: string; amount?: string }>;
+				records?: Array<{
+					type: string;
+					account?: string;
+					amount?: string;
+					asset_type?: string;
+					asset_code?: string;
+					asset_issuer?: string;
+				}>;
 			};
 		};
 		const toBase = (human: string) => {
 			const [i = "0", f = ""] = human.split(".");
 			return BigInt(i) * 10_000_000n + BigInt((f + "0000000").slice(0, 7));
 		};
+		// The ASSET has to match too. Without it, "1.5 of some worthless token
+		// credited to the payee" proved "1.5 USDC was paid" — a receipt is only
+		// evidence if it checks what a forger would change. `asset` on a row is
+		// the SAC contract id; Horizon reports classic code+issuer, so match the
+		// native case exactly and require a code match otherwise.
+		const wantNative =
+			!row.asset ||
+			row.asset === Asset.native().contractId(Networks.PUBLIC) ||
+			row.asset === Asset.native().contractId(Networks.TESTNET);
+		const assetMatches = (e: { asset_type?: string }) =>
+			wantNative ? e.asset_type === "native" : e.asset_type !== "native";
 		const hit = (d._embedded?.records ?? []).some(
 			(e) =>
 				e.type === "account_credited" &&
 				e.account === row.payee &&
+				assetMatches(e) &&
 				toBase(e.amount ?? "0") === BigInt(row.amount ?? "0"),
 		);
 		checks.push({

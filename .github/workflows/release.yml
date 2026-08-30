@@ -52,10 +52,22 @@ jobs:
             exit 0
           fi
           # Confirm the version is actually on the registry before tagging it.
-          if ! npm view "stellar-pay@$VERSION" version >/dev/null 2>&1; then
-            echo "stellar-pay@$VERSION is not on npm yet — not releasing"
-            exit 0
-          fi
+          # RETRY: the `push` trigger fires the same instant publish-npm starts,
+          # and the registry needs a moment to serve a just-published version —
+          # so a single check loses the race and the Release silently never gets
+          # cut (0.1.9 needed a manual workflow_dispatch for exactly this).
+          # ~2 minutes of patience, then leave it to the 6-hourly sweep.
+          for i in $(seq 1 12); do
+            if npm view "stellar-pay@$VERSION" version >/dev/null 2>&1; then
+              echo "stellar-pay@$VERSION is on the registry"
+              break
+            fi
+            if [ "$i" = "12" ]; then
+              echo "stellar-pay@$VERSION is not on npm after ~2min — leaving it to the scheduled sweep"
+              exit 0
+            fi
+            sleep 10
+          done
           git tag "$TAG"
           git push origin "$TAG"
           # --generate-notes auto-detects the previous tag as the range start.

@@ -163,8 +163,12 @@ export async function payFetch(
 			isStellar(x.network) &&
 			(x.network === o.wallet.network || x.network === "stellar"),
 	);
-	const order: Protocol[] =
-		o.prefer === "x402" ? ["x402", "mpp"] : ["mpp", "x402"];
+	// An EXPLICIT --x402/--mpp is a constraint, not a preference: falling back
+	// to the other protocol silently paid over the top of the user's choice.
+	// With no flag, the old ordering stands (MPP first, x402 second).
+	const order: Protocol[] = o.prefer
+		? [o.prefer]
+		: (["mpp", "x402"] as Protocol[]);
 	const offer = order
 		.map((p) => payable.find((x) => x.protocol === p))
 		.find(Boolean);

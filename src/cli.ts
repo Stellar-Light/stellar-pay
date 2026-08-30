@@ -1043,7 +1043,7 @@ async function cmdBounty(a: Args): Promise<void> {
 			if (rows.length === 0) return console.log("feed is empty");
 			for (const r of rows)
 				console.log(
-					`${r.valid ? "VALID  " : "REFUSED"} ${r.contractId.slice(0, 10)}… "${r.title}" pays ${r.amount}${
+					`${r.valid ? "VALID  " : "REFUSED"} ${r.contractId.slice(0, 10)}… "${r.title ?? "(untitled)"}" pays ${r.amount ?? "?"}${
 						r.valid
 							? r.submitUrl
 								? `\n        submit to ${r.submitUrl}`

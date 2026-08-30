@@ -30,8 +30,21 @@ export function autoApprove(
 			ok: false,
 			reason: `offer is on ${offer.network}, wallet is on ${opts.network} — refusing`,
 		};
-	if (opts.network === "stellar:testnet")
-		return { ok: true, reason: "testnet — tokens have no value" };
+	// Testnet tokens have no value, so the ceiling is not a SAFETY control
+	// there — but it IS what a user typed, and reporting "approved" when
+	// --max-usd was exceeded taught them a rule that does not hold. Say what
+	// happened instead of silently ignoring the flag.
+	if (opts.network === "stellar:testnet") {
+		const usd = offerUSD(offer);
+		const over =
+			usd != null && Number.isFinite(opts.maxUsd) && usd > opts.maxUsd;
+		return {
+			ok: true,
+			reason: over
+				? `testnet — tokens have no value (note: $${usd.toFixed(4)} is over the $${opts.maxUsd} ceiling, which is not enforced on testnet)`
+				: "testnet — tokens have no value",
+		};
+	}
 	// A misconfigured ceiling (NaN from a typo'd env var, zero, negative) must
 	// fail CLOSED: every `>` comparison against NaN is false, which would
 	// otherwise approve any amount.

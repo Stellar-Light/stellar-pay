@@ -47,6 +47,31 @@ import { record } from "./receipts.js";
 
 const HORIZON = "https://horizon-testnet.stellar.org";
 
+/** A fetch that does NOT blindly follow redirects.
+ *
+ * Both feed reads and packet submissions take a URL from an untrusted feed, and
+ * the default `redirect: "follow"` meant a caller's one-time SSRF check on the
+ * initial URL was worth nothing: a 302 walked the request to a host nobody
+ * vetted (and a 307/308 carries the POST body along with it). The guard
+ * belongs HERE, once, so every caller inherits it. */
+async function guardedFetch(
+	url: string,
+	init: RequestInit,
+	guard?: (u: string) => Promise<string | null> | string | null,
+): Promise<Response> {
+	let current = url;
+	for (let hop = 0; hop < 5; hop++) {
+		const blocked = await guard?.(current);
+		if (blocked) throw new Error(`refused ${current}: ${blocked}`);
+		const res = await fetch(current, { ...init, redirect: "manual" });
+		if (![301, 302, 303, 307, 308].includes(res.status)) return res;
+		const loc = res.headers.get("location");
+		if (!loc) return res;
+		current = new URL(loc, current).toString();
+	}
+	throw new Error(`too many redirects from ${url}`);
+}
+
 export type OpenBountyListing = {
 	contractId: string;
 	descriptor: BountyDescriptor;
@@ -57,10 +82,17 @@ export type VetCheck = { name: string; ok: boolean; note: string };
 /** Fetch a bounty feed — a URL or a local file holding either a bare array
  * of listings or `{ bounties: [...] }`. Shape-filters rows (a malformed row
  * is dropped, never thrown on); vetting is separate and per-listing. */
-export async function fetchFeed(from: string): Promise<OpenBountyListing[]> {
+export async function fetchFeed(
+	from: string,
+	guard?: (u: string) => Promise<string | null> | string | null,
+): Promise<OpenBountyListing[]> {
 	let text: string;
 	if (/^https?:\/\//.test(from)) {
-		const r = await fetch(from, { signal: AbortSignal.timeout(10_000) });
+		const r = await guardedFetch(
+			from,
+			{ signal: AbortSignal.timeout(10_000) },
+			guard,
+		);
 		if (!r.ok) throw new Error(`feed ${from}: HTTP ${r.status}`);
 		// A feed is a stranger's server, so bound the read AS IT ARRIVES.
 		// Buffering first and checking length after is not a limit: a hostile
@@ -89,10 +121,21 @@ export async function fetchFeed(from: string): Promise<OpenBountyListing[]> {
 	} else {
 		text = readFileSync(from, "utf8");
 	}
-	const parsed = JSON.parse(text) as unknown;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch (e) {
+		throw new Error(`feed ${from}: not JSON (${(e as Error).message})`);
+	}
+	// `null` is valid JSON and is NOT an object you can read `.bounties` off —
+	// a stranger's feed answering `null` crashed with a raw TypeError.
 	const rows = Array.isArray(parsed)
 		? parsed
-		: ((parsed as { bounties?: unknown[] }).bounties ?? []);
+		: typeof parsed === "object" && parsed !== null
+			? ((parsed as { bounties?: unknown[] }).bounties ?? [])
+			: [];
+	if (!Array.isArray(rows))
+		throw new Error(`feed ${from}: "bounties" is not an array`);
 	return rows.filter(
 		(r): r is OpenBountyListing =>
 			typeof r === "object" &&
@@ -204,18 +247,23 @@ export async function submitPacket(o: {
 	contractId: string;
 	evidence: EvidenceEntry[];
 	url: string;
+	guard?: (u: string) => Promise<string | null> | string | null;
 }): Promise<{ packet: OpenSubmission; status: number; receiptId: string }> {
 	const packet = makeSubmission({
 		worker: o.worker,
 		contractId: o.contractId,
 		evidence: o.evidence,
 	});
-	const r = await fetch(o.url, {
-		method: "POST",
-		headers: { "content-type": "application/json" },
-		body: JSON.stringify(packet),
-		signal: AbortSignal.timeout(15_000),
-	});
+	const r = await guardedFetch(
+		o.url,
+		{
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(packet),
+			signal: AbortSignal.timeout(15_000),
+		},
+		o.guard,
+	);
 	if (!r.ok) throw new Error(`submit to ${o.url}: HTTP ${r.status}`);
 	const receiptId = record({
 		kind: "bounty-work-submit",
