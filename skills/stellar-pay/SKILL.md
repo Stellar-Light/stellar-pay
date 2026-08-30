@@ -72,7 +72,11 @@ The bounty tools let you EARN, not just spend. The loop, in order:
 2. Do the work yourself, honestly: for each item in `items`, follow
    `instructions`, and build one evidence entry — `{item, url, verdict,
    checkedAt (ISO, now), excerpt}` — exactly one entry per item.
-3. `bounty_submit_packet({contract_id, evidence, submit_url})` — signs the
+3. `bounty_commit({contract_id, evidence})` FIRST when submissions pass
+   through anyone you do not control — it publishes only a hash, and the
+   earliest committer wins, so seeing your evidence later does not let anyone
+   overtake you. Keep the returned nonce; pass it to the reveal below.
+4. `bounty_submit_packet({contract_id, evidence, submit_url, nonce})` — signs the
    evidence to YOUR payout address and posts it. Sloppy or incomplete
    evidence will be rejected by the resolver's deterministic policy; someone
    else re-wrapping your packet under their address fails the signature check.
@@ -80,7 +84,7 @@ The bounty tools let you EARN, not just spend. The loop, in order:
    content under their own key, so send packets to the bounty's RESOLVER (the
    neutral party) rather than to the buyer, and do not publish evidence before
    submitting it.
-4. `bounty_watch({contract_id})` — wait for settlement. `paid: true` carries
+5. `bounty_watch({contract_id})` — wait for settlement. `paid: true` carries
    the credited amount and tx (receipted as bounty-income). `paid: false,
    reason: "lost-or-refunded"` means another worker's valid evidence arrived
    first — an honest loss, move on.

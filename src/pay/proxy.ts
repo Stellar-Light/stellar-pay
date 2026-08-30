@@ -231,7 +231,6 @@ export async function startProxy(o: ProxyOptions): Promise<{
 						? `402 not payable from a ${o.wallet.network} wallet; it accepts: ${r.offers.map((x) => x.network).join(", ")}`
 						: "402 with no readable payment offer",
 				});
-			const buf = Buffer.from(await r.res.arrayBuffer());
 			const out: Record<string, string | string[]> = {};
 			r.res.headers.forEach((v, k) => {
 				const lk = k.toLowerCase();
@@ -248,8 +247,37 @@ export async function startProxy(o: ProxyOptions): Promise<{
 			// value; re-split them into distinct header lines.
 			const cookies = r.res.headers.getSetCookie?.() ?? [];
 			if (cookies.length) out["set-cookie"] = cookies;
+			// STREAM the body through instead of buffering it.
+			//
+			// `arrayBuffer()` waits for the response to COMPLETE, which is fine
+			// for a JSON reply and fatal for anything long-lived: an SSE stream
+			// or a chunked LLM response never ends, so a wrapped tool saw
+			// nothing until it timed out. Piping means the child gets the first
+			// token when the server sends it — the whole point of `run` is that
+			// the tool cannot tell we are in the middle.
+			//
+			// Payment already happened above; by here the 402 dance is over and
+			// this is just the successful response on its way to the child.
 			res.writeHead(r.res.status, out);
-			res.end(buf);
+			if (!r.res.body) {
+				res.end();
+			} else {
+				try {
+					for await (const chunk of r.res
+						.body as unknown as AsyncIterable<Uint8Array>) {
+						// Respect backpressure: if the child is slow, wait for its
+						// socket to drain rather than buffering the stream in us.
+						if (!res.write(chunk))
+							await new Promise<void>((resolve) => res.once("drain", resolve));
+					}
+					res.end();
+				} catch (streamErr) {
+					// The response headers are already sent, so there is no status
+					// left to change — destroy the socket so the child sees a
+					// truncated stream instead of a silently short, "complete" one.
+					res.destroy(streamErr as Error);
+				}
+			}
 		} catch (e) {
 			res.writeHead(502, { "content-type": "text/plain" });
 			res.end(`stellar-pay proxy error: ${(e as Error).message}`);

@@ -248,11 +248,14 @@ export async function submitPacket(o: {
 	evidence: EvidenceEntry[];
 	url: string;
 	guard?: (u: string) => Promise<string | null> | string | null;
+	/** commit-reveal: the nonce that opens this worker's commit */
+	nonce?: string;
 }): Promise<{ packet: OpenSubmission; status: number; receiptId: string }> {
 	const packet = makeSubmission({
 		worker: o.worker,
 		contractId: o.contractId,
 		evidence: o.evidence,
+		nonce: o.nonce,
 	});
 	const r = await guardedFetch(
 		o.url,

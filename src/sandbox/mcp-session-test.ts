@@ -92,6 +92,7 @@ async function main() {
 			"bounty_resolve",
 			"bounty_status",
 			"bounty_feed",
+			"bounty_commit",
 			"bounty_submit_packet",
 			"bounty_watch",
 			"vault_draw",
@@ -99,7 +100,7 @@ async function main() {
 		])
 			if (!tools.includes(t)) throw new Error(`tool ${t} missing`);
 		console.log(
-			"tools    session_* (3) + bounty_* (11, incl. the earn verbs) + vault_* (2) present",
+			"tools    session_* (3) + bounty_* (12, incl. commit-reveal) + vault_* (2) present",
 		);
 
 		// 1. OPEN through the agent tool (default 5 XLM deposit).

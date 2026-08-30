@@ -314,8 +314,87 @@ export async function bountyStatus(o: {
 // The submission TRANSPORT (how packets reach the resolver — a board, HTTP,
 // a repo) is deliberately out of scope here; v1 hands packets in directly.
 
-import { createHash as _ch } from "node:crypto";
+import { createHash as _ch, randomBytes as _rb } from "node:crypto";
 import { Keypair as _KP } from "@stellar/stellar-sdk";
+
+const COMMIT_FORMAT = "stellar-pay/commit-v1" as const;
+
+/** A COMMIT: "I already have evidence whose hash is X" — published BEFORE the
+ * evidence itself is shown to anyone.
+ *
+ * This is the real fix for evidence theft. A signature can only prove who
+ * authored a packet; it cannot stop someone who SEES the evidence from
+ * re-signing the same content as their own, because that packet is valid by
+ * construction. Ordering by commit does: a thief who first learns the evidence
+ * at reveal time cannot produce a commit that predates the author's, and the
+ * commit binds the hash so they cannot commit to something they do not have. */
+export type OpenCommit = {
+	format: typeof COMMIT_FORMAT;
+	bountyContract: string;
+	worker: string;
+	/** sha256(format | contract | worker | sha256(evidence) | nonce) */
+	commitHash: string;
+	committedAt: string;
+	/** base64 ed25519 signature by `worker` over commitHash */
+	signature: string;
+};
+
+function commitHashOf(
+	contractId: string,
+	worker: string,
+	evidence: EvidenceEntry[],
+	nonce: string,
+): string {
+	const ev = _ch("sha256").update(JSON.stringify(evidence)).digest("hex");
+	return _ch("sha256")
+		.update(`${COMMIT_FORMAT}|${contractId}|${worker}|${ev}|${nonce}`)
+		.digest("hex");
+}
+
+/** Build a commit (and the nonce that opens it). Publish the COMMIT first;
+ * keep the nonce and the evidence private until you reveal. */
+export function makeCommit(o: {
+	worker: Keypair;
+	contractId: string;
+	evidence: EvidenceEntry[];
+	nonce?: string;
+}): { commit: OpenCommit; nonce: string } {
+	const nonce = o.nonce ?? _rb(32).toString("hex");
+	const commitHash = commitHashOf(
+		o.contractId,
+		o.worker.publicKey(),
+		o.evidence,
+		nonce,
+	);
+	const sig = o.worker.sign(Buffer.from(commitHash, "hex"));
+	return {
+		nonce,
+		commit: {
+			format: COMMIT_FORMAT,
+			bountyContract: o.contractId,
+			worker: o.worker.publicKey(),
+			commitHash,
+			committedAt: new Date().toISOString(),
+			signature: Buffer.from(sig).toString("base64"),
+		},
+	};
+}
+
+/** Does this commit verify, and is it for this bounty? */
+function commitIsValid(contractId: string, c: OpenCommit): boolean {
+	if (c?.format !== COMMIT_FORMAT || c.bountyContract !== contractId)
+		return false;
+	try {
+		return _KP
+			.fromPublicKey(c.worker)
+			.verify(
+				Buffer.from(c.commitHash, "hex"),
+				Buffer.from(c.signature, "base64"),
+			);
+	} catch {
+		return false;
+	}
+}
 
 export type OpenSubmission = {
 	/** wire-format marker. Two independent installs must agree on this packet,
@@ -329,6 +408,8 @@ export type OpenSubmission = {
 	signedAt: string;
 	/** base64 ed25519 signature by `worker` over the digest below */
 	signature: string;
+	/** commit-reveal only: the nonce that opens this worker's commit */
+	nonce?: string;
 };
 
 /** The signed digest: sha256(contractId | worker | canonical evidence JSON).
@@ -338,25 +419,31 @@ export type OpenSubmission = {
  * endorsement of some bytes. v1 signed only (contractId | evidence).
  *
  * BE PRECISE ABOUT WHAT THIS DOES AND DOES NOT BUY. It stops signature REPLAY:
- * you cannot take my packet, swap in your address, and keep my signature. It
- * does NOT stop evidence THEFT: anyone who sees my evidence can re-sign the
- * same content under their own key, which is a valid packet by construction.
- * No signature scheme fixes that in a single round — the defences are
- * (a) the evidence goes to the RESOLVER, the declared neutral party, not to the
- * buyer, who is the one party with a motive to steal the work and refund
- * itself, and (b) commit-reveal ordering, which is the real fix and is
- * roadmapped, not built. See README "Not built yet". */
+ * you cannot take my packet, swap in your address, and keep my signature. On
+ * its own it does NOT stop evidence THEFT — anyone who sees my evidence can
+ * re-sign the same content under their own key, and that packet is valid by
+ * construction. No signature scheme fixes that in a single round.
+ *
+ * COMMIT-REVEAL (makeCommit + pickWinner's `commits`) is what fixes it, and it
+ * is built: publish a hash first, reveal the evidence later, and the earliest
+ * COMMITTER wins. A thief who first sees the evidence at reveal time has no
+ * commit that predates the author's, so racing is pointless. Use it whenever
+ * submissions pass through a party you do not control; without it the
+ * fallbacks are sending evidence to the RESOLVER rather than the buyer (the
+ * one party that profits from stealing it) and plain arrival order. */
 const SUBMISSION_FORMAT = "stellar-pay/submission-v1" as const;
 
 function submissionDigest(
 	contractId: string,
 	worker: string,
 	evidence: EvidenceEntry[],
+	nonce?: string,
 ): Buffer {
+	// The nonce is appended only when present, so a plain (non-commit-reveal)
+	// packet hashes exactly as before and stays verifiable.
+	const base = `${SUBMISSION_FORMAT}|${contractId}|${worker}|${JSON.stringify(evidence)}`;
 	return _ch("sha256")
-		.update(
-			`${SUBMISSION_FORMAT}|${contractId}|${worker}|${JSON.stringify(evidence)}`,
-		)
+		.update(nonce ? `${base}|${nonce}` : base)
 		.digest();
 }
 
@@ -415,9 +502,11 @@ export function makeSubmission(o: {
 	worker: Keypair;
 	contractId: string;
 	evidence: EvidenceEntry[];
+	/** the nonce from makeCommit — turns this packet into a REVEAL */
+	nonce?: string;
 }): OpenSubmission {
 	const sig = o.worker.sign(
-		submissionDigest(o.contractId, o.worker.publicKey(), o.evidence),
+		submissionDigest(o.contractId, o.worker.publicKey(), o.evidence, o.nonce),
 	);
 	return {
 		format: SUBMISSION_FORMAT,
@@ -426,6 +515,7 @@ export function makeSubmission(o: {
 		evidence: o.evidence,
 		signedAt: new Date().toISOString(),
 		signature: Buffer.from(sig).toString("base64"),
+		...(o.nonce ? { nonce: o.nonce } : {}),
 	};
 }
 
@@ -435,12 +525,19 @@ export function pickWinner(
 	contractId: string,
 	submissions: OpenSubmission[],
 	policy: ResolverPolicy,
+	/** COMMIT-REVEAL: the commits the resolver received, in arrival order. When
+	 * supplied, a submission must open one of them and the winner is the valid
+	 * reveal whose COMMIT came first — so a thief who only sees the evidence at
+	 * reveal time cannot win by submitting faster. Omit for the plain
+	 * first-valid-wins race. */
+	commits?: OpenCommit[],
 ): {
 	winner: OpenSubmission | null;
 	judged: Array<{ worker: string; valid: boolean; reason: string }>;
 } {
 	const judged: Array<{ worker: string; valid: boolean; reason: string }> = [];
 	let winner: OpenSubmission | null = null;
+	let bestRank = Number.POSITIVE_INFINITY;
 	for (const s of submissions) {
 		if (s.format !== SUBMISSION_FORMAT) {
 			// Say what is actually wrong. Reporting a version mismatch as
@@ -462,7 +559,7 @@ export function pickWinner(
 			sigOk = _KP
 				.fromPublicKey(s.worker)
 				.verify(
-					submissionDigest(contractId, s.worker, s.evidence),
+					submissionDigest(contractId, s.worker, s.evidence, s.nonce),
 					Buffer.from(s.signature, "base64"),
 				);
 		} catch {
@@ -472,6 +569,34 @@ export function pickWinner(
 			judged.push({ worker: s.worker, valid: false, reason: "bad-signature" });
 			continue;
 		}
+		// COMMIT-REVEAL: the reveal must open a commit this worker made earlier.
+		let commitRank: number | null = null;
+		if (commits) {
+			if (!s.nonce) {
+				judged.push({ worker: s.worker, valid: false, reason: "no-nonce" });
+				continue;
+			}
+			const want = commitHashOf(contractId, s.worker, s.evidence, s.nonce);
+			const idx = commits.findIndex(
+				(c) =>
+					commitIsValid(contractId, c) &&
+					c.worker === s.worker &&
+					c.commitHash === want,
+			);
+			if (idx < 0) {
+				// Either no commit exists for this exact evidence+worker, or the
+				// nonce does not open it. A thief who re-signed someone else's
+				// evidence lands here: they never committed to it.
+				judged.push({
+					worker: s.worker,
+					valid: false,
+					reason: "no-matching-commit",
+				});
+				continue;
+			}
+			commitRank = idx;
+		}
+
 		const answer = policy({
 			evidence: JSON.stringify(s.evidence),
 			reviewQuestion: "",
@@ -482,9 +607,22 @@ export function pickWinner(
 		judged.push({
 			worker: s.worker,
 			valid,
-			reason: valid ? "valid" : "evidence-rejected",
+			reason: valid
+				? commitRank != null
+					? `valid (commit #${commitRank})`
+					: "valid"
+				: "evidence-rejected",
 		});
-		if (valid && !winner) winner = s; // first valid wins; keep judging for the record
+		if (!valid) continue;
+		if (commits) {
+			// EARLIEST COMMIT wins, regardless of who revealed first.
+			if (winner == null || (commitRank ?? 0) < bestRank) {
+				winner = s;
+				bestRank = commitRank ?? 0;
+			}
+		} else if (!winner) {
+			winner = s; // plain race: first valid wins; keep judging for the record
+		}
 	}
 	return { winner, judged };
 }
@@ -497,6 +635,8 @@ export async function resolveOpenBounty(o: {
 	resolver: Keypair;
 	contractId: string;
 	submissions: OpenSubmission[];
+	/** commits in ARRIVAL ORDER; when given, the earliest committer wins */
+	commits?: OpenCommit[];
 	/** a party with standing (the buyer) to raise the dispute that unlocks
 	 * distribution-based settlement. Optional when the escrow is ALREADY
 	 * disputed (CLI flows: the buyer runs `bounty dispute` in its own call —
@@ -510,7 +650,12 @@ export async function resolveOpenBounty(o: {
 	if (o.resolver.publicKey() !== o.descriptor.resolver)
 		throw new Error("resolving key is not the descriptor's resolver");
 	const policy = verificationEvidencePolicy(o.descriptor);
-	const { winner, judged } = pickWinner(o.contractId, o.submissions, policy);
+	const { winner, judged } = pickWinner(
+		o.contractId,
+		o.submissions,
+		policy,
+		o.commits,
+	);
 
 	const txs: string[] = [];
 	let disputeReceiptId: string | undefined;
@@ -558,7 +703,7 @@ export async function resolveOpenBounty(o: {
 		amount: credited.toString(),
 		detail: {
 			contractId: o.contractId,
-			mode: "open-claim",
+			mode: o.commits ? "open-claim/commit-reveal" : "open-claim",
 			policy: "evidence-schema:verification-v1",
 			pot: o.descriptor.amount,
 			protocolFeeBps: 30,

@@ -34,7 +34,9 @@ import {
 	type BountyDescriptor,
 	bountyStatus,
 	type EvidenceEntry,
+	makeCommit,
 	makeSubmission,
+	type OpenCommit,
 	type OpenSubmission,
 	postBounty,
 	postOpenBounty,
@@ -1067,9 +1069,15 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 				descriptor: z.record(z.string(), z.unknown()),
 				contract_id: z.string(),
 				submissions: z.array(z.record(z.string(), z.unknown())).optional(),
+				commits: z
+					.array(z.record(z.string(), z.unknown()))
+					.optional()
+					.describe(
+						"commit-reveal: the commits you received, IN ARRIVAL ORDER — the earliest committer wins",
+					),
 			},
 		},
-		async ({ descriptor, contract_id, submissions }) => {
+		async ({ descriptor, contract_id, submissions, commits }) => {
 			try {
 				const gate = requireTestnet();
 				if (gate) return json({ error: gate });
@@ -1080,6 +1088,7 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 						resolver: w.keypair,
 						contractId: contract_id,
 						submissions: submissions as unknown as OpenSubmission[],
+						commits: commits as unknown as OpenCommit[] | undefined,
 					});
 					return json(r);
 				}
@@ -1151,6 +1160,34 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 	);
 
 	server.registerTool(
+		"bounty_commit",
+		{
+			description:
+				"EARN, step 1 of 2 — commit-reveal. Publish a HASH of your evidence BEFORE showing it to anyone, then reveal later with bounty_submit_packet passing the returned nonce. This is what actually stops evidence theft: a signature only proves who wrote a packet, so anyone who SEES your evidence can re-sign it as their own — but they cannot produce a commit that predates yours. The earliest committer wins. KEEP THE NONCE; without it your commit cannot be opened and your reveal is refused. Use this whenever submissions pass through a party you do not control.",
+			inputSchema: { contract_id: z.string(), evidence: evidenceShape },
+		},
+		async ({ contract_id, evidence }) => {
+			try {
+				const gate = requireTestnet();
+				if (gate) return json({ error: gate });
+				const w = getWallet();
+				const { commit, nonce } = makeCommit({
+					worker: w.keypair,
+					contractId: contract_id,
+					evidence: evidence as EvidenceEntry[],
+				});
+				return json({
+					commit,
+					nonce,
+					next: "hand `commit` to the bounty's resolver now; reveal with bounty_submit_packet + this nonce once commits are closed",
+				});
+			} catch (e) {
+				return json({ error: (e as Error).message });
+			}
+		},
+	);
+
+	server.registerTool(
 		"bounty_submit_packet",
 		{
 			description:
@@ -1159,9 +1196,13 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 				contract_id: z.string(),
 				evidence: evidenceShape,
 				submit_url: z.string(),
+				nonce: z
+					.string()
+					.optional()
+					.describe("the nonce from bounty_commit, when using commit-reveal"),
 			},
 		},
-		async ({ contract_id, evidence, submit_url }) => {
+		async ({ contract_id, evidence, submit_url, nonce }) => {
 			try {
 				const gate = requireTestnet();
 				if (gate) return json({ error: gate });
@@ -1174,6 +1215,7 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 					evidence: evidence as EvidenceEntry[],
 					url: submit_url,
 					guard: blockedTarget,
+					nonce,
 				});
 				return json({
 					status: r.status,

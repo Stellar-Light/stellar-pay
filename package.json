@@ -1,6 +1,6 @@
 {
 	"name": "stellar-pay",
-	"version": "0.1.10",
+	"version": "0.1.11",
 	"description": "Stellar payments layer for agents: a pay.sh-shaped client (curl that answers 402s with a Stellar wallet, x402 + MPP) over a probed catalog of Stellar-payable APIs. Private while the lane is new.",
 	"license": "MIT",
 	"type": "module",
@@ -47,7 +47,8 @@
 		"test:bounty": "tsx src/sandbox/bounty-test.ts",
 		"test:bounty-open": "tsx src/sandbox/bounty-open-test.ts",
 		"test:vault-flow": "tsx src/sandbox/vault-flow-test.ts",
-		"test:marketplace": "tsx src/sandbox/marketplace-test.ts"
+		"test:marketplace": "tsx src/sandbox/marketplace-test.ts",
+		"test:stream": "tsx src/sandbox/stream-test.ts"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.3.2",

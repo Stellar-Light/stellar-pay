@@ -626,17 +626,14 @@ each and who owns it.
   client-side against the chain. A hosted board would make us the platform —
   the thing this project exists to not be. If we ever run one, it will be
   one feed among many, not the front door.
-- **Commit-reveal for open races — the real fix for evidence theft.** Packets
-  are signed, which stops *replay* (you cannot take my packet, swap your
-  address in, and keep my signature). It does **not** stop theft: anyone who
-  *receives* my evidence can re-sign the same content under their own key,
-  and that packet is valid by construction. No signature scheme fixes this in
-  a single round. Today's mitigations are that `submitUrl` should be the
-  **resolver's** inbox rather than the buyer's — the buyer is the one party
-  that profits from stealing the work — and that first-valid-wins goes by
-  arrival order. The real fix is commit-reveal ordering (commit a hash, reveal
-  later), and it is not built. `test:bounty-open` asserts this limit out loud
-  rather than glossing it.
+- ~~Commit-reveal for open races~~ — **built.** A signature only proves who
+  authored a packet; anyone who *sees* the evidence can re-sign the same
+  content as their own, and that packet is valid by construction. So a worker
+  publishes a **hash first** (`bounty commit`), reveals the evidence later
+  (`bounty pack --nonce`), and the **earliest committer wins** — a thief who
+  first learns the evidence at reveal time has no commit that predates the
+  author's. The unit suite asserts both directions: the thief wins the plain
+  race and loses under commit-reveal.
 - **On-chain submissions for open races.** The escrow gates evidence writes
   by role, so open-claim packets travel out of band (HTTP inbox). An on-chain
   submission mailbox would need a contract we'd have to author — see the rule
@@ -682,8 +679,11 @@ each and who owns it.
 - **Windows Hello / Linux biometric gating; per-signature biometrics in the
   MCP.** macOS Touch ID works via `--keychain`; the others are genuinely not
   built.
-- **SSE streaming through `run`.** The proxy buffers bodies; streaming
-  agents wrapped by `run` lose their stream. Known, unfixed.
+- ~~SSE streaming through `run`~~ — **built.** The proxy pipes response
+  bodies through with backpressure instead of buffering them, so a wrapped
+  tool gets the first token when the server sends it. `test:stream` asserts
+  timing, not style: the first event must beat the last by the upstream's own
+  gap, which a buffering proxy cannot do.
 
 ## Status
 

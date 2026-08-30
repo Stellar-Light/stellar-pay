@@ -29,7 +29,9 @@ import {
 	type BountyDescriptor,
 	bountyStatus,
 	type EvidenceEntry,
+	makeCommit,
 	makeSubmission,
+	type OpenCommit,
 	type OpenSubmission,
 	postBounty,
 	postOpenBounty,
@@ -151,6 +153,8 @@ type Args = {
 	toUrl?: string;
 	submitUrl?: string;
 	deadlineDays?: number;
+	nonce?: string;
+	commitFiles?: string[];
 	send: boolean;
 	timeoutSec?: number;
 };
@@ -257,6 +261,9 @@ function parse(argv: string[]): Args {
 		else if (t === "--from") a.fromFeed = next();
 		else if (t === "--to") a.toUrl = next();
 		else if (t === "--submit-url") a.submitUrl = next();
+		else if (t === "--nonce") a.nonce = next();
+		else if (t === "--commits")
+			a.commitFiles = (next() ?? "").split(",").filter(Boolean);
 		else if (t === "--deadline-days") {
 			const n = Number(next());
 			if (Number.isFinite(n) && n > 0) a.deadlineDays = n;
@@ -1006,11 +1013,12 @@ async function cmdBounty(a: Args): Promise<void> {
   bounty assign <bounty.json> --provider G…        (buyer wallet: escrow + fund, directed)
   bounty open <bounty.json>                        (buyer wallet: escrow + fund, open race)
   bounty submit --contract C… --evidence ev.json   (worker wallet: directed evidence on-chain)
-  bounty pack --contract C… --evidence ev.json [--out sub.json] [--send --to URL]   (worker wallet: signed open-race packet)
+  bounty commit --contract C… --evidence ev.json [--out commit.json]   (worker: publish the HASH first — beats evidence theft)
+  bounty pack --contract C… --evidence ev.json [--nonce N] [--out sub.json] [--send --to URL]   (worker: reveal)
   bounty list --from <url|file>                    (worker: fetch a feed, VET each listing against the chain)
   bounty watch --contract C… [--timeout-sec N]     (worker: wait for settlement; did WE get paid?)
   bounty dispute --contract C…                     (buyer wallet: unlock refund/open settlement)
-  bounty resolve <bounty.json> --contract C… [--submissions s1.json,s2.json]   (resolver wallet)
+  bounty resolve <bounty.json> --contract C… [--submissions s1.json,s2.json] [--commits c1.json,c2.json]   (resolver wallet)
   bounty status --contract C…`);
 
 	if (sub === "list") {
@@ -1148,6 +1156,29 @@ workers race with: bounty pack --contract ${r.contractId} --evidence ev.json`,
 		return;
 	}
 
+	if (sub === "commit") {
+		if (!a.contract || !a.evidenceFile) return usage();
+		const evidence = readJsonFile<EvidenceEntry[]>(a.evidenceFile, "evidence");
+		if (!Array.isArray(evidence))
+			return usageError("evidence must be a JSON array");
+		await ensureSecretLoaded(a.account);
+		const w = loadWallet();
+		const { commit, nonce } = makeCommit({
+			worker: w.keypair,
+			contractId: a.contract,
+			evidence,
+		});
+		if (a.out) writeFileSync(a.out, JSON.stringify(commit, null, 1));
+		emit(a, { commit, nonce }, () => {
+			console.log(JSON.stringify(commit, null, 1));
+			console.error(
+				`\nKEEP THIS NONCE — it opens your commit and is what proves the work was yours:\n  ${nonce}\n\nreveal later with: bounty pack --contract ${a.contract} --evidence ${a.evidenceFile} --nonce ${nonce}`,
+			);
+			if (a.out) console.error(`commit written to ${a.out}`);
+		});
+		return;
+	}
+
 	if (sub === "submit" || sub === "pack") {
 		if (!a.contract || !a.evidenceFile) return usage();
 		const evidence = readJsonFile<EvidenceEntry[]>(a.evidenceFile, "evidence");
@@ -1166,6 +1197,7 @@ workers race with: bounty pack --contract ${r.contractId} --evidence ev.json`,
 					contractId: a.contract,
 					evidence,
 					url: a.toUrl,
+					nonce: a.nonce,
 				});
 				emit(a, { status: r.status, worker: r.packet.worker }, () =>
 					console.log(
@@ -1178,6 +1210,7 @@ workers race with: bounty pack --contract ${r.contractId} --evidence ev.json`,
 				worker: w.keypair,
 				contractId: a.contract,
 				evidence,
+				nonce: a.nonce,
 			});
 			if (a.out) writeFileSync(a.out, JSON.stringify(packet, null, 1));
 			emit(a, packet, () => {
@@ -1218,11 +1251,15 @@ workers race with: bounty pack --contract ${r.contractId} --evidence ev.json`,
 			const submissions = a.submissionFiles.map((f) =>
 				readJsonFile<OpenSubmission>(f, "submission packet"),
 			);
+			const commits = a.commitFiles?.length
+				? a.commitFiles.map((f) => readJsonFile<OpenCommit>(f, "commit"))
+				: undefined;
 			const r = await resolveOpenBounty({
 				descriptor: d,
 				resolver: w.keypair,
 				contractId: a.contract,
 				submissions,
+				commits,
 			});
 			emit(a, r, () =>
 				console.log(

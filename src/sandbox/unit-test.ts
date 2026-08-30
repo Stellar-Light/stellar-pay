@@ -13,6 +13,7 @@ import {
 } from "../pay/agreement.js";
 import {
 	bountyJobSpec,
+	makeCommit,
 	makeSubmission,
 	openBountyTerms,
 	pickWinner,
@@ -420,6 +421,89 @@ check(
 		"submission: an unknown format says so, not 'bad-signature'",
 		j?.valid === false && String(j?.reason).startsWith("unsupported-format:"),
 		String(j?.reason),
+	);
+}
+
+// --- COMMIT-REVEAL: the thief loses even when they reveal FIRST ---
+{
+	const author = Keypair.random();
+	const thief = Keypair.random();
+	const CID = "CDBI3TWNGMK6TFE4LANL4E2CFZ4QPGM7HBTKWQCDG2WNBYX2VMQ4ZBWI";
+	const ev = [
+		{
+			item: "a",
+			url: "https://x.test/a",
+			verdict: "ok",
+			checkedAt: new Date().toISOString(),
+			excerpt: "the work",
+		},
+	];
+	const pol = verificationEvidencePolicy({
+		items: ["a"],
+		maxEvidenceAgeDays: 7,
+	});
+
+	// The author commits BEFORE anyone sees the evidence.
+	const { commit, nonce } = makeCommit({
+		worker: author,
+		contractId: CID,
+		evidence: ev,
+	});
+	const authorReveal = makeSubmission({
+		worker: author,
+		contractId: CID,
+		evidence: ev,
+		nonce,
+	});
+	// The thief sees the evidence at reveal time and re-signs it as their own —
+	// the attack that beats a signature-only scheme.
+	const thiefCommit = makeCommit({
+		worker: thief,
+		contractId: CID,
+		evidence: ev,
+	});
+	const thiefReveal = makeSubmission({
+		worker: thief,
+		contractId: CID,
+		evidence: ev,
+		nonce: thiefCommit.nonce,
+	});
+
+	// Thief's reveal arrives FIRST; the author's commit is still the earlier one.
+	const withCommits = pickWinner(CID, [thiefReveal, authorReveal], pol, [
+		commit,
+		thiefCommit.commit,
+	]);
+	check(
+		"commit-reveal: earliest COMMITTER wins even when the thief reveals first",
+		withCommits.winner?.worker === author.publicKey(),
+		String(withCommits.winner?.worker),
+	);
+	// Without commits this is the old race, and the thief takes it — the exact
+	// property the README documents as the reason commit-reveal exists.
+	const withoutCommits = pickWinner(CID, [thiefReveal, authorReveal], pol);
+	check(
+		"plain race: the same thief WINS without commit-reveal (why it exists)",
+		withoutCommits.winner?.worker === thief.publicKey(),
+	);
+	// A reveal with no commit behind it is refused outright.
+	const noCommit = pickWinner(CID, [thiefReveal], pol, [commit]);
+	check(
+		"commit-reveal: a reveal with no matching commit is refused",
+		noCommit.winner === null &&
+			noCommit.judged[0]?.reason === "no-matching-commit",
+		String(noCommit.judged[0]?.reason),
+	);
+	// A commit cannot be opened by a different nonce (it binds the evidence).
+	const wrongNonce = makeSubmission({
+		worker: author,
+		contractId: CID,
+		evidence: ev,
+		nonce: "00".repeat(32),
+	});
+	check(
+		"commit-reveal: a wrong nonce does not open the commit",
+		pickWinner(CID, [wrongNonce], pol, [commit]).winner === null,
 	);
 }
 
