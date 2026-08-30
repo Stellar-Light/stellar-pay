@@ -43,16 +43,22 @@ business on this week. Direction and the quality bar live in
 
 ## Try it now
 
-A real on-chain payment, with play money, in three commands:
+A real on-chain payment, with play money, in **one command** — no wallet, no
+passphrase, no signup:
 
 ```sh
-export STELLAR_PAY_PASSPHRASE=sandbox   # testnet play money; any value works
-npx stellar-pay setup --sandbox --save sandbox                 # funded testnet wallet, sealed locally
 npx stellar-pay curl https://stellar-pay-sandbox.fly.dev/data --yes --sandbox
 ```
 
-That settles on Stellar testnet for real — the output carries the
-stellar.expert link. No real funds, no signup, nothing installed. The
+With `--sandbox` and no wallet configured, it makes a throwaway testnet
+keypair, has friendbot fund it, and pays. That wallet is unencrypted and
+deliberately ungated because there is nothing to protect — testnet, play
+money. For anything real, `stellar-pay setup --save main` seals a key in the
+encrypted keystore, and on **mainnet a missing wallet is simply an error**:
+nothing is ever auto-created there.
+
+The payment settles on Stellar testnet for real — the output carries the
+stellar.expert link, so you can go look at it. The
 [sandbox](https://stellar-pay-sandbox.fly.dev/) is our own paid endpoint,
 priced in native XLM so a friendbot-funded wallet can pay it immediately (no
 trustline, no faucet) with the seller sponsoring fees.

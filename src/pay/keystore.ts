@@ -440,9 +440,56 @@ export async function ensureSecretLoaded(name?: string): Promise<boolean> {
 	if (process.env.STELLAR_SECRET_KEY) return true;
 	const s = read();
 	const acct = s.default ? s.accounts[s.default] : undefined;
-	if (!s.default || !acct) return false;
+	if (!s.default || !acct) {
+		// Nothing saved. On TESTNET we can just make one — friendbot funds it in
+		// a second, so "try it" should not cost the reader a setup step and a
+		// passphrase. Never on mainnet: there, no wallet is the correct answer.
+		if (process.env.STELLAR_NETWORK === "stellar:testnet")
+			return ensureEphemeralTestnetWallet();
+		return false;
+	}
 	process.env.STELLAR_SECRET_KEY = await readSecret(s.default, acct);
 	if (!process.env.STELLAR_NETWORK) process.env.STELLAR_NETWORK = acct.network;
+	return true;
+}
+
+/** A throwaway, unencrypted TESTNET wallet, reused across runs.
+ *
+ * Deliberately ungated — there is nothing to protect: the network is testnet,
+ * the funds come from friendbot, and the alternative is making a newcomer run
+ * `setup` and invent a passphrase before they can see a payment happen. It
+ * lives beside the session state, NOT in the keystore, so it can never be
+ * confused for a real account or become somebody's default on mainnet. */
+async function ensureEphemeralTestnetWallet(): Promise<boolean> {
+	const dir =
+		process.env.STELLAR_PAY_SESSION_DIR ?? join(homedir(), ".stellar-pay");
+	const file = join(dir, "ephemeral-testnet.json");
+	try {
+		const saved = JSON.parse(readFileSync(file, "utf8")) as { secret?: string };
+		if (saved.secret?.startsWith("S")) {
+			process.env.STELLAR_SECRET_KEY = saved.secret;
+			return true;
+		}
+	} catch {
+		// no usable ephemeral wallet yet — make one
+	}
+	const { Keypair } = await import("@stellar/stellar-sdk");
+	const kp = Keypair.random();
+	const r = await fetch(`https://friendbot.stellar.org?addr=${kp.publicKey()}`);
+	if (!r.ok && r.status !== 400)
+		throw new Error(
+			`could not fund a sandbox wallet from friendbot (HTTP ${r.status}) — run \`stellar-pay setup --sandbox --save dev\` to make one yourself`,
+		);
+	mkdirSync(dir, { recursive: true, mode: 0o700 });
+	writeFileSync(
+		file,
+		JSON.stringify({ secret: kp.secret(), publicKey: kp.publicKey() }, null, 1),
+		{ mode: 0o600 },
+	);
+	process.env.STELLAR_SECRET_KEY = kp.secret();
+	console.error(
+		`stellar-pay: created a throwaway TESTNET wallet ${kp.publicKey().slice(0, 8)}… (friendbot-funded, unencrypted, kept at ${file}).\n           it exists so --sandbox works with no setup; for anything real: stellar-pay setup --save main`,
+	);
 	return true;
 }
 
