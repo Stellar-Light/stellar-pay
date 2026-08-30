@@ -125,16 +125,58 @@ export function osStoreName(): string {
 	}
 }
 
-/** PowerShell one-liner runner for the Windows path. */
+/** PowerShell one-liner runner for the Windows path.
+ *
+ * Two things here are load-bearing, both learned from a CI failure that read
+ * `CouldNotAutoloadMatchingModule`:
+ *
+ *  1. PSModulePath is REPAIRED, not inherited. ConvertTo-SecureString and
+ *     friends live in Microsoft.PowerShell.Security and arrive by module
+ *     AUTOLOADING, which silently depends on PSModulePath. A host that
+ *     overrides it — CI runners do — leaves the cmdlets unreachable and the
+ *     error names the module system rather than the cause.
+ *  2. The module is imported EXPLICITLY, so a failure says so at the point of
+ *     import instead of surfacing as an unrecognised command later.
+ *
+ * The stored format is deliberately unchanged. Switching to .NET DPAPI
+ * (ProtectedData) would dodge the module system entirely, but it writes
+ * different bytes, and anyone who already has a secret stored on a working
+ * Windows box would silently lose access to it. */
 function pwsh(script: string, input?: string): string {
-	const exe = process.env.SystemRoot
-		? `${process.env.SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
-		: "powershell.exe";
-	return execFileSync(
-		exe,
-		["-NoProfile", "-NonInteractive", "-Command", script],
-		{ input, encoding: "utf8" },
-	).trim();
+	const root = process.env.SystemRoot ?? "C:\\Windows";
+	const exe = `${root}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+	const sysModules = `${root}\\System32\\WindowsPowerShell\\v1.0\\Modules`;
+	const psModulePath = process.env.PSModulePath
+		? `${process.env.PSModulePath};${sysModules}`
+		: sysModules;
+	try {
+		return execFileSync(
+			exe,
+			[
+				"-NoProfile",
+				"-NonInteractive",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				`Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; ${script}`,
+			],
+			{
+				input,
+				encoding: "utf8",
+				env: { ...process.env, PSModulePath: psModulePath },
+			},
+		).trim();
+	} catch (e) {
+		const err = e as { stderr?: Buffer | string; message?: string };
+		const detail = String(err.stderr ?? err.message ?? "")
+			.trim()
+			.slice(0, 300);
+		throw new Error(
+			`the Windows secret store (DPAPI via PowerShell) failed: ${detail}\n` +
+				`This is the OS-store backend only — your encrypted keystore still works. ` +
+				`Use it with: stellar-pay account import --name <n>  (no --keychain)`,
+		);
+	}
 }
 
 /** Where the DPAPI ciphertext lives (the secret itself never lands here). */
