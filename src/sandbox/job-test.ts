@@ -73,22 +73,21 @@ async function main() {
 		`open     escrow ${open.contractId.slice(0, 10)}… termsHash ${open.termsHash.slice(0, 14)}…`,
 	);
 
-	// AutoContracts cross-verification — the WHOLE POINT of the alignment:
-	// a conforming resolver reads the on-chain agreement doc, computes
-	// keccak256, and it must equal the engagement_id. Prove it here the way
-	// a resolver would, reading the doc back off the contract.
+	// Cross-verification — the point of hash-pinning the terms: a resolver
+	// reads the on-chain agreement doc, computes sha256, and it must equal
+	// the engagement_id. Prove it the way a resolver would.
 	const { jobAgreement } = await import("../pay/job.js");
-	const { keccak256, toBytes } = await import("viem");
+	const { agreementHash } = await import("../pay/agreement.js");
 	const rebuilt = jobAgreement(job);
-	const resolverHash = keccak256(toBytes(open.agreementDoc));
+	const resolverHash = agreementHash(open.agreementDoc);
 	console.log(
-		`agree    doc ${open.agreementDoc.length}B · resolver keccak ${resolverHash.slice(0, 14)}… == engagement_id: ${resolverHash === open.engagementId && rebuilt.hash === open.termsHash ? "YES ✓" : "NO ✗"}`,
+		`agree    doc ${open.agreementDoc.length}B · resolver sha256 ${resolverHash.slice(0, 14)}… == engagement_id: ${resolverHash === open.engagementId && rebuilt.hash === open.termsHash ? "YES ✓" : "NO ✗"}`,
 	);
 	if (resolverHash !== open.engagementId || rebuilt.hash !== open.termsHash)
-		throw new Error("AutoContracts termsHash cross-verification failed");
-	// The doc must carry the required AutoContracts v1 sections.
+		throw new Error("termsHash cross-verification failed");
+	// The doc must carry the required agreement sections.
 	for (const marker of [
-		"standard: auto.contracts/v1",
+		"format: stellar-pay/agreement-v1",
 		"# Agreement",
 		"## Terms",
 		"## Review Question",

@@ -43,7 +43,8 @@ async function submit(built: Transaction, signer: Keypair): Promise<string> {
 		await new Promise((r) => setTimeout(r, 1500));
 		const res = await s.getTransaction(sent.hash);
 		if (res.status === "SUCCESS") return sent.hash;
-		if (res.status === "FAILED") throw new Error(`tx failed on-chain: ${sent.hash}`);
+		if (res.status === "FAILED")
+			throw new Error(`tx failed on-chain: ${sent.hash}`);
 	}
 	throw new Error(`tx timed out: ${sent.hash}`);
 }
