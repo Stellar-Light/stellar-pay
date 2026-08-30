@@ -121,9 +121,14 @@ function releaseReservation(url: string): void {
 // confirmation can't be forged from to+amount or replayed.
 const pendingSends = new Map<
 	string,
-	{ to: string; amount: string; network: string; exp: number }
+	{ to: string; amount: string; network: string; memo?: string; exp: number }
 >();
-function newSendToken(to: string, amount: string, network: string): string {
+function newSendToken(
+	to: string,
+	amount: string,
+	network: string,
+	memo?: string,
+): string {
 	// Sweep expired entries and cap the map so unpaid preview calls can't grow
 	// it without bound; dropping the oldest only invalidates a stale preview.
 	for (const [k, v] of pendingSends)
@@ -131,7 +136,7 @@ function newSendToken(to: string, amount: string, network: string): string {
 	while (pendingSends.size >= 32)
 		pendingSends.delete(pendingSends.keys().next().value as string);
 	const t = randomUUID();
-	pendingSends.set(t, { to, amount, network, exp: Date.now() + 120_000 });
+	pendingSends.set(t, { to, amount, network, memo, exp: Date.now() + 120_000 });
 	return t;
 }
 
@@ -753,9 +758,15 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 					.describe(
 						"the confirmation token from the first call; omit to preview",
 					),
+				memo: z
+					.string()
+					.optional()
+					.describe(
+						"exchange/anchor deposit memo. Most exchanges will NOT credit a deposit without it — digits are sent as MEMO_ID, other text as MEMO_TEXT. The memo is bound into the confirmation token, so it cannot be changed between preview and execute.",
+					),
 			},
 		},
-		async ({ to, amount, confirm }) => {
+		async ({ to, amount, confirm, memo }) => {
 			const w = getWallet();
 			if (!/^G[A-Z2-7]{55}$/.test(to))
 				return json({ error: `"${to}" is not a Stellar account (G…)` });
@@ -780,7 +791,7 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 			// possessing to+amount is not enough to execute (an injected agent
 			// can't forge it), and it can't be replayed.
 			if (!confirm) {
-				const t = newSendToken(to, amount, w.network);
+				const t = newSendToken(to, amount, w.network, memo);
 				return json({
 					preview: `send ${amount} USDC to ${to.slice(0, 6)}…${to.slice(-4)} on ${w.network}`,
 					confirm_token: t,
@@ -795,6 +806,10 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 				pending.to !== to ||
 				pending.amount !== amount ||
 				pending.network !== w.network ||
+				// The memo is part of what was approved: a preview shown without
+				// one must not execute with one (or with a different one), or the
+				// confirm step stops describing the transfer it authorises.
+				(pending.memo ?? "") !== (memo ?? "") ||
 				pending.exp < Date.now()
 			)
 				return json({
@@ -802,7 +817,7 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 						"invalid, expired, or already-used confirm token — call send_usdc with just to+amount to get a fresh one",
 				});
 			try {
-				const r = await sendUSDC(w, to, amount);
+				const r = await sendUSDC(w, to, amount, memo);
 				if (w.network !== "stellar:testnet") sessionSpentUsd += usd;
 				return json({
 					sent: {

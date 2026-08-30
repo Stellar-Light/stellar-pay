@@ -160,6 +160,7 @@ type Args = {
 	fromFeed?: string;
 	toUrl?: string;
 	submitUrl?: string;
+	memo?: string;
 	deadlineDays?: number;
 	nonce?: string;
 	commitFiles?: string[];
@@ -269,6 +270,7 @@ function parse(argv: string[]): Args {
 		else if (t === "--from") a.fromFeed = next();
 		else if (t === "--to") a.toUrl = next();
 		else if (t === "--submit-url") a.submitUrl = next();
+		else if (t === "--memo") a.memo = next();
 		else if (t === "--nonce") a.nonce = next();
 		else if (t === "--commits")
 			a.commitFiles = (next() ?? "").split(",").filter(Boolean);
@@ -872,7 +874,7 @@ async function cmdSend(a: Args): Promise<void> {
 		process.exitCode = EXIT.refused;
 		return;
 	}
-	const r = await sendUSDC(w, to, amount);
+	const r = await sendUSDC(w, to, amount, a.memo);
 	if (a.json) {
 		console.log(
 			JSON.stringify({

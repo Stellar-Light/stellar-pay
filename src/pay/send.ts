@@ -14,6 +14,7 @@ import {
 	BASE_FEE,
 	Horizon,
 	Keypair,
+	Memo,
 	Networks,
 	Operation,
 	TransactionBuilder,
@@ -126,6 +127,9 @@ export async function setupWallet(network: Network): Promise<SetupResult> {
 }
 
 export type SendResult = {
+	/** the memo attached, when one was — an exchange deposit is not creditable
+	 * without it, so the receipt has to be able to prove it went */
+	memo?: string;
 	hash: string;
 	to: string;
 	amount: string;
@@ -167,7 +171,20 @@ export async function sendAsset(
 	to: string,
 	asset: Asset,
 	amount: string,
+	/** MEMO — required by most exchanges and anchors to credit a deposit.
+	 *
+	 * This became load-bearing the moment `cashout` started pointing people at
+	 * exchange deposit addresses: a deposit sent without the memo the exchange
+	 * asked for is, in practice, lost. Supporting it is not a nicety. */
+	memo?: string,
 ): Promise<SendResult> {
+	// A muxed address (M…) carries the memo INSIDE it, which is exactly the
+	// footgun this guard exists to name: accepting it while silently dropping
+	// the embedded id would misroute a deposit. Refuse with the fix.
+	if (/^M[A-Z2-7]{68}$/.test(to))
+		throw new Error(
+			`"${to.slice(0, 8)}…" is a muxed (M…) address. This client does not send to muxed addresses yet — use the underlying G… address plus --memo <id>, which is what the M… encodes.`,
+		);
 	if (!/^G[A-Z2-7]{55}$/.test(to))
 		throw new Error(`"${to}" is not a Stellar account address (G…)`);
 	if (!(Number(amount) > 0))
@@ -190,10 +207,12 @@ export async function sendAsset(
 		throw new Error(
 			`recipient ${to.slice(0, 6)}… has no ${code} trustline and cannot receive ${code}`,
 		);
-	const hash = await submit(wallet, (b) =>
-		b.addOperation(Operation.payment({ destination: to, asset, amount })),
-	);
-	return { hash, to, amount, asset: code };
+	const hash = await submit(wallet, (b) => {
+		b.addOperation(Operation.payment({ destination: to, asset, amount }));
+		if (memo) b.addMemo(buildMemo(memo));
+		return b;
+	});
+	return { hash, to, amount, asset: code, memo };
 }
 
 /** Send USDC to a Stellar account. Thin wrapper over sendAsset. */
@@ -201,8 +220,25 @@ export async function sendUSDC(
 	wallet: Wallet,
 	to: string,
 	amount: string,
+	memo?: string,
 ): Promise<SendResult> {
-	return sendAsset(wallet, to, usdc(wallet.network), amount);
+	return sendAsset(wallet, to, usdc(wallet.network), amount, memo);
+}
+
+/** Build the right memo type from a string.
+ *
+ * Exchanges hand out either a numeric id or a short text tag, and picking the
+ * wrong TYPE fails the same way as omitting it — the deposit is not credited.
+ * A digits-only value is sent as MEMO_ID (what most exchanges issue), anything
+ * else as MEMO_TEXT, and an over-long text memo is refused here rather than by
+ * the network after the funds have moved. */
+function buildMemo(memo: string): Memo {
+	if (/^\d+$/.test(memo)) return Memo.id(memo);
+	if (Buffer.byteLength(memo, "utf8") > 28)
+		throw new Error(
+			`memo "${memo.slice(0, 12)}…" is ${Buffer.byteLength(memo, "utf8")} bytes; a text memo is limited to 28`,
+		);
+	return Memo.text(memo);
 }
 
 export type HistoryEntry = {
