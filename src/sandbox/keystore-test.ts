@@ -90,13 +90,22 @@ async function main() {
 				? "  ✗ THE SECRET IS IN PLAINTEXT ON DISK"
 				: "  ✓ the secret is not present in the keystore file",
 		);
+		// POSIX mode bits are not Windows' access-control mechanism: NTFS uses
+		// ACLs, and Node reports 0666 for ANY writable file there no matter what
+		// chmod said. Asserting 0600 on Windows asserts something the platform
+		// cannot express, so check it where it means something and say so where
+		// it does not. (The encrypted-at-rest property below is asserted on
+		// every platform — that is the one that actually protects the secret.)
 		const mode = statSync(keystorePath).mode & 0o777;
+		const modeOk = process.platform === "win32" || mode === 0o600;
 		console.log(
-			mode === 0o600
-				? "  ✓ keystore file is owner-only (0600)"
-				: `  ✗ keystore file mode is ${mode.toString(8)}, expected 600`,
+			process.platform === "win32"
+				? `  ~ file mode not asserted on Windows (reports ${mode.toString(8)}; NTFS ACLs, not POSIX bits, are the control here)`
+				: modeOk
+					? "  ✓ keystore file is owner-only (0600)"
+					: `  ✗ keystore file mode is ${mode.toString(8)}, expected 600`,
 		);
-		if (leaked || mode !== 0o600) process.exit(1);
+		if (leaked || !modeOk) process.exit(1);
 	}
 
 	console.log(
