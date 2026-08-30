@@ -146,9 +146,13 @@ function pwsh(script: string, input?: string): string {
 	const root = process.env.SystemRoot ?? "C:\\Windows";
 	const exe = `${root}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
 	const sysModules = `${root}\\System32\\WindowsPowerShell\\v1.0\\Modules`;
-	const psModulePath = process.env.PSModulePath
-		? `${process.env.PSModulePath};${sysModules}`
-		: sysModules;
+	// REPLACE the path, do not append to it. Appending kept the host's entries
+	// ahead of ours, and on a machine with PowerShell 7 installed (every GitHub
+	// runner) Windows PowerShell 5.1 then loaded 7's copy of
+	// Microsoft.PowerShell.Security and failed on its type data:
+	// `FormatXmlUpdateException … Error in TypeData`. Pinning the path to 5.1's
+	// own module tree keeps the two versions from crossing.
+	const psModulePath = sysModules;
 	try {
 		return execFileSync(
 			exe,
