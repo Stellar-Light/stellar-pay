@@ -64,7 +64,7 @@ becomes a costly-to-fake reputation signal that informs the next hire.
 | **Escrow rails** | `pay/rails.ts` + `pay/rails-trustless-work.ts` | hold-verify-release mechanics. A **swappable adapter** — Trustless Work today; MPP-native or Alkahest-on-Stellar tomorrow is a new file + `setRails()`, never a rewrite. |
 | **Job lifecycle** | `pay/job.ts` | open → fund → deliver → approve → release / dispute → resolve, each step a ref-chained receipt. |
 | **Resolver** | `pay/resolver.ts` | the "auto service" that fills the escrow's resolver *role*: reads terms + evidence, answers the review question via a policy (hash-match = deterministic; callback = delegated judge, honest about its strength), executes the outcome. |
-| **Reputation** *(next)* | `pay/reputation.ts` | aggregates work-outcomes into a per-agent record — release/refund rates, each claim backed by an on-chain tx. Costly-to-fake because the evidence is escrow-judged money movement, not self-declared feedback. Nulucre (wallet creditworthiness) composes as one *sidecar* signal, never the spine. |
+| **Reputation** *(design phase — deliberately not building yet)* | [reputation-design-questions.md](./reputation-design-questions.md) | aggregates work-outcomes into a per-agent record. Parked for deep design: if it one day underwrites credit lines for agents, a gameable score is a solvency risk, not an annoyance. The receipts substrate keeps accruing meanwhile — the record is free; the score waits. |
 
 **Supporting cast — table stakes that make the flagship usable:**
 
@@ -105,7 +105,8 @@ becomes a costly-to-fake reputation signal that informs the next hire.
 ## Status (2026-08-30)
 
 Flagship: agreement ✓, escrow rails ✓ (TW adapter, testnet), job lifecycle ✓,
-resolver ✓ (both outcomes proven on testnet). **Reputation: not yet** — the
-last flagship pillar. Supporting cast: pay/session/vault/receipts/MCP all
+resolver ✓ (both outcomes proven on testnet). **Reputation: design phase** —
+the last flagship pillar, deliberately parked for deep planning
+(reputation-design-questions.md); underwriting-grade or not at all. Supporting cast: pay/session/vault/receipts/MCP all
 built and testnet-proven. Mainnet gated on the escrow contract's audit
 (the standing SDF ask). Nothing published; all local until the owner ships.
