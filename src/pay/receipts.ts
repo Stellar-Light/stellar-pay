@@ -41,7 +41,10 @@ export type ReceiptKind =
 	| "job-resolve-dispute"
 	| "job-resolved"
 	| "bounty-assign"
-	| "bounty-open-post";
+	| "bounty-open-post"
+	| "vault-create"
+	| "vault-topup"
+	| "vault-draw";
 
 export type ReceiptRow = {
 	id: string;

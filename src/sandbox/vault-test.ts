@@ -27,8 +27,8 @@ import {
 	MemoryStorage,
 	SmartAccountKit,
 } from "smart-account-kit";
+import { softwarePasskey } from "../pay/passkey.js";
 import { record } from "../pay/receipts.js";
-import { softwarePasskey } from "./software-passkey.js";
 
 const CFG = {
 	rpcUrl: "https://soroban-testnet.stellar.org",

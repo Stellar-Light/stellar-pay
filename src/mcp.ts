@@ -60,6 +60,7 @@ import {
 	sessionFetch,
 } from "./pay/session.js";
 import { getChannel, listChannels } from "./pay/session-store.js";
+import { drawFromVault, vaultStatus } from "./pay/vault.js";
 import { balances, loadWallet, type Wallet } from "./pay/wallet.js";
 
 /** A spend cap from the environment must be a finite positive number — anything
@@ -810,6 +811,40 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 			}),
 		)
 		.describe("one entry per bounty item: what you checked and the proof");
+
+	server.registerTool(
+		"vault_draw",
+		{
+			description:
+				"Draw float from this install's vault to the agent wallet — the ON-CHAIN spending-limit rules the draw (an over-cap attempt is refused by the network, not by policy code, and the refusal is receipted). Use when the wallet needs funds for 402s or jobs. TESTNET ONLY.",
+			inputSchema: { amount_xlm: z.number().positive().max(1000) },
+		},
+		async ({ amount_xlm }) => {
+			try {
+				const w = getWallet();
+				return json(await drawFromVault({ wallet: w, amountXlm: amount_xlm }));
+			} catch (e) {
+				return json({ error: (e as Error).message });
+			}
+		},
+	);
+
+	server.registerTool(
+		"vault_status",
+		{
+			description:
+				"This install's vault: contract id, on-chain balance, the cap, and the agent key it is scoped to.",
+			inputSchema: {},
+		},
+		async () => {
+			try {
+				const w = getWallet();
+				return json(await vaultStatus({ wallet: w }));
+			} catch (e) {
+				return json({ error: (e as Error).message });
+			}
+		},
+	);
 
 	server.registerTool(
 		"bounty_post",

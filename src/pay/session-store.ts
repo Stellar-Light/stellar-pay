@@ -43,6 +43,9 @@ const receiptsFile = () => join(dir(), "receipts.jsonl");
 type SessionFile = {
 	/** mppx client store keys (cumulative baselines etc.) */
 	store: Record<string, unknown>;
+	/** the install's vault (v1: one) — see pay/vault.ts for the honesty note
+	 * about the owner-passkey PEM living here in plaintext */
+	vault?: Record<string, unknown>;
 	/** host → channel registry */
 	channels: Record<
 		string,
@@ -105,6 +108,17 @@ export function getChannel(host: string) {
 
 export function listChannels() {
 	return read().channels;
+}
+
+export function getVault(): import("./vault.js").VaultRecord | null {
+	return (read().vault as import("./vault.js").VaultRecord | undefined) ?? null;
+}
+
+export function putVault(v: Record<string, unknown>) {
+	const d = read();
+	if (d.vault) throw new Error("vault already exists");
+	d.vault = v;
+	write(d);
 }
 
 /** Silent field update — no receipt row (receipts mark EVENTS, not bookkeeping). */

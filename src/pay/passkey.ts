@@ -21,6 +21,8 @@
  */
 import {
 	createHash,
+	createPrivateKey,
+	createPublicKey,
 	createSign,
 	generateKeyPairSync,
 	randomBytes,
@@ -42,10 +44,16 @@ type RequestOptions = {
 	};
 };
 
-export function softwarePasskey(rpIdDefault = "stellar-pay.local") {
-	const { privateKey, publicKey } = generateKeyPairSync("ec", {
-		namedCurve: "prime256v1",
-	});
+export function softwarePasskey(
+	rpIdDefault = "stellar-pay.local",
+	/** persisted credential — BOTH fields to REOPEN an existing passkey (the
+	 * vault's owner credential must survive restarts); omit to mint fresh */
+	persisted?: { privateKeyPem: string; credentialIdB64url: string },
+) {
+	const privateKey = persisted
+		? createPrivateKey(persisted.privateKeyPem)
+		: generateKeyPairSync("ec", { namedCurve: "prime256v1" }).privateKey;
+	const publicKey = createPublicKey(privateKey);
 	// Raw uncompressed point (0x04 ‖ x ‖ y) — the kit's preferred wire shape.
 	const jwk = publicKey.export({ format: "jwk" }) as { x: string; y: string };
 	const rawPub = Buffer.concat([
@@ -53,7 +61,9 @@ export function softwarePasskey(rpIdDefault = "stellar-pay.local") {
 		Buffer.from(jwk.x, "base64url"),
 		Buffer.from(jwk.y, "base64url"),
 	]);
-	const credentialId = randomBytes(16);
+	const credentialId = persisted
+		? Buffer.from(persisted.credentialIdB64url, "base64url")
+		: randomBytes(16);
 	let counter = 0;
 
 	const clientData = (type: string, challenge: string, rpId: string) =>
@@ -76,6 +86,10 @@ export function softwarePasskey(rpIdDefault = "stellar-pay.local") {
 	return {
 		credentialId: b64url(credentialId),
 		publicKeyRaw: rawPub,
+		/** persist this (with the credentialId) to reopen the passkey later */
+		privateKeyPem: privateKey
+			.export({ type: "pkcs8", format: "pem" })
+			.toString(),
 
 		async startRegistration({ optionsJSON }: CreationOptions) {
 			const rpId = optionsJSON.rp?.id ?? rpIdDefault;

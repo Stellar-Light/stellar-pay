@@ -87,6 +87,12 @@ import {
 	sessionFetch,
 } from "./pay/session.js";
 import { getChannel, listChannels } from "./pay/session-store.js";
+import {
+	createVault,
+	drawFromVault,
+	topupVault,
+	vaultStatus,
+} from "./pay/vault.js";
 import { verifyEndpoint } from "./pay/verify.js";
 import { balances, loadWallet } from "./pay/wallet.js";
 
@@ -129,6 +135,7 @@ type Args = {
 	resolverAddr?: string;
 	provider?: string;
 	contract?: string;
+	capXlm?: number;
 	evidenceFile?: string;
 	submissionFiles?: string[];
 	out?: string;
@@ -218,6 +225,9 @@ function parse(argv: string[]): Args {
 		else if (t === "--amount-xlm") {
 			const n = Number(next());
 			if (Number.isFinite(n) && n > 0) a.amountXlm = n;
+		} else if (t === "--cap-xlm") {
+			const n = Number(next());
+			if (Number.isFinite(n) && n > 0) a.capXlm = n;
 		} else if (t === "--resolver") a.resolverAddr = next();
 		else if (t === "--provider") a.provider = next();
 		else if (t === "--contract") a.contract = next();
@@ -871,6 +881,63 @@ function readJsonFile<T>(path: string, what: string): T {
 	}
 }
 
+async function cmdVault(a: Args): Promise<void> {
+	const sub = a.positional[0] ?? "";
+	const usage = () =>
+		usageError(`usage:
+  vault create --cap-xlm N     deploy the vault; THIS wallet becomes the capped agent (testnet)
+  vault topup --amount-xlm N   move funds wallet → vault (behind the cap)
+  vault draw --amount-xlm N    agent draws float to its own key — the CHAIN enforces the cap
+  vault status                 config + on-chain balance`);
+	await ensureSecretLoaded(a.account);
+	const wallet = loadWallet();
+	if (sub === "create") {
+		if (!a.amountXlm && !a.capXlm) return usage();
+		const rec = await createVault({
+			wallet,
+			capXlm: a.capXlm ?? a.amountXlm ?? 0,
+		});
+		emit(a, rec, () =>
+			console.log(
+				`vault ${rec.contractId}
+cap ${Number(rec.capStroops) / 1e7} XLM per ~day · agent = this wallet
+fund it: vault topup --amount-xlm N`,
+			),
+		);
+		return;
+	}
+	if (sub === "topup") {
+		if (!a.amountXlm) return usage();
+		const r = await topupVault({ wallet, amountXlm: a.amountXlm });
+		emit(a, r, () => console.log(`topped up: ${r.hash}`));
+		return;
+	}
+	if (sub === "draw") {
+		if (!a.amountXlm) return usage();
+		const r = await drawFromVault({ wallet, amountXlm: a.amountXlm });
+		emit(a, r, () =>
+			console.log(
+				r.ok
+					? `drawn: ${r.hash}`
+					: `REFUSED BY THE CHAIN: ${r.refusal} — the cap held`,
+			),
+		);
+		if (!r.ok) process.exitCode = EXIT.refused;
+		return;
+	}
+	if (sub === "status") {
+		const st = await vaultStatus({ wallet });
+		emit(a, st, () =>
+			console.log(
+				`vault ${st.vault}
+balance ${Number(st.balanceStroops) / 1e7} XLM · cap ${Number(st.capStroops) / 1e7} XLM/~day · agent ${st.agent}`,
+			),
+		);
+		return;
+	}
+	return usage();
+}
+
 async function cmdBounty(a: Args): Promise<void> {
 	const sub = a.positional[0] ?? "";
 	const usage = () =>
@@ -1447,6 +1514,7 @@ WALLET
   receipts check                         tamper check: every row id must re-derive from its content
   session open <url> [--deposit 5] | status | close <url>   one-way payment channels (testnet)
   bounty post|assign|open|submit|pack|dispute|resolve|status   escrowed verification bounties (testnet)
+  vault create|topup|draw|status         fund an agent behind an ON-CHAIN spend cap (testnet)
   curl <url> --session                   pay via the host's channel — off-chain per call
 
 AGENTS
@@ -1477,6 +1545,7 @@ const commands: Record<string, (a: Args, init: RequestInit) => Promise<void>> =
 		receipts: cmdReceipts,
 		session: cmdSession,
 		bounty: cmdBounty,
+		vault: cmdVault,
 		verify: cmdVerify,
 		offers: cmdOffers,
 		curl: cmdCurl,
