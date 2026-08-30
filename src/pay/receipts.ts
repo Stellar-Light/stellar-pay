@@ -40,7 +40,8 @@ export type ReceiptKind =
 	| "job-dispute"
 	| "job-resolve-dispute"
 	| "job-resolved"
-	| "bounty-assign";
+	| "bounty-assign"
+	| "bounty-open-post";
 
 export type ReceiptRow = {
 	id: string;

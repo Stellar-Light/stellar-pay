@@ -29,10 +29,12 @@
 import type { Keypair } from "@stellar/stellar-sdk";
 import {
 	deliverJob,
+	disputeJob,
 	fundJob,
 	type JobSpec,
 	openJob,
 	readEscrowAs,
+	resolveDisputeJob,
 } from "./job.js";
 import { record } from "./receipts.js";
 import { type ResolverPolicy, resolveJob } from "./resolver.js";
@@ -257,4 +259,202 @@ export async function bountyStatus(o: {
 		disputed: esc.disputed,
 		evidence,
 	};
+}
+
+// ─── Open-claim bounties: anyone submits, first VALID evidence wins ─────────
+//
+// The escrow contract fixes payout roles at init, so open racing cannot ride
+// the milestone path (evidence writes are provider-role-gated). Instead:
+// funds are escrowed at POST (commitment is visible on-chain, receiver
+// fallback = the buyer), submissions travel as SIGNED PACKETS off-chain
+// (ed25519 over sha256(contractId | evidence) — the signature binds the
+// evidence to the payout address, so nobody can resubmit someone else's work
+// as their own), and the resolver settles through the DISPUTE path, whose
+// `distributions` can pay any address: first valid submission wins the pot.
+// Settlement note, corrected on testnet: the 0.3% protocol fee applies on
+// the dispute path too — a winner receives pot − 0.3% (the earlier "no
+// skim" read was a coincidence: in refund cases the fee address WAS the
+// buyer, so fee + principal summed to the full pot at one address).
+// The submission TRANSPORT (how packets reach the resolver — a board, HTTP,
+// a repo) is deliberately out of scope here; v1 hands packets in directly.
+
+import { createHash as _ch } from "node:crypto";
+import { Keypair as _KP } from "@stellar/stellar-sdk";
+
+export type OpenSubmission = {
+	bountyContract: string;
+	worker: string;
+	evidence: EvidenceEntry[];
+	signedAt: string;
+	/** base64 ed25519 signature by `worker` over the digest below */
+	signature: string;
+};
+
+/** The signed digest: sha256(contractId | canonical evidence JSON). */
+function submissionDigest(
+	contractId: string,
+	evidence: EvidenceEntry[],
+): Buffer {
+	return _ch("sha256")
+		.update(`${contractId}|${JSON.stringify(evidence)}`)
+		.digest();
+}
+
+/** Post an OPEN bounty: funds escrowed now, winner unknown. The provider/
+ * receiver role is the BUYER (the no-winner fallback); the resolver holds
+ * the decision roles and will pay the winner via the dispute path. */
+export async function postOpenBounty(o: {
+	descriptor: BountyDescriptor;
+	buyer: Keypair;
+}): Promise<{ contractId: string; openReceiptId: string; fundTx: string }> {
+	if (o.buyer.publicKey() !== o.descriptor.buyer)
+		throw new Error("posting key is not the descriptor's buyer");
+	const spec = bountyJobSpec(o.descriptor, o.buyer, o.buyer.publicKey());
+	const open = await openJob(spec);
+	const fund = await fundJob({
+		...spec,
+		contractId: open.contractId,
+		engagementId: open.engagementId,
+		openReceiptId: open.receiptId,
+	});
+	record({
+		kind: "bounty-open-post",
+		network: "stellar:testnet",
+		amount: o.descriptor.amount,
+		asset: o.descriptor.tokenContract,
+		payer: o.buyer.publicKey(),
+		refs: [open.receiptId],
+		detail: {
+			contractId: open.contractId,
+			items: o.descriptor.items,
+			title: o.descriptor.title,
+			mode: "open-claim",
+		},
+	});
+	return {
+		contractId: open.contractId,
+		openReceiptId: open.receiptId,
+		fundTx: fund.tx,
+	};
+}
+
+/** A worker builds a signed submission packet (no chain interaction). */
+export function makeSubmission(o: {
+	worker: Keypair;
+	contractId: string;
+	evidence: EvidenceEntry[];
+}): OpenSubmission {
+	const sig = o.worker.sign(submissionDigest(o.contractId, o.evidence));
+	return {
+		bountyContract: o.contractId,
+		worker: o.worker.publicKey(),
+		evidence: o.evidence,
+		signedAt: new Date().toISOString(),
+		signature: Buffer.from(sig).toString("base64"),
+	};
+}
+
+/** Pure selection: first submission whose signature verifies AND whose
+ * evidence passes the policy. Exported for offline unit checks. */
+export function pickWinner(
+	contractId: string,
+	submissions: OpenSubmission[],
+	policy: ResolverPolicy,
+): {
+	winner: OpenSubmission | null;
+	judged: Array<{ worker: string; valid: boolean; reason: string }>;
+} {
+	const judged: Array<{ worker: string; valid: boolean; reason: string }> = [];
+	let winner: OpenSubmission | null = null;
+	for (const s of submissions) {
+		if (s.bountyContract !== contractId) {
+			judged.push({ worker: s.worker, valid: false, reason: "wrong-bounty" });
+			continue;
+		}
+		let sigOk = false;
+		try {
+			sigOk = _KP
+				.fromPublicKey(s.worker)
+				.verify(
+					submissionDigest(contractId, s.evidence),
+					Buffer.from(s.signature, "base64"),
+				);
+		} catch {
+			sigOk = false;
+		}
+		if (!sigOk) {
+			judged.push({ worker: s.worker, valid: false, reason: "bad-signature" });
+			continue;
+		}
+		const answer = policy({
+			evidence: JSON.stringify(s.evidence),
+			reviewQuestion: "",
+			description: "",
+			amount: 0n,
+		});
+		const valid = answer === "yes";
+		judged.push({
+			worker: s.worker,
+			valid,
+			reason: valid ? "valid" : "evidence-rejected",
+		});
+		if (valid && !winner) winner = s; // first valid wins; keep judging for the record
+	}
+	return { winner, judged };
+}
+
+/** Resolve an open bounty: judge submissions in arrival order, pay the first
+ * valid one through the dispute path; no valid submission → funds return to
+ * the buyer the same way. Every judgment lands in the receipt. */
+export async function resolveOpenBounty(o: {
+	descriptor: BountyDescriptor;
+	resolver: Keypair;
+	contractId: string;
+	submissions: OpenSubmission[];
+	/** a party with standing (the buyer) raises the dispute that unlocks
+	 * distribution-based settlement */
+	disputeRaiser: Keypair;
+}): Promise<{
+	winner: string | null;
+	txs: string[];
+	receiptId: string;
+}> {
+	if (o.resolver.publicKey() !== o.descriptor.resolver)
+		throw new Error("resolving key is not the descriptor's resolver");
+	const policy = verificationEvidencePolicy(o.descriptor);
+	const { winner, judged } = pickWinner(o.contractId, o.submissions, policy);
+
+	const txs: string[] = [];
+	const d = await disputeJob({
+		signer: o.disputeRaiser,
+		contractId: o.contractId,
+	});
+	txs.push(d.tx);
+	const payee = winner?.worker ?? o.descriptor.buyer;
+	const rd = await resolveDisputeJob({
+		disputeResolver: o.resolver,
+		contractId: o.contractId,
+		twFeeAddress: o.descriptor.buyer,
+		distributions: [[payee, BigInt(o.descriptor.amount)]],
+		prevReceiptId: d.receiptId,
+	});
+	txs.push(rd.tx);
+
+	const receiptId = record({
+		kind: "job-resolved",
+		network: "stellar:testnet",
+		payer: o.resolver.publicKey(),
+		payee,
+		amount: o.descriptor.amount,
+		detail: {
+			contractId: o.contractId,
+			mode: "open-claim",
+			policy: "evidence-schema:verification-v1",
+			submissions: judged,
+			winner: winner?.worker ?? null,
+			outcome: winner ? "paid-winner" : "returned-to-buyer",
+			txs,
+		},
+	});
+	return { winner: winner?.worker ?? null, txs, receiptId };
 }
