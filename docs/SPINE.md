@@ -13,9 +13,11 @@ automatically, and carry provable reputation from what it completed.
 
 Three things at once, deliberately:
 - an **agent CLI** (the pay.sh-shaped client an agent or human runs — `curl`,
-  `session`, `job`, `receipts`, and the MCP that exposes them as agent tools),
+  `session`, `bounty`, `receipts`, and the MCP that exposes them as agent
+  tools; the job lifecycle is library-only, reached from the CLI via `bounty`),
 - a **toolkit** (the same capabilities as importable modules — `pay/job`,
-  `pay/resolver`, `pay/rails`, `pay/reputation` — a builder drops into their
+  `pay/resolver`, `pay/rails` (reputation is a DESIGN PHASE, not a module —
+  see reputation-design-questions.md) — a builder drops into their
   own agent),
 - a **layer** (neutral and self-custody: consumes every rails provider, takes
   no fee, holds no keys — the coordination layer the ecosystem builds on,
@@ -33,7 +35,9 @@ automated resolution + portable work-reputation.
 
 We build that layer **neutrally and self-custody**: the agent holds its own
 keys, we take no fee, we consume every rails provider. That is the deliberate
-opposite of the platform pole (Circle Agents is custodial + hosted; we are the
+opposite of the platform pole (Circle Agents is hosted, with MPC key shares in
+their infrastructure and spend limits enforced by their policy engine — a
+policy promise, not a chain rule; we are the
 client + the coordination layer they explicitly refuse to build — "ranking is
 not adjudication; a discovery layer never holds funds").
 
@@ -72,7 +76,7 @@ becomes a costly-to-fake reputation signal that informs the next hire.
 |---|---|---|
 | Pay a 402 | `pay/curl.ts`, `pay/offers.ts` | the agent pays for its own inputs (APIs, data, inference). x402 + MPP. |
 | Session mode | `pay/session.ts` | high-frequency paying via one-way channels — a busy agent loop. |
-| Vault | `sandbox/vault-*`, smart-account-kit | fund an agent **safely**: on-chain spend caps a compromised key can't exceed. This is "fund" in the loop. |
+| Vault | `pay/vault.ts`, smart-account-kit | fund an agent **safely**: on-chain spend caps a compromised key can't exceed. This is "fund" in the loop. |
 | Wallet / keystore | `pay/wallet.ts`, `pay/keystore.ts` | self-custody keys, OS-keychain sealed. |
 | Governance | `pay/policy.ts`, `pay/governed.ts` + vendored Scrimp | per-host spend rules + outcome-attributed budget. |
 | Receipts | `pay/receipts.ts` | the substrate under BOTH pay and work: content-addressed, tamper-checked, on-chain-verifiable. Reputation reads these. |
@@ -139,4 +143,6 @@ resolver ✓ (both outcomes proven on testnet). **Reputation: design phase** —
 the last flagship pillar, deliberately parked for deep planning
 (reputation-design-questions.md); underwriting-grade or not at all. Supporting cast: pay/session/vault/receipts/MCP all
 built and testnet-proven. Mainnet gated on the escrow contract's audit
-(the standing SDF ask). Nothing published; all local until the owner ships.
+(the standing SDF ask). Published: npm `stellar-pay@0.1.8`, public repo,
+public `catalog` branch feed — breaking changes to the CLI verbs, exit codes,
+MCP tool names or catalog.json shape now need a version bump.

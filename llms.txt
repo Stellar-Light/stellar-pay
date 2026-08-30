@@ -18,9 +18,13 @@ STELLAR_SECRET_KEY or an encrypted keystore (`stellar-pay setup --save main`).
   mounted. Exit codes: 0 ok · 2 usage · 3 payment refused · 4 no wallet.
 - Library: `import { payFetch, readOffers, autoApprove, decide } from
   "stellar-pay"` — the same 402 loop in-process.
-- MCP tools: search_catalog, list_catalog, get_catalog_entry, curl,
-  get_balance, begin_task/end_task, spend_report, send_usdc (two-step),
-  get_history.
+- MCP tools (26): discover & pay — search_catalog, list_catalog,
+  get_catalog_entry, curl; wallet — get_balance, send_usdc (two-step),
+  get_history; governance — begin_task, end_task, spend_report; sessions —
+  session_open, session_status, session_close (+ curl{session:true}); hire —
+  bounty_post, bounty_assign, bounty_open, bounty_dispute, bounty_resolve,
+  bounty_status; earn — bounty_feed, bounty_pack, bounty_submit,
+  bounty_submit_packet, bounty_watch; fund — vault_draw, vault_status.
 
 ## Spend control
 
@@ -33,8 +37,10 @@ quarantined (Scrimp).
 ## Catalog (public feed)
 
 https://raw.githubusercontent.com/Stellar-Light/stellar-pay/catalog/catalog.json
-Every row answered a real 402 naming stellar:pubnet within the last day
-(re-probed daily): url, method, priceUSD, protocol, lastCheckedAt.
+Every row in the default view answered a real 402 on a network this catalog
+claims, re-probed within the last 48 hours — the one exception is our own
+testnet sandbox, marked source "curated". Rows carry: url, method, priceUSD,
+protocol, networks, lastCheckedAt.
 
 ## Docs
 

@@ -777,7 +777,7 @@ async function cmdSend(a: Args): Promise<void> {
 	const line = `send ${amount} USDC to ${named ? `${target} (${to.slice(0, 6)}…${to.slice(-4)})` : `${to.slice(0, 6)}…${to.slice(-4)}`} on ${w.network}`;
 	if (!a.yes && !(await ask(line))) {
 		console.error("not sent");
-		process.exitCode = 2;
+		process.exitCode = EXIT.refused;
 		return;
 	}
 	const r = await sendUSDC(w, to, amount);

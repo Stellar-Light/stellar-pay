@@ -49,7 +49,7 @@ import {
 } from "./pay/governed.js";
 import { disputeJob } from "./pay/job.js";
 import { isStellar, type Offer, offerUSD, readOffers } from "./pay/offers.js";
-import { autoApprove, decide, explorer, resolveHost } from "./pay/policy.js";
+import { decide, explorer, resolveHost } from "./pay/policy.js";
 import { list as listReceiptRows, record } from "./pay/receipts.js";
 import { history, sendUSDC } from "./pay/send.js";
 import {
@@ -347,7 +347,7 @@ export function buildServer() {
 		"search_catalog",
 		{
 			description: `Search live, Stellar-payable paid APIs for a user task and return ranked candidates with price and protocol.
-Every candidate answered a real HTTP 402 naming stellar:pubnet within the last day. Use this for any actionable task ("find X", "get current Y", "pay for Z"); use list_catalog for feasibility questions. Pass the user's real task as query, not a provider name. Copy the returned url exactly into curl. Prices shown are from the last probe; the live 402 is authoritative and curl re-reads it.`,
+Every candidate answered a real HTTP 402 on a network this catalog claims, re-probed within the last 48 hours — the one exception is our own testnet sandbox, marked source "curated", so check a row's networks with get_catalog_entry before paying it from a mainnet wallet. Use this for any actionable task ("find X", "get current Y", "pay for Z"); use list_catalog for feasibility questions. Pass the user's real task as query, not a provider name. Copy the returned url exactly into curl. Prices shown are from the last probe; the live 402 is authoritative and curl re-reads it.`,
 			inputSchema: {
 				query: z.string().describe("the user's task in their words"),
 				max_results: z.number().int().min(1).max(20).optional(),

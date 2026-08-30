@@ -184,6 +184,10 @@ What makes this trustworthy without a platform:
 - **Evidence is bound to its author.** Submissions are ed25519-signed over
   `sha256(contractId | evidence)` — re-submitting someone else's work under
   your own payout address fails the signature check (proven in a live race).
+  The honest limit, asserted in that same test: a thief who *obtains* the
+  evidence can re-sign it under their own key, so evidence is sent to the
+  resolver rather than the buyer, and commit-reveal is listed below as the
+  real fix.
 - **Judgments are declared and receipted.** The resolver runs the policy the
   agreement names (deterministic schema/coverage checks, hash match, or a
   delegated judge), and every judgment lands in the ledger with the policy
@@ -227,9 +231,11 @@ stellar-pay vault draw  --amount-xlm 2  # agent pulls float; over-cap → REFUSE
 stellar-pay vault status
 ```
 
-The custodial contrast, plainly: a platform's spending limit is a **policy
-promise** enforced by their servers; this cap is a **property of the
-contract** (`__check_auth`), provable by the refusal transaction. Proven
+The contrast that matters, stated precisely: a hosted platform's spending
+limit is a **policy promise** enforced by its own servers — Circle's is a good
+one, and their MPC wallets are not simply "they hold your keys". Ours is a
+**property of the contract** (`__check_auth`): the refusal is a transaction
+anyone can verify, and it holds even if every server we run disappears. Proven
 end-to-end: create → topup → draw → *pay a real 402 from the drawn float* →
 over-cap draw refused on-chain → reopen from persistence
 ([`test:vault-flow`](src/sandbox/vault-flow-test.ts)). Built on SDF's
@@ -443,7 +449,9 @@ price, protocol, method and days alive, so you pick on evidence.
 
 ### Exit codes & JSON
 
-Every command takes `--json`. Branch on the code, not the text:
+Every command that returns data takes `--json` — `setup`, `topup`, `account`
+and `policy init` are interactive and print prose. Branch on the code, not the
+text:
 
 | code | meaning |
 |---|---|
@@ -541,14 +549,16 @@ challenge) · `test:verify` · `test:policy` · `test:pin` · `test:redirect` ·
 
 **Sessions** — `test:session` (channel deploy → 8 off-chain commitments, 10×
 per-call vs charge → close, refund verified to the stroop) ·
-`test:session-ux` (the `--session` flow) · `test:mcp-session` (all 26 tools
-present; open → pay ×2 → status → close through the MCP).
+`test:session-ux` (the `--session` flow) · `test:mcp-session` (the 16
+session, bounty and vault tools present; open → pay ×2 → status → close
+through the MCP).
 
 **Work** — `test:job` (open → fund → deliver → approve → release, payout
 exact at amount − 0.3%) · `test:resolver` (both verdicts: release on match,
 refund on mismatch) · `test:bounty` (a bounty whose work is REAL — live
 directory-row verification) · `test:bounty-open` (the race: sloppy rejected,
-stolen evidence rejected by signature, winner paid the pot exactly) ·
+a replayed signature rejected, winner paid the pot exactly, and the
+re-sign limit asserted rather than glossed) ·
 **`test:marketplace`** (the thesis as one story: a spawned worker — separate
 process, separate key, knowing ONLY a feed URL — refuses a tampered listing,
 vets the honest one against the chain, does real work, and is paid exactly
@@ -568,13 +578,14 @@ table lives in [`PARITY.md`](PARITY.md).
 | | [pay.sh](https://github.com/solana-foundation/pay) (Solana) | [Circle for Agents](https://agents.circle.com/) | stellar-pay |
 |---|---|---|---|
 | What it is | HTTP 402 client CLI | Custodial platform: funded agent wallets + an x402 API marketplace | CLI + MCP + library: 402 client **and** a work layer |
-| Custody | self-custody (OS keystore, Touch ID) | keys live in Circle's wallet infrastructure; limits are **platform policy** | self-custody (encrypted keystore / macOS Keychain); caps enforced **by the chain** (vault) |
+| Custody | self-custody (OS keystore, Touch ID) | MPC key shares in Circle's wallet infrastructure — developer-controlled (the developer moves funds) or user-controlled (the user must authorize). Not "Circle holds your keys"; **but the spend limits are enforced by their policy engine** | self-custody (encrypted keystore / macOS Keychain); caps enforced **by the chain** (vault) |
+| Where a spend limit lives | client-side | Circle's infrastructure — a policy promise, and a good one | the contract's `__check_auth` — the refusal is a transaction |
 | Pay a 402 | ✓ | ✓ | ✓ (x402 + MPP, interop-tested against pay.sh's own reference) |
 | Discovery | contributor catalog, CI-probed | curated marketplace | **daily-probed** public feed — liveness is the only membership test |
 | Spend control | budgets/caps | platform policy | ceilings + per-host policy + outcome-attributed governance (Scrimp) + **on-chain vault cap** |
 | Hire / escrow work | — | — | ✓ testnet (escrowed jobs, chain-pinned agreements, policy resolver) |
 | Earn as an agent | — | — (sellers list APIs) | ✓ testnet (vet feed → work → signed evidence → paid) |
-| High-frequency | subscriptions | per-call | payment channels, ~10× per call (testnet) |
+| High-frequency | subscriptions | Gateway Nanopayments — gasless, sub-cent, batch-settled, mainnet on 12 chains (none of them Stellar), aggregated by Circle's ledger | payment channels, ~10× per call, two-party with no operator (testnet) |
 | Reputation | — | announced direction | **deliberately not built yet** — see below |
 | Fiat rails | MoonPay | Circle's own ramps (their strongest card) | linked ramps (MoonPay, exchanges, anchors) — we operate none |
 
@@ -588,7 +599,11 @@ so in the module headers.
 
 ## Not built yet — and why
 
-The honest gap list. Each is a decision, not an oversight.
+The honest gap list. Each is a decision, not an oversight. The gaps that are
+**not ours to fix** — blocked on an unaudited contract, a spec that doesn't
+exist, or a capability the rails don't expose — are separated out in
+[`docs/ECOSYSTEM-ASKS.md`](docs/ECOSYSTEM-ASKS.md), with what would unblock
+each and who owns it.
 
 - **Reputation.** The most requested layer, and deliberately still a design
   phase — [`docs/reputation-design-questions.md`](docs/reputation-design-questions.md).
@@ -611,10 +626,38 @@ The honest gap list. Each is a decision, not an oversight.
   client-side against the chain. A hosted board would make us the platform —
   the thing this project exists to not be. If we ever run one, it will be
   one feed among many, not the front door.
+- **Commit-reveal for open races — the real fix for evidence theft.** Packets
+  are signed, which stops *replay* (you cannot take my packet, swap your
+  address in, and keep my signature). It does **not** stop theft: anyone who
+  *receives* my evidence can re-sign the same content under their own key,
+  and that packet is valid by construction. No signature scheme fixes this in
+  a single round. Today's mitigations are that `submitUrl` should be the
+  **resolver's** inbox rather than the buyer's — the buyer is the one party
+  that profits from stealing the work — and that first-valid-wins goes by
+  arrival order. The real fix is commit-reveal ordering (commit a hash, reveal
+  later), and it is not built. `test:bounty-open` asserts this limit out loud
+  rather than glossing it.
 - **On-chain submissions for open races.** The escrow gates evidence writes
-  by role, so open-claim packets travel out of band (HTTP inbox) and are
-  self-authenticating by signature. An on-chain submission mailbox would
-  need a contract we'd have to author — see the rule above.
+  by role, so open-claim packets travel out of band (HTTP inbox). An on-chain
+  submission mailbox would need a contract we'd have to author — see the rule
+  above.
+- **An escrow exit that doesn't need the resolver.** A funded escrow can only
+  be released or refunded with the resolver's signature, and the resolver
+  cannot dispute its own escrow. The agreement's deadline now terminates a
+  job (past it with no evidence, the resolver refunds), but if the *resolver*
+  vanishes the funds stay put. A unilateral after-deadline buyer reclaim is a
+  rails capability we'd have to ask Trustless Work for, not something we can
+  add on our side.
+- **A bond on submissions.** Open races are free to enter, so they can be
+  flooded; deterministic evidence policies mean junk loses, but nothing makes
+  junk *costly*. A refundable per-submission bond — returned on a valid
+  submission, forfeit on an invalid one — is the narrow version of what the
+  research argues for, and unlike a staked identity it doesn't gate entry.
+  Not built.
+- **Anything private.** The agreement, the review question, and the worker's
+  full evidence document all sit on a public chain in the clear. For paying an
+  agent to work on a private document, customer list, or internal URL, that is
+  disqualifying rather than merely incomplete.
 - **Sybil resistance in open races.** Identities are free, so a race can be
   flooded. Today's mitigations: deterministic evidence policies (sloppy work
   loses regardless of volume) and first-valid-wins. The real fix is the

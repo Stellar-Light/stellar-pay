@@ -24,10 +24,10 @@ refuses a non-Stellar challenge. That's the strongest parity evidence there is.
 | Capability | pay.sh | stellar-pay | |
 |---|---|---|---|
 | Handle a 402, pay, retry | `curl` | `curl` | ✓ |
-| Preview a 402 without paying | `--debugger` (inspect) | `offers` | ✓ |
+| Preview a 402 without paying | `--debugger` is a traffic-capture proxy — it logs the exchange while payments still settle; no dry-run verb | `offers` (reads the challenge, pays nothing, exits 0, `--json`) | ↑ |
 | Validate a provider's 402 (seller check) | `--debugger` | `verify` | ↑ neutral, no gateway |
 | Wrap **any** tool's 402s | `curl`,`wget`,`http`,`fetch` (4 cmds) | `run -- <anything>` | ↑ one command wraps them all |
-| Launch an agent with payments | `claude`,`codex`,`goose`,`acp`,`qodercli` | `claude`,`codex` mount the MCP | ✓ for those two; `run -- goose` is possible but untested and buffers bodies (no SSE streaming), so ○ for streaming agents |
+| Launch an agent with payments | `claude`,`codex`,`goose`,`acp`,`qodercli` | `claude`,`codex`,`goose` mount the MCP (goose via `--with-extension`) | ✓ for those three; `acp`/`qodercli` are the real gaps, and `run -- <agent>` buffers bodies (no SSE streaming) for anything else |
 | MCP server for agents | `mcp` | `mcp` | ✓ |
 
 `run` is a local MITM proxy that pays 402s for **any** child process, so pay's
@@ -41,7 +41,7 @@ checked-in `test:proxy` covers the plain-HTTP pay path end to end.
 |---|---|---|---|
 | Create / import / list / default / remove / export | `account …` | `account …` | ✓ |
 | New wallet | `setup` | `setup` (`--save`, `--keychain`) | ✓ |
-| OS-keychain / biometric gating | Touch ID (native) | macOS Keychain (native prompt = roadmap) | ✓ storage; ○ per-sig prompt |
+| OS-keychain / biometric gating | Touch ID (native) | macOS Keychain / libsecret / Windows DPAPI, CI-tested on all three (native prompt = roadmap) | ✓ storage; ○ per-sig prompt |
 | Send | `send` | `send` (two-step confirm) | ✓ |
 | Top up | `topup` (QR + card on-ramp + poll) | `topup` (QR + `--buy` on-ramp + poll + real partner ramps) | ✓ / ↑ |
 | History | — | `history` | ↑ |
@@ -63,7 +63,8 @@ checked-in `test:proxy` covers the plain-HTTP pay path end to end.
 | Sell / monetize an API (self-host paywall) | `gate`,`server` (YAML, self-host or Vercel) | sandbox serves MPP charge + channel + x402 v2 (in-process facilitator) | our sandbox is a reference seller on all three protocols (`test:x402` proves the x402 route with an unmodified `@x402/fetch` client); production selling still belongs to SDF's middleware |
 | Seller onboarding, neutral | — | `verify` (checks a provider's 402 is correct + Stellar-payable) | ↑ neutral, no gateway |
 | Author a catalog listing | `skills`,`catalog scaffold`,`create_skill` | — | we probe instead of authoring |
-| High-frequency channels | `subscriptions` (session) | `session open/status/close` + `curl --session` + MCP `session_*` | ✓ on testnet, full UX: deposit once (5 XLM default), pay per call off-chain (10× per-call vs charge), channel reuse across restarts, verified refund at close. Mainnet stays gated on the one-way-channel audit; no public channel-mode server exists yet besides our sandbox |
+| High-frequency channels | `session` (client-side channels) | `session open/status/close` + `curl --session` + MCP `session_*` | ✓ on testnet, full UX: deposit once (5 XLM default), pay per call off-chain (10× per-call vs charge), channel reuse across restarts, verified refund at close. Mainnet stays gated on the one-way-channel audit; no public channel-mode server exists yet besides our sandbox |
+| Recurring subscriptions / delegations | `subscriptions` (persisted records: new/list/status/cancel/refresh) | — | ○ not built |
 | Visual payment debugger | web UI | runnable sandboxes (`npm run test:*`) | different shape |
 
 
@@ -81,9 +82,10 @@ Behaviours the docs specify, and where we land:
 
 Strong across the client/catalog/governance lane, and ahead on the probed
 catalog, `verify`, and outcome-attributed governance. Real gaps remain: no
-per-signature human/biometric auth in the MCP (it's policy-gated), macOS-only
-keychain, no ephemeral-sandbox wallets or auto-setup, and partial curl arg
-fidelity. Built on Stellar's own rails (`@x402/stellar`, `@stellar/mpp`), and
+per-signature human/biometric auth in the MCP (it's policy-gated) — the OS
+store itself is macOS Keychain / libsecret / Windows DPAPI, CI-tested on all
+three — no recurring subscriptions, no ephemeral-sandbox wallets or
+auto-setup, and partial curl arg fidelity. Built on Stellar's own rails (`@x402/stellar`, `@stellar/mpp`), and
 interop-tested against pay.sh itself.
 
 **Beyond pay.sh — the work layer (testnet).** pay.sh pays per request; it has

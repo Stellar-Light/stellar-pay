@@ -11,8 +11,11 @@ description: |
 without API keys. When a `curl` meets a 402, the terms are read from the live
 challenge and checked against the user's spending policy before anything is
 signed; the server sponsors the network fee in most cases, so the wallet needs
-USDC and no XLM. Every endpoint in the catalog answered a real 402 naming
-`stellar:pubnet` within the last day.
+USDC and no XLM. Every endpoint in the catalog's default view answered a real
+402 on a network the catalog claims, re-probed within the last 48 hours. The
+one deliberate exception is our own testnet sandbox, marked `curated` — check
+a row's `networks` (`get_catalog_entry` returns it) before paying it from a
+mainnet wallet.
 
 Use it for calls the user asked for. Do not explore providers speculatively
 or browse with it.

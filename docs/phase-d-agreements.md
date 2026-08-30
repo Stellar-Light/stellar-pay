@@ -1,7 +1,8 @@
 # Phase D sketch — agreements: escrow-backed agent work
 
-*Status: sketch (2026-08-29). Nothing here is built. This is the design we'd
-build against, written down while the reasoning is fresh.*
+*Status: sketch of 2026-08-29, BUILT since — see ROADMAP.md §3 and
+`src/pay/{agreement,job,rails,resolver}.ts`. Kept for the reasoning; the code
+is the authority.*
 
 ## Why — the layer above payments
 

@@ -15,11 +15,15 @@
  * hackathons paying winners off spreadsheets): escrow at post, an evidence
  * contract, and an automatic judge — adoptable as a neutral layer.
  *
- * v1 is a DIRECTED bounty: the escrow needs its provider role at init, so
- * the flow is post (descriptor, off-chain) → assign (claimer chosen —
- * escrow opens + funds) → submit (evidence on-chain) → resolve (schema
- * policy judges). Open-claim bounties (anyone races) need a different
- * escrow shape — a later iteration, noted honestly.
+ * Two shapes ship here. A DIRECTED bounty: the escrow needs its provider role
+ * at init, so the flow is post (descriptor, off-chain) → assign (claimer
+ * chosen — escrow opens + funds) → submit (evidence on-chain) → resolve
+ * (schema policy judges). And an OPEN-CLAIM bounty (anyone races), which
+ * needed the different escrow shape it now has: `postOpenBounty` escrows the
+ * pot up front with the BUYER in the receiver role as the no-winner fallback,
+ * workers race with signed `makeSubmission` packets, `pickWinner` judges them
+ * by the same evidence contract, and `resolveOpenBounty` pays the first valid
+ * one through the dispute path (no valid submission → back to the buyer).
  *
  * Evidence contract (deterministic, declared in the agreement itself):
  * a JSON array with EXACTLY one entry per requested item:

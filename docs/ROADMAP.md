@@ -26,8 +26,8 @@ warning, answered), and the sandbox serves channel mode behind
 **The `--session` UX SHIPPED (2026-08-30, `npm run test:session-ux`):**
 `session open <url> --deposit 5` (5 XLM default), `curl --session` pays per
 call off-chain and reuses the host's channel from the persistent store,
-`session status`/`close`, and the MCP's `session_open`/`session_pay`/
-`session_close` give agents the same loop.
+`session status`/`close`, and the MCP's `session_open`/`session_status`/
+`session_close` (+ `curl{session:true}`) give agents the same loop.
 
 - **Remaining:** settle-without-close and the operator settle loop (the
   seller-side half). **Mainnet remains gated on the one-way-channel contract
@@ -59,7 +59,7 @@ facilitator/scheme would need to accept.
 - **Reuse, don't build:** adopt `smart-account-kit` + a published policy
   contract. We never author a Soroban contract.
 - **PROVEN on testnet (2026-08-29, `npm run test:vault`):** headless deploy
-  via a software authenticator (`src/sandbox/software-passkey.ts`, path (a)
+  via a software authenticator (`src/pay/passkey.ts`, path (a)
   — P-256 in process memory through the kit's `webAuthn` hook; no CBOR
   needed, the kit reads the raw key from `response.publicKey`). The vault
   shape holds end-to-end: OWNER passkey on the Default rule; AGENT ed25519
@@ -105,7 +105,9 @@ built and proven on testnet (2026-08-30):
   or refund (dispute-with-standing + resolve-to-buyer), receipted.
 - **Verification bounties** (`test:bounty`, `test:bounty-open`): directed and
   open-claim (escrow before a winner exists; ed25519-signed evidence packets;
-  first VALID wins; stolen evidence dies on the signature check). The proof
+  first VALID wins; a REPLAYED signature is rejected — though a thief who
+  obtains the evidence can re-sign it, which is why evidence goes to the
+  resolver and commit-reveal is the real fix, roadmapped). The proof
   bounty did REAL work — live directory-row verification.
 
 **Remaining:** mainnet (gated on the escrow contract's audit posture + the
