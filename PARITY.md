@@ -63,7 +63,7 @@ checked-in `test:proxy` covers the plain-HTTP pay path end to end.
 | Sell / monetize an API (self-host paywall) | `gate`,`server` (YAML, self-host or Vercel) | sandbox serves MPP charge + channel + x402 v2 (in-process facilitator) | our sandbox is a reference seller on all three protocols (`test:x402` proves the x402 route with an unmodified `@x402/fetch` client); production selling still belongs to SDF's middleware |
 | Seller onboarding, neutral | — | `verify` (checks a provider's 402 is correct + Stellar-payable) | ↑ neutral, no gateway |
 | Author a catalog listing | `skills`,`catalog scaffold`,`create_skill` | — | we probe instead of authoring |
-| High-frequency channels | `subscriptions` (session) | `test:session` (testnet e2e) | ✓ on testnet: channel deploy-from-hash → N off-chain commitments (persistent anti-reset store) → MPP close, 10× per-call vs charge, verified refund. Mainnet stays gated on the one-way-channel audit; no public channel-mode server exists yet besides our sandbox |
+| High-frequency channels | `subscriptions` (session) | `session open/status/close` + `curl --session` + MCP `session_*` | ✓ on testnet, full UX: deposit once (5 XLM default), pay per call off-chain (10× per-call vs charge), channel reuse across restarts, verified refund at close. Mainnet stays gated on the one-way-channel audit; no public channel-mode server exists yet besides our sandbox |
 | Visual payment debugger | web UI | runnable sandboxes (`npm run test:*`) | different shape |
 
 
@@ -82,6 +82,13 @@ Behaviours the docs specify, and where we land:
 Strong across the client/catalog/governance lane, and ahead on the probed
 catalog, `verify`, and outcome-attributed governance. Real gaps remain: no
 per-signature human/biometric auth in the MCP (it's policy-gated), macOS-only
-keychain, no ephemeral-sandbox wallets or auto-setup, partial curl arg
-fidelity, and no MPP session mode (blocked upstream). Built on Stellar's own rails
-(`@x402/stellar`, `@stellar/mpp`), and interop-tested against pay.sh itself.
+keychain, no ephemeral-sandbox wallets or auto-setup, and partial curl arg
+fidelity. Built on Stellar's own rails (`@x402/stellar`, `@stellar/mpp`), and
+interop-tested against pay.sh itself.
+
+**Beyond pay.sh — the work layer (testnet).** pay.sh pays per request; it has
+no equivalent of escrow-backed **jobs** with hash-committed agreements, an
+automated **resolver**, open-claim **bounties**, the on-chain-capped
+**vault**, or the tamper-evident **receipts** ledger. That layer is
+stellar-pay's own lane (see [`docs/SPINE.md`](docs/SPINE.md)), testnet-gated
+until the contracts it reuses clear their audit posture.

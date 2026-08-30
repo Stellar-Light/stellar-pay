@@ -1,5 +1,5 @@
 <p align="center"><b>stellar-pay</b></p>
-<p align="center"><b>The missing payment layer for HTTP on Stellar — x402 & MPP 402 challenges, paid in USDC from your own wallet.</b></p>
+<p align="center"><b>The neutral, self-custody layer for human-to-agent work on Stellar — an agent CLI and a toolkit.<br>Pay any HTTP 402 (x402 & MPP) from your own wallet; fund, hire, verify, and pay agents for real work.</b></p>
 <p align="center">
   <a href="https://www.npmjs.com/package/stellar-pay"><img src="https://img.shields.io/npm/v/stellar-pay" alt="npm"></a>
   <a href="https://github.com/Stellar-Light/stellar-pay/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT"></a>
@@ -110,8 +110,10 @@ stellar-pay mcp               # raw stdio server for Cursor, goose, or your own 
 Tools: `search_catalog`, `get_catalog_entry`, `list_catalog`, `curl`,
 `get_balance`, `begin_task` / `end_task`, `spend_report`, plus `send_usdc`
 (two-step confirm with a single-use server nonce, so funds never move on one
-model call) and `get_history`. The agent-facing playbook is
-[`skills/stellar-pay/SKILL.md`](skills/stellar-pay/SKILL.md).
+model call) and `get_history`. On testnet the [work layer](#-the-work-layer-testnet)
+adds `session_*` (payment channels), `bounty_*` (escrowed verification
+bounties), and `vault_*` (draw float under an on-chain cap). The agent-facing
+playbook is [`skills/stellar-pay/SKILL.md`](skills/stellar-pay/SKILL.md).
 
 Or script the whole loop without MCP — every command takes `--json` and
 returns a documented exit code (`0` ok · `2` usage · `3` payment refused · `4`
@@ -264,6 +266,7 @@ pitch.
 | **[Find things to pay for](#find-things-to-pay-for)** | `search` over a daily-probed catalog |
 | **[Spend policy](#spend-policy)** | per-host ceilings, deny, allowlist |
 | **[Agents](#agents)** | `mcp`, `claude`, `codex`, `goose` |
+| **[The work layer](#-the-work-layer-testnet)** | `session`, `bounty`, `vault`, `receipts` — testnet |
 | **[Exit codes & JSON](#exit-codes--json)** | what to branch on in a script |
 
 ### Pass-through commands
@@ -414,9 +417,52 @@ stellar-pay <command> --json  # machine output on all of them
 ```
 
 **Not built:** recurring **subscriptions / payment delegations** (pay.sh has
-them). Every payment here is per-request and separately approved. MPP session
-mode — one deposit, many off-chain vouchers — is the piece that would make
-subscriptions natural, and it is not built either.
+them). Every payment here is per-request and separately approved — except MPP
+**session mode** (below, testnet), which is one deposit and many off-chain
+vouchers, the piece that makes subscriptions natural.
+
+## 🤝 The work layer (testnet)
+
+Paying per-request is the floor. The layer above it — funding an agent, hiring
+one for real work, verifying the work, paying on the verdict — is built and
+proven on **testnet only** (the escrow, smart-account, and channel contracts
+it reuses are not audited for mainnet; we author no Soroban contracts):
+
+```sh
+stellar-pay session open <url> --deposit 5     # one-way channel: deposit once…
+stellar-pay curl <url> --session               # …then pay per call OFF-CHAIN (10× faster)
+stellar-pay vault create --cap-xlm 5           # fund an agent behind an ON-CHAIN daily cap
+stellar-pay vault draw --amount-xlm 2          # agent pulls float; over-cap = refused by the CHAIN
+stellar-pay bounty post|assign|submit|resolve  # escrowed verification bounties
+stellar-pay bounty open|pack                   # open-claim: anyone submits, first VALID evidence wins
+stellar-pay receipts [--verify <id>]           # every step lands in a tamper-evident local ledger
+```
+
+- **Jobs & agreements.** Escrow-backed jobs ride [Trustless
+  Work](https://www.trustlesswork.com/)'s live Soroban escrow — keyless,
+  straight at the contract, behind a swappable rails seam. Terms live in a
+  hash-committed document (`stellar-pay/agreement-v1`) whose sha256 **is** the
+  escrow's engagement id, so the chain pins what was agreed.
+- **Resolution.** A policy resolver (deterministic hash-match, delegated
+  callback, or evidence-schema check) answers the agreement's review question
+  and maps it through declared effects — release to the worker or refund to
+  the buyer, receipted either way.
+- **Bounties.** Directed (post → assign → submit evidence → resolve) and
+  open-claim: funds escrow **before** a winner exists, anyone submits an
+  ed25519-signed evidence packet, first valid submission wins the pot —
+  stolen evidence fails the signature check, sloppy evidence fails the
+  policy. Proven end-to-end with a live race
+  ([`test:bounty-open`](src/sandbox/bounty-open-test.ts)).
+- **Vault.** A human funds a smart account
+  ([smart-account-kit](https://github.com/stellar/smart-account-kit)) whose
+  owner is a durable passkey; the agent's key can *only* draw float under a
+  spending-limit rule enforced **in the contract's `__check_auth`** — a
+  custodial platform's limit is a server's policy promise, this one is a
+  property of the chain. Proven: over-cap draw refused on-chain, refusal
+  receipted ([`test:vault-flow`](src/sandbox/vault-flow-test.ts)).
+
+Direction and quality bar live in [`docs/SPINE.md`](docs/SPINE.md); every
+claim above has a runnable proof in [Proof you can run](#-proof-you-can-run).
 
 ## Building with stellar-pay
 
@@ -484,9 +530,14 @@ console.log(res.status, paid?.hash);
 Also exported: `readOffers` / `offerUSD` (parse a 402), `startProxy` +
 `proxyEnv` (wrap a child process), `verifyEndpoint` (seller check),
 `loadCatalog` / `searchCatalog`, `buildGoverned` (spend governance), and
-`buildServer` (mount the MCP in your own host). Full TypeScript types ship
-with it; the Mongo indexer is a dev-only dependency, so installing the
-library doesn't pull it.
+`buildServer` (mount the MCP in your own host). The testnet
+[work layer](#-the-work-layer-testnet) exports too: `openJob` … `releaseJob`
+on swappable `EscrowRails`, `buildAgreement` / `agreementHash`, `resolveJob` +
+policies, the bounty verbs (`postOpenBounty`, `makeSubmission`, `pickWinner`),
+`createVault` / `drawFromVault`, `openChannel` / `sessionFetch`, and the
+receipts ledger (`listReceipts`, `checkLedger`, `verifyOnChain`). Full
+TypeScript types ship with it; the Mongo indexer is a dev-only dependency, so
+installing the library doesn't pull it.
 
 ## Quick start
 
@@ -518,6 +569,23 @@ Everything above is backed by a runnable check — no USDC touched:
   200, settlement on-chain.
 - `npm run test:keystore` · `test:scrimp` (all four rules) · `test:ssrf` ·
   `test:parity` (reads pay.sh's reference MPP challenge) · `test:verify`.
+
+And the work layer, each an on-chain testnet e2e:
+
+- `npm run test:session` — channel deploy → 8 off-chain commitments (10× per-call
+  vs charge) → MPP close, refund verified to the stroop; `test:session-ux` for
+  the `--session` flow; `test:x402` — an **unmodified** `@x402/fetch` client
+  pays our sandbox (protocol conformance).
+- `npm run test:job` — open → fund → deliver → approve → release on the real
+  escrow, payout exact (1 XLM − 0.3% platform fee); `test:resolver` — both
+  policy verdicts, release and refund.
+- `npm run test:bounty` — a bounty whose work is REAL (live directory-row
+  verification); `test:bounty-open` — the open race: sloppy rejected, stolen
+  evidence rejected by signature, real worker paid the pot.
+- `npm run test:vault` · `test:vault-flow` — fund → draw → pay a real 402 from
+  the float → over-cap draw **refused by the chain** → reopen from persistence.
+- `npm run test:receipts` — the ledger catches a tampered row; on-chain
+  verification of a receipt against Horizon.
 
 ## Status
 

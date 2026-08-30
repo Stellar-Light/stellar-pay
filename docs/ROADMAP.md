@@ -1,10 +1,12 @@
 # stellar-pay roadmap
 
-The neutral layer is built: a probed catalog, a 402-paying client (x402 + MPP),
-an MCP with spend governance, a wallet (setup, encrypted keystore + macOS
-Keychain, send, topup with QR + on-ramps, history), the `verify` seller check,
-and the **command-wrapping proxy** (`run` — wraps any tool behind a local MITM
-proxy that pays its 402s; ephemeral CA, per-run auth token). Two bets remain.
+Direction lives in [SPINE.md](./SPINE.md); this file tracks what's built vs
+what remains. The neutral layer is built: a probed catalog, a 402-paying
+client (x402 + MPP), an MCP with spend governance, a wallet (setup, encrypted
+keystore + macOS Keychain, send, topup with QR + on-ramps, history), the
+`verify` seller check, and the **command-wrapping proxy** (`run`). The three
+bets below have each landed on testnet; what remains on each is the mainnet
+gate and the listed follow-ups.
 
 ## 1. MPP session mode — high-frequency paying
 
@@ -21,14 +23,16 @@ persists across restarts (`src/pay/session-store.ts` — the SDK's anti-reset
 warning, answered), and the sandbox serves channel mode behind
 `CHANNEL_CONTRACT`/`COMMITMENT_PUBKEY`.
 
-- **Remaining for the real feature:** `--session` UX on `curl`/MCP —
-  auto-open (deposit approval semantics need an owner decision: how much to
-  lock per host), channel reuse from the registry, settle-without-close, and
-  the operator settle loop. **Mainnet remains gated on the one-way-channel
-  contract audit** (the contract's own README says unaudited) — that is the
-  standing SDF ask, now backed by a working client+server+benchmark.
-- **Value:** cheaper, faster high-frequency paying; the natural fit for a busy
-  agent loop.
+**The `--session` UX SHIPPED (2026-08-30, `npm run test:session-ux`):**
+`session open <url> --deposit 5` (5 XLM default), `curl --session` pays per
+call off-chain and reuses the host's channel from the persistent store,
+`session status`/`close`, and the MCP's `session_open`/`session_pay`/
+`session_close` give agents the same loop.
+
+- **Remaining:** settle-without-close and the operator settle loop (the
+  seller-side half). **Mainnet remains gated on the one-way-channel contract
+  audit** (the contract's own README says unaudited) — the standing SDF ask,
+  now backed by a working client+server+benchmark+UX.
 
 ## 2. Smart-account vault — spend caps enforced on-chain
 
@@ -70,22 +74,46 @@ facilitator/scheme would need to accept.
   TransactionResult is a union, never thrown — branch on `.success`;
   `getAvailableSigners()` reads only the Default rule (hand the cap-rule
   signer to `buildSelectedSigners` directly). SDF ask #4 (ed25519-initial-
-  signer deploy) remains the CLEANER path but no longer blocks. Remaining
-  for the real feature: vault verbs on the CLI/MCP (`vault init/fund/
-  status`), the hot-key top-up loop, and the mainnet decision — which
-  waits on the smart-account contracts' own audit posture.
+  signer deploy) remains the CLEANER path but no longer blocks.
+- **The vault verbs SHIPPED (2026-08-30, `npm run test:vault-flow`):**
+  `vault create --cap-xlm N` (owner = a durable software passkey, persisted
+  for reopen), `vault topup` (a plain SAC transfer — bulk funds behind the
+  cap), `vault draw` (the hot-key top-up loop: the agent pulls float, an
+  over-cap draw is refused BY THE CHAIN and receipted), `vault status`; MCP
+  `vault_draw`/`vault_status` let an agent top itself up within the human's
+  cap. The integrated e2e pays a real 402 from drawn float.
+- **Remaining:** seal the owner passkey PEM in the encrypted keystore
+  (today it sits plaintext in the session store, honestly flagged), and the
+  mainnet decision — which waits on the smart-account contracts' own audit
+  posture.
 
-## 3. Phase D — agreements: escrow-backed agent work (sketch)
+## 3. Phase D — agreements: escrow-backed agent work — BUILT (testnet)
 
 Payments govern what an agent may spend; **agreements** govern when a payment
-releases. One agent hires another it doesn't trust: funds held in escrow,
-release on verified completion, a judge for the contested case. Sketched in
-full in [phase-d-agreements.md](./phase-d-agreements.md) — built on Trustless
-Work's live Soroban escrow (reuse, don't build; we never author a contract),
-a `job` verb family on the CLI/MCP, three-tier verification
-(hash-match / policy-approve / judge), `job.sh` benchmark. Sequenced after
-the two bets above; stays a sketch until a design partner or the census
-shows a buyer.
+releases. Sketched in [phase-d-agreements.md](./phase-d-agreements.md), now
+built and proven on testnet (2026-08-30):
+
+- **Jobs on swappable rails** (`src/pay/job.ts` + `rails.ts`): Trustless
+  Work's live escrow, integrated KEYLESS — deploy-from-wasm-hash, straight at
+  the contract, no API key (their SaaS auth is not a blockchain requirement).
+  `test:job`: open → fund → deliver → approve → release, payout exact
+  (amount − 0.3% platform fee).
+- **Stellar-native agreements** (`stellar-pay/agreement-v1`, sha256): the
+  agreement hash IS the escrow's engagement id; the chain pins the terms.
+- **Automated resolver** (`test:resolver`): policy answers the agreement's
+  review question, maps through declared effects — release (approve+release)
+  or refund (dispute-with-standing + resolve-to-buyer), receipted.
+- **Verification bounties** (`test:bounty`, `test:bounty-open`): directed and
+  open-claim (escrow before a winner exists; ed25519-signed evidence packets;
+  first VALID wins; stolen evidence dies on the signature check). The proof
+  bounty did REAL work — live directory-row verification.
+
+**Remaining:** mainnet (gated on the escrow contract's audit posture + the
+`TW_FEE_ADDRESS` question), and the product sequence from
+[SPINE.md](./SPINE.md) — verification bounty surface → hackathon payout rails
+→ an operated resolver. Reputation stays a **design phase**
+([reputation-design-questions.md](./reputation-design-questions.md)) — the
+receipts substrate accrues evidence meanwhile.
 
 ## Why it strengthens the SDF story
 

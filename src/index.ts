@@ -72,3 +72,73 @@ export {
 	type Network,
 	type Wallet,
 } from "./pay/wallet.js";
+
+// ── The work layer (TESTNET-ONLY until the escrow/smart-account/channel
+// contracts clear their audit posture): pay for WORK, not just requests. ──
+
+// Hash-committed agreements (stellar-pay/agreement-v1, sha256-canonical).
+export {
+	type AgreementInput,
+	agreementHash,
+	buildAgreement,
+	parseAgreement,
+} from "./pay/agreement.js";
+// Verification bounties: directed (post → assign → submit → resolve) and
+// open-claim (escrow first, anyone submits, first VALID evidence wins).
+export {
+	assignBounty,
+	type BountyDescriptor,
+	bountyStatus,
+	type EvidenceEntry,
+	makeSubmission,
+	type OpenSubmission,
+	pickWinner,
+	postBounty,
+	postOpenBounty,
+	resolveBounty,
+	resolveOpenBounty,
+	submitBounty,
+	verificationEvidencePolicy,
+} from "./pay/bounty.js";
+// Escrow-backed jobs on swappable rails (Trustless Work adapter today —
+// keyless, straight at the contract).
+export {
+	approveJob,
+	deliverJob,
+	disputeJob,
+	fundJob,
+	getRails,
+	type JobSpec,
+	jobAgreement,
+	openJob,
+	readEscrow,
+	releaseJob,
+	resolveDisputeJob,
+	setRails,
+} from "./pay/job.js";
+export type { EscrowRails, EscrowState } from "./pay/rails.js";
+// The content-addressed local ledger + on-chain verification of a row.
+export {
+	checkLedger,
+	list as listReceipts,
+	type ReceiptRow,
+	record as recordReceipt,
+	verifyOnChain,
+} from "./pay/receipts.js";
+// Policy-driven dispute resolution (deterministic or delegated).
+export {
+	callbackPolicy,
+	hashMatchPolicy,
+	type ResolverPolicy,
+	resolveJob,
+} from "./pay/resolver.js";
+// One-way payment channels: deposit once, pay per call off-chain.
+export { closeChannel, openChannel, sessionFetch } from "./pay/session.js";
+// The smart-account vault: fund an agent behind an ON-CHAIN spend cap.
+export {
+	createVault,
+	drawFromVault,
+	topupVault,
+	type VaultRecord,
+	vaultStatus,
+} from "./pay/vault.js";
