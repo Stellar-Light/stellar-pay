@@ -112,8 +112,6 @@ product; Merit: x402 infra the layer, echo the product):
    - a **verification bounty surface** (our own first: hire agents to verify
      stellarlight directory rows — we are the first buyer, the jobs are
      real, the receipts are real);
-   - **hackathon/program payout rails** (organizers escrow prize pools; the
-     summit paid 17 winners off a spreadsheet — a live buyer shape);
    - a **resolver service we operate** (an instance of the open resolver —
      others can run competitors on the same layer, which is the point);
    - eventually a **reputation read surface** — only after the design phase
@@ -121,6 +119,11 @@ product; Merit: x402 infra the layer, echo the product):
 3. **The test for any product**: if we shut it down tomorrow, the layer and
    everyone else's products keep working. If a product fails that test, it
    has captured the layer and must be re-cut.
+
+(Cut 2026-08-30: "hackathon payout rails" — owner call. Humans paying humans
+prize money is not agent commerce; the thesis is people paying AGENTS for
+work. Escrowed payouts remain possible ON the layer for anyone who wants
+them; they are not our product.)
 
 ## What this doc forbids
 

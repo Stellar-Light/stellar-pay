@@ -110,8 +110,8 @@ built and proven on testnet (2026-08-30):
 
 **Remaining:** mainnet (gated on the escrow contract's audit posture + the
 `TW_FEE_ADDRESS` question), and the product sequence from
-[SPINE.md](./SPINE.md) — verification bounty surface → hackathon payout rails
-→ an operated resolver. Reputation stays a **design phase**
+[SPINE.md](./SPINE.md) — verification bounty surface → an operated resolver.
+Reputation stays a **design phase**
 ([reputation-design-questions.md](./reputation-design-questions.md)) — the
 receipts substrate accrues evidence meanwhile.
 
