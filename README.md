@@ -20,14 +20,14 @@ enforced by the chain, not by a platform's servers).
 ```mermaid
 flowchart LR
     H["Human"] -->|"funds, sets an on-chain cap"| V["Vault<br/>smart account"]
-    V -->|"agent draws float<br/>(chain refuses over-cap)"| A["Agent<br/>wallet + CLI/MCP"]
-    A -->|"pays per request"| P["Paid APIs<br/>x402 · MPP · sessions"]
-    A -->|"hires / works"| W["Jobs & bounties<br/>escrow + agreements"]
+    V -->|"agent draws float<br/>chain refuses over-cap"| A["Agent<br/>wallet + CLI/MCP"]
+    A -->|"pays per request"| P["Paid APIs<br/>x402, MPP, sessions"]
+    A -->|"hires or works"| W["Jobs and bounties<br/>escrow + agreements"]
     W --> R["Resolver<br/>policy judges evidence"]
-    R -->|"release / refund"| W
-    A --> L["Receipts ledger<br/>tamper-evident, on-chain-verifiable"]
+    R -->|"release or refund"| W
+    A --> L["Receipts ledger<br/>tamper-evident, verifiable on chain"]
     W --> L
-    L -.->|"the substrate for"| REP["Reputation<br/>(design phase)"]
+    L -.->|"the substrate for"| REP["Reputation<br/>design phase"]
 ```
 
 Every box is testnet-proven with on-chain checks (see
@@ -140,16 +140,15 @@ sequenceDiagram
     participant F as Feed at any URL
     participant W as Worker agent
     participant R as Resolver
-    B->>E: post open bounty — funds escrowed,<br/>terms hash = engagement_id
+    B->>E: post open bounty, funds escrowed,<br/>terms hash = engagement_id
     B->>F: publish descriptor + submitUrl
     W->>F: discover listings
     W->>E: VET against the chain: terms pinned?<br/>struct matches? pot funded? still open?
-    Note over W: refuses tampered/unfunded rows
+    Note over W: refuses tampered or unfunded rows
     W->>W: does the actual work
-    W->>B: signed evidence packet<br/>(ed25519 binds evidence → payout address)
-    B->>R: hands packets over
-    R->>E: judge by declared policy —<br/>first VALID submission wins
-    E->>W: pays the winner (or refunds the buyer)
+    W->>R: commit the evidence hash first,<br/>then reveal the signed packet
+    R->>E: judge by declared policy,<br/>earliest valid committer wins
+    E->>W: pays the winner, or refunds the buyer
     Note over W,B: both ledgers receipt their half
 ```
 
@@ -211,17 +210,17 @@ draw float under a cap the chain enforces.**
 ```mermaid
 flowchart TD
     subgraph OWNER["Human owns"]
-        PK["Durable passkey<br/>(persisted, reopens across restarts)"]
-        SA["Smart account (vault)<br/>holds the bulk funds"]
+        PK["Durable passkey<br/>persisted, reopens across restarts"]
+        SA["Smart account, the vault<br/>holds the bulk funds"]
     end
     subgraph AGENT["Agent holds"]
         AK["Agent ed25519 key<br/>float account for 402s"]
     end
     PK -->|"owner rule"| SA
-    AK -->|"draw — ONLY via a token-scoped rule<br/>with a spending-limit policy"| SA
+    AK -->|"draw, ONLY via a token-scoped rule<br/>carrying a spending-limit policy"| SA
     SA -->|"under cap: float moves"| AK
-    SA -.->|"over cap: __check_auth REFUSES<br/>(receipted as an on-chain decision)"| AK
-    AK -->|"pays 402s / funds work"| X["APIs & escrows"]
+    SA -.->|"over cap: __check_auth REFUSES<br/>receipted as an on-chain decision"| AK
+    AK -->|"pays 402s, funds work"| X["APIs and escrows"]
 ```
 
 ```sh

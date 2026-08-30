@@ -97,4 +97,17 @@ for (const s of [internal, bouncer]) {
 console.log(
 	`\n${fail === 0 ? "ALL PASS" : `${fail} FAILED`} — ${pass}/${pass + fail} redirect-gate checks`,
 );
-process.exit(fail === 0 ? 0 : 1);
+
+// Do NOT call process.exit() here. This file makes real HTTP requests, so
+// undici holds keep-alive sockets open, and forcing an exit while libuv is
+// still closing those handles aborted the process on Windows CI —
+// `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING) … src\win\async.c`
+// AFTER printing ALL PASS. A clean run was reported as a failed job.
+//
+// Set the code and let the loop drain on its own. The unref'd timer is the
+// safety net: an unref'd timer cannot keep the process alive, so it only ever
+// fires if something ELSE is still holding the loop open — in which case a
+// forced exit is the right answer, and by then the handles have had time to
+// finish closing.
+process.exitCode = fail === 0 ? 0 : 1;
+setTimeout(() => process.exit(process.exitCode ?? 0), 3000).unref();
