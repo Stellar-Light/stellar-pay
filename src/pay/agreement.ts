@@ -55,6 +55,20 @@ function canonicalize(doc: string): string {
 	return `${doc.replace(/\r\n/g, "\n").replace(/﻿/g, "").replace(/\n+$/, "")}\n`;
 }
 
+/** Neutralise section headings inside free-form prose a COUNTERPARTY wrote.
+ *
+ * The document is parsed by section heading and `parseAgreement` takes the
+ * FIRST match, so terms prose containing its own "## Resolution Effects" block
+ * silently overrode the real one — a buyer could write `yes => refund`, let a
+ * worker complete the job, and have the automated resolver hand the pot back.
+ *
+ * Markdown-escaping the marker is only half the fix: it must be paired with
+ * LINE-ANCHORED parsing in parseAgreement, because a `\## X` line still
+ * contains the substring `## X` that an unanchored regex would happily find. */
+function demoteHeadings(prose: string): string {
+	return prose.replace(/^(#{1,6}\s)/gm, "\\$1");
+}
+
 /** Build the agreement document (frontmatter + the four resolver sections). */
 export function buildAgreement(a: AgreementInput): string {
 	const parties = [
@@ -82,7 +96,7 @@ ${a.title}
 
 ## Terms
 
-${a.terms}
+${demoteHeadings(a.terms)}
 
 Settlement rails: Trustless Work single-release escrow on ${a.network}. Payment: ${a.amount.toString()} base units of token ${a.tokenContract}, released to the provider on an approving resolution, refunded to the buyer otherwise. Platform fee: 0. Trustless Work protocol fee: 0.3%.
 
@@ -113,10 +127,15 @@ export function agreementHash(doc: string): string {
 export function parseAgreement(doc: string): {
 	reviewQuestion: string;
 	resolutionEffects: Array<[string, string]>;
+	/** the frontmatter deadline (ISO 8601) — a resolver MUST be able to act on
+	 * time passing, or a vanished counterparty freezes the escrow forever */
+	deadline: string | null;
 } {
+	// LINE-ANCHORED (the `m` flag + `^`): an unanchored match let counterparty
+	// prose mid-document open a section and override the real terms.
 	const section = (name: string) => {
 		const m = doc.match(
-			new RegExp(`## ${name}\\n([\\s\\S]*?)(?:\\n## |\\n*$)`),
+			new RegExp(`^## ${name}\\n([\\s\\S]*?)(?:\\n## |\\n*$)`, "m"),
 		);
 		return m?.[1]?.trim() ?? "";
 	};
@@ -130,8 +149,14 @@ export function parseAgreement(doc: string): {
 		)
 		.filter((p) => p.length === 2)
 		.map((p) => [p[0] as string, p[1] as string]);
+	// Frontmatter only — the block between the first two `---` fences, so prose
+	// further down cannot forge a later deadline.
+	const front = doc.match(/^---\n([\s\S]*?)\n---\n/)?.[1] ?? "";
+	const deadline = front.match(/^deadline:\s*"?([^"\n]+)"?/m)?.[1]?.trim();
+
 	return {
 		reviewQuestion: section("Review Question"),
 		resolutionEffects: effects,
+		deadline: deadline && !Number.isNaN(Date.parse(deadline)) ? deadline : null,
 	};
 }

@@ -27,7 +27,7 @@
  * to the descriptor's `submitUrl` (any inbox the buyer operates).
  */
 import { readFileSync } from "node:fs";
-import type { Keypair } from "@stellar/stellar-sdk";
+import { Asset, type Keypair, Networks } from "@stellar/stellar-sdk";
 import { agreementHash } from "./agreement.js";
 import type { EvidenceEntry } from "./bounty.js";
 import {
@@ -124,6 +124,16 @@ export function checkListing(
 			state.provider === d.buyer,
 		"token/amount/resolver/receiver-fallback on the escrow struct",
 	);
+	// The decision seats, not just the dispute seat. An escrow can name the
+	// declared neutral resolver as dispute_resolver — passing every other check
+	// — while the BUYER holds approver + release_signer, and then simply approve
+	// and release the pot back to itself after a stranger has done the work.
+	// The agreement doc cannot show this: it renders one "resolver" field.
+	push(
+		"decision-seats",
+		state.approver === d.resolver && state.releaseSigner === d.resolver,
+		`approver=${state.approver.slice(0, 8)}… release=${state.releaseSigner.slice(0, 8)}… must both be the declared resolver ${d.resolver.slice(0, 8)}…`,
+	);
 	push(
 		"funded",
 		state.balance >= state.amount,
@@ -197,10 +207,13 @@ export async function submitPacket(o: {
 
 /** Everything credited to `account` in effects AFTER `cursor` — SUMMED, never
  * .find() (settlement can credit in several records and fee crumbs exist),
- * and PAGED: a busy account can push the payout past the first page. */
+ * PAGED (a busy account can push the payout past the first page), and filtered
+ * to the bounty's OWN asset: an unrelated payment landing during the watch
+ * window would otherwise be booked as this bounty's income. */
 async function creditedSince(
 	account: string,
 	cursor: string,
+	wantNative: boolean,
 ): Promise<{ stroops: bigint; opHref: string | null }> {
 	let stroops = 0n;
 	let opHref: string | null = null;
@@ -217,6 +230,9 @@ async function creditedSince(
 				records?: Array<{
 					type: string;
 					amount?: string;
+					asset_type?: string;
+					asset_code?: string;
+					asset_issuer?: string;
 					paging_token?: string;
 					_links?: { operation?: { href?: string } };
 				}>;
@@ -226,6 +242,7 @@ async function creditedSince(
 		for (const rec of records) {
 			if (rec.paging_token) next = rec.paging_token;
 			if (rec.type !== "account_credited") continue;
+			if ((rec.asset_type === "native") !== wantNative) continue;
 			const [i = "0", f = ""] = (rec.amount ?? "0").split(".");
 			stroops += BigInt(i) * 10_000_000n + BigInt((f + "0000000").slice(0, 7));
 			opHref = rec._links?.operation?.href ?? opHref;
@@ -235,16 +252,35 @@ async function creditedSince(
 	return { stroops, opHref };
 }
 
-async function latestEffectCursor(account: string): Promise<string> {
+/** The baseline cursor, or null if Horizon would not tell us.
+ *
+ * MUST distinguish "no effects yet" from "the call failed". Returning "" for
+ * both meant a routine 429 made creditedSince page the account's ENTIRE
+ * history and report a lifetime balance as this bounty's income — a false
+ * paid:true, and a forged row in the ledger a reputation story rests on. */
+async function latestEffectCursor(account: string): Promise<string | null> {
 	const r = await fetch(
 		`${HORIZON}/accounts/${account}/effects?order=desc&limit=1`,
 		{ signal: AbortSignal.timeout(10_000) },
 	);
-	if (!r.ok) return "";
+	if (!r.ok) return null;
 	const d = (await r.json()) as {
 		_embedded?: { records?: Array<{ paging_token?: string }> };
 	};
 	return d._embedded?.records?.[0]?.paging_token ?? "";
+}
+
+/** Is the escrow's token the native XLM SAC? Credits are then filtered to
+ * matching effects, so an unrelated payment arriving during the watch window
+ * is not booked as this bounty's income. Mapping a non-native SAC to its
+ * (code, issuer) needs a contract read we deliberately skip: matching
+ * "non-native credits" is coarser but still a real filter, and erring toward
+ * counting less income is the safe direction for a ledger. */
+function isNativeSac(tokenContract: string): boolean {
+	return (
+		tokenContract === Asset.native().contractId(Networks.TESTNET) ||
+		tokenContract === Asset.native().contractId(Networks.PUBLIC)
+	);
 }
 
 export type PayoutResult =
@@ -266,6 +302,10 @@ export async function awaitPayout(o: {
 	const pollMs = o.pollMs ?? 5_000;
 	const me = o.worker.publicKey();
 	const cursor = await latestEffectCursor(me);
+	if (cursor === null)
+		throw new Error(
+			"cannot establish an effects baseline from Horizon (rate-limited or down) — refusing to watch, because without a baseline a settlement would credit this bounty with the account's entire history",
+		);
 	const deadline = Date.now() + timeoutMs;
 
 	while (Date.now() < deadline) {
@@ -278,7 +318,11 @@ export async function awaitPayout(o: {
 		if (state && (state.balance === 0n || state.released)) {
 			// Settled. Give Horizon a beat to index the effects, then check us.
 			await new Promise((r) => setTimeout(r, 4_000));
-			const { stroops, opHref } = await creditedSince(me, cursor);
+			const { stroops, opHref } = await creditedSince(
+				me,
+				cursor,
+				isNativeSac(state.tokenContract),
+			);
 			if (stroops > 0n) {
 				let tx: string | null = null;
 				if (opHref) {

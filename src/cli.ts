@@ -261,6 +261,20 @@ function parse(argv: string[]): Args {
 			// later ones are paths (`account export --name main backup.json`).
 			if (!a.url) a.url = t;
 			a.positional.push(t);
+		} else {
+			// An unrecognised flag is a USAGE ERROR, never something to skip.
+			// Silently dropping them meant `--max-usd=0.05` (the = form) left the
+			// ceiling at the $0.10 default — a 2x widening of the exact control
+			// the user was trying to tighten — and a typo like `--sandox` ran the
+			// command against MAINNET. Fail loudly instead, the way every serious
+			// CLI parser does.
+			const eq = t.indexOf("=");
+			const hint =
+				eq > 0
+					? `did you mean "${t.slice(0, eq)} ${t.slice(eq + 1)}"? (this CLI takes space-separated values, not --flag=value)`
+					: 'run "stellar-pay --help" for the flags this command accepts';
+			console.error(`unknown option "${t}" — ${hint}`);
+			process.exit(EXIT.usage);
 		}
 	}
 	return a;
@@ -351,6 +365,12 @@ async function cmdRun(a: Args): Promise<void> {
 		wallet,
 		prefer: a.prefer,
 		approve,
+		// The wrapped child's 402s follow redirects too: re-run the per-host
+		// spend policy on every hop, so a 302 cannot walk a payment onto a host
+		// the operator denied (or one an allowlist never named).
+		guard: (u) =>
+			resolveHost(u, { requested: a.maxUsd, requestedExplicit: a.maxUsdSet })
+				.blocked,
 		onPaid: (p) =>
 			console.error(
 				`  ✓ paid ${p.usd != null ? `$${p.usd.toFixed(4)}` : "?"} via ${p.protocol.toUpperCase()} for ${p.url}${p.hash ? ` · ${explorer(wallet.network, p.hash)}` : ""}`,

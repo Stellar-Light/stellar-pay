@@ -28,7 +28,7 @@
  *     WHICH policy ran, so the judgment's basis is never hidden.
  */
 import type { Keypair } from "@stellar/stellar-sdk";
-import { parseAgreement } from "./agreement.js";
+import { agreementHash, parseAgreement } from "./agreement.js";
 import {
 	approveJob,
 	disputeJob,
@@ -96,18 +96,36 @@ export async function resolveJob(o: {
 	receiptId: string;
 }> {
 	const esc = await readEscrowAs(o.contractId, o.resolver);
-	if (esc.released || esc.disputed)
-		throw new Error(
-			`escrow ${o.contractId} already settled (released=${esc.released} disputed=${esc.disputed})`,
-		);
-	const { reviewQuestion, resolutionEffects } = parseAgreement(esc.description);
+	// RELEASED is terminal; DISPUTED is not — a disputed escrow is exactly the
+	// state the refund path needs (the buyer raises the dispute, the resolver
+	// resolves it). Throwing on `disputed` deadlocked our own documented flow:
+	// `bounty dispute` then `bounty resolve` could never complete.
+	if (esc.released) throw new Error(`escrow ${o.contractId} already released`);
 
-	const answer = await o.policy({
-		reviewQuestion,
-		evidence: esc.evidence,
-		description: esc.description,
-		amount: esc.amount,
-	});
+	// The description is what the policy reads and what decides the money, so
+	// bind it to what the chain pinned before trusting a byte of it.
+	if (agreementHash(esc.description) !== esc.engagementId)
+		throw new Error(
+			`escrow ${o.contractId}: the on-chain agreement does not hash to its engagement_id — refusing to resolve terms the chain did not pin`,
+		);
+	const { reviewQuestion, resolutionEffects, deadline } = parseAgreement(
+		esc.description,
+	);
+
+	// A deadline nobody enforces is decoration. Past it with no evidence, the
+	// job is over: refund, so a vanished worker cannot freeze the buyer's funds
+	// (and a vanished BUYER cannot freeze a worker's payout, since the answer
+	// no longer waits on anyone showing up).
+	const expired = deadline != null && Date.parse(deadline) < Date.now();
+	const answer =
+		expired && esc.evidence.trim() === ""
+			? "no"
+			: await o.policy({
+					reviewQuestion,
+					evidence: esc.evidence,
+					description: esc.description,
+					amount: esc.amount,
+				});
 	const outcome =
 		resolutionEffects.find(([ans]) => ans === answer)?.[1] ??
 		(answer === "yes" ? "release" : "refund");
@@ -164,7 +182,11 @@ export async function resolveJob(o: {
 			reviewQuestion,
 			answer,
 			outcome,
-			policy: o.policyLabel,
+			policy:
+				expired && esc.evidence.trim() === ""
+					? "deadline-expired"
+					: o.policyLabel,
+			deadline,
 			evidence: esc.evidence,
 			txs,
 		},

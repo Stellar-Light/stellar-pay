@@ -93,6 +93,14 @@ export function pinMismatch(
 const isRedirect = (n: number) =>
 	n === 301 || n === 302 || n === 303 || n === 307 || n === 308;
 
+/** Drop per-origin credentials from a request init (cross-origin redirect). */
+function stripCredentials(init: RequestInit): RequestInit {
+	const h = new Headers(init.headers ?? {});
+	for (const k of ["authorization", "cookie", "proxy-authorization"])
+		h.delete(k);
+	return { ...init, headers: h };
+}
+
 export type PayResult = {
 	res: Response;
 	/** every offer the 402 carried, payable from this wallet or not */
@@ -136,6 +144,12 @@ export async function payFetch(
 				declined: true,
 				blocked,
 			};
+		// Credentials the caller set for THIS origin must not travel to another
+		// one: a 302 to an attacker's host would otherwise hand it the user's
+		// API key or session cookie verbatim. Browsers strip these on a
+		// cross-origin redirect; so do we.
+		if (new URL(next).origin !== new URL(current).origin)
+			init = stripCredentials(init);
 		current = next;
 		first = await f(current, { ...init, redirect: "manual" });
 	}
@@ -184,10 +198,23 @@ export async function payFetch(
 						request?: { methodDetails?: { network?: string } };
 					}
 				).request;
-				const bad = pinMismatch(offer, {
-					network: req?.methodDetails?.network,
-				});
+				const liveNet = req?.methodDetails?.network;
+				const bad = pinMismatch(offer, { network: liveNet });
 				if (bad) throw new Error(`${bad} — refusing`);
+				// pinMismatch exempts offers that advertised the BARE network
+				// "stellar" (nothing to compare against). For those, pin the live
+				// challenge to the WALLET's network — the same ed25519 key signs on
+				// both networks, so a bare-network offer approved as testnet must
+				// not settle as pubnet.
+				if (
+					offer.network === "stellar" &&
+					liveNet &&
+					isStellar(liveNet) &&
+					liveNet !== o.wallet.network
+				)
+					throw new Error(
+						`the endpoint advertised network "stellar" but asks to settle on ${liveNet}, not this wallet's ${o.wallet.network} — refusing`,
+					);
 				return helpers.createCredential();
 			},
 			methods: [

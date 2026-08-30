@@ -57,8 +57,15 @@ export type BountyDescriptor = {
 	resolver: string;
 	/** the buyer who will fund (G…) */
 	buyer: string;
-	/** open-claim only: where signed submission packets POST (optional —
-	 * absent means the transport is out of band) */
+	/** Open-claim only: where signed submission packets POST (optional — absent
+	 * means the transport is out of band).
+	 *
+	 * This should be the RESOLVER's inbox, not the buyer's. Evidence is stealable
+	 * by whoever receives it first (see submissionDigest), and the buyer is the
+	 * one party that profits from stealing it — re-sign a worker's evidence under
+	 * a sock puppet, "win" your own bounty, and get the work for the 0.3% fee.
+	 * The resolver is already trusted to adjudicate, so routing evidence there
+	 * adds no new trust assumption. */
 	submitUrl?: string;
 };
 
@@ -275,9 +282,10 @@ export async function bountyStatus(o: {
 // the milestone path (evidence writes are provider-role-gated). Instead:
 // funds are escrowed at POST (commitment is visible on-chain, receiver
 // fallback = the buyer), submissions travel as SIGNED PACKETS off-chain
-// (ed25519 over sha256(contractId | evidence) — the signature binds the
-// evidence to the payout address, so nobody can resubmit someone else's work
-// as their own), and the resolver settles through the DISPUTE path, whose
+// (ed25519 over sha256(contractId | WORKER | evidence) — the worker address is
+// inside the signed bytes, so a stolen evidence document cannot be re-signed
+// and claimed by anyone else), and the resolver settles through the DISPUTE
+// path, whose
 // `distributions` can pay any address: first valid submission wins the pot.
 // Settlement note, corrected on testnet: the 0.3% protocol fee applies on
 // the dispute path too — a winner receives pot − 0.3% (the earlier "no
@@ -298,13 +306,28 @@ export type OpenSubmission = {
 	signature: string;
 };
 
-/** The signed digest: sha256(contractId | canonical evidence JSON). */
+/** The signed digest: sha256(contractId | worker | canonical evidence JSON).
+ *
+ * The worker address is in the preimage so the signature is an AUTHORSHIP
+ * statement ("I, W, submit this evidence for escrow C") rather than a floating
+ * endorsement of some bytes. v1 signed only (contractId | evidence).
+ *
+ * BE PRECISE ABOUT WHAT THIS DOES AND DOES NOT BUY. It stops signature REPLAY:
+ * you cannot take my packet, swap in your address, and keep my signature. It
+ * does NOT stop evidence THEFT: anyone who sees my evidence can re-sign the
+ * same content under their own key, which is a valid packet by construction.
+ * No signature scheme fixes that in a single round — the defences are
+ * (a) the evidence goes to the RESOLVER, the declared neutral party, not to the
+ * buyer, who is the one party with a motive to steal the work and refund
+ * itself, and (b) commit-reveal ordering, which is the real fix and is
+ * roadmapped, not built. See README "Not built yet". */
 function submissionDigest(
 	contractId: string,
+	worker: string,
 	evidence: EvidenceEntry[],
 ): Buffer {
 	return _ch("sha256")
-		.update(`${contractId}|${JSON.stringify(evidence)}`)
+		.update(`${contractId}|${worker}|${JSON.stringify(evidence)}`)
 		.digest();
 }
 
@@ -364,7 +387,9 @@ export function makeSubmission(o: {
 	contractId: string;
 	evidence: EvidenceEntry[];
 }): OpenSubmission {
-	const sig = o.worker.sign(submissionDigest(o.contractId, o.evidence));
+	const sig = o.worker.sign(
+		submissionDigest(o.contractId, o.worker.publicKey(), o.evidence),
+	);
 	return {
 		bountyContract: o.contractId,
 		worker: o.worker.publicKey(),
@@ -396,7 +421,7 @@ export function pickWinner(
 			sigOk = _KP
 				.fromPublicKey(s.worker)
 				.verify(
-					submissionDigest(contractId, s.evidence),
+					submissionDigest(contractId, s.worker, s.evidence),
 					Buffer.from(s.signature, "base64"),
 				);
 		} catch {

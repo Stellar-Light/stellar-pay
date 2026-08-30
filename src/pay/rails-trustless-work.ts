@@ -312,6 +312,8 @@ export const trustlessWorkRails: EscrowRails = {
 			buyer: String(e.roles?.platform ?? e.roles?.approver ?? ""),
 			provider: String(e.roles?.receiver ?? ""),
 			resolver: String(e.roles?.dispute_resolver ?? ""),
+			approver: String(e.roles?.approver ?? ""),
+			releaseSigner: String(e.roles?.release_signer ?? ""),
 			tokenContract: token,
 			engagementId: String(e.engagement_id ?? ""),
 		};

@@ -60,8 +60,13 @@ export function buildGoverned(o: {
 	catalog: Entry[];
 	approve: (offer: Offer, url: string) => Promise<boolean>;
 	refusalReason: (offer: Offer, url: string) => string;
-	/** re-checked on each redirect hop (SSRF / per-host policy) */
-	guard?: (url: string) => Promise<string | null> | string | null;
+	/** Re-checked on EVERY redirect hop (SSRF + per-host policy). REQUIRED, not
+	 * optional: the MCP shipped without one, so a 302 from an approved public
+	 * host to 169.254.169.254 was followed and its body handed to the agent —
+	 * and a `deny: true` host became payable by redirecting to it. An optional
+	 * security parameter is one a caller forgets silently. Pass `() => null`
+	 * only in a test that means "no guard". */
+	guard: (url: string) => Promise<string | null> | string | null;
 	prefer?: "x402" | "mpp";
 	budgetPerCall: number;
 }): Governed {

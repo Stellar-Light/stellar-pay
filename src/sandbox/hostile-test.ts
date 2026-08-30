@@ -47,6 +47,10 @@ const g = buildGoverned({
 	catalog: [],
 	approve: async () => false,
 	refusalReason: () => "no",
+	// This test deliberately targets a loopback server, so the real guard would
+	// (correctly) refuse it. An explicit no-op is the point of the required
+	// parameter: a caller must SAY "no guard", never omit it by accident.
+	guard: () => null,
 	budgetPerCall: 0.05,
 });
 

@@ -7,8 +7,11 @@
  *      worker2 does the REAL work (live directory fetches) — worker2 wins
  *      and is paid the FULL pot despite never holding an escrow role
  *      (settled via the dispute path's arbitrary distributions).
- *   3. ANTI-THEFT: worker1 re-wraps worker2's evidence under their own
- *      payout address — the ed25519 signature check rejects it.
+ *   3. ANTI-REPLAY, and its honest limit: worker1 re-wraps worker2's evidence
+ *      under their own address keeping worker2's signature — rejected. But a
+ *      thief who re-SIGNS the same evidence with their own key produces a
+ *      valid packet, and this test asserts that too, because pretending
+ *      otherwise is how the first version shipped a false security claim.
  *
  *   npm run test:bounty-open
  */
@@ -121,30 +124,50 @@ async function main() {
 		contractId: posted.contractId,
 		evidence: real,
 	});
-	// 3. The theft attempt: w1 re-wraps w2's evidence under their own address,
-	// reusing w2's signature (they cannot produce their own over it).
-	const stolen = { ...sub2, worker: worker1.publicKey() };
+	// 3. The theft attempts. TWO shapes, because v1 only stopped the easy one:
+	//   (a) REPLAY: re-wrap w2's evidence + w2's signature under w1's address.
+	//   (b) RE-SIGN: w1 signs the SAME evidence with its OWN key — the real
+	//       attack, and the one that used to win, because the digest did not
+	//       cover the worker address. This is the regression guard.
+	const stolenReplay = { ...sub2, worker: worker1.publicKey() };
+	const stolenResigned = makeSubmission({
+		worker: worker1,
+		contractId: posted.contractId,
+		evidence: real,
+	});
 
-	// Offline sanity of the selection BEFORE settling (order: sloppy, stolen, real).
-	const sel = pickWinner(
-		posted.contractId,
-		[sub1, stolen, sub2],
-		verificationEvidencePolicy(descriptor),
-	);
+	// Offline sanity of the selection BEFORE settling (order: sloppy, replay, real).
+	const pol = verificationEvidencePolicy(descriptor);
+	const sel = pickWinner(posted.contractId, [sub1, stolenReplay, sub2], pol);
 	console.log(
 		`judge    ${sel.judged.map((j) => `${j.worker.slice(0, 6)}:${j.reason}`).join(" · ")}`,
 	);
 	if (sel.winner?.worker !== worker2.publicKey())
 		throw new Error("selection did not pick the real worker");
 	if (sel.judged[1]?.reason !== "bad-signature")
-		throw new Error("stolen submission was not rejected for its signature");
+		throw new Error("replayed signature was not rejected");
+
+	// The HONEST limit of the scheme, asserted rather than claimed away: a thief
+	// who OBTAINS the evidence can re-sign it under their own key and that packet
+	// is valid by construction. Arrival order is the only thing protecting the
+	// author, which is exactly why submitUrl must be the resolver's inbox and why
+	// commit-reveal is on the roadmap. If this assertion ever starts failing,
+	// someone built the real fix — update the docs with it.
+	const resigned = pickWinner(posted.contractId, [stolenResigned, sub2], pol);
+	if (resigned.winner?.worker !== worker1.publicKey())
+		throw new Error(
+			"re-signed theft no longer wins on arrival order — the fix landed; update bounty.ts's header, README's gap list and this test",
+		);
+	console.log(
+		"limit    re-signed evidence arriving FIRST still wins (documented: single-round submission has no cryptographic author lock)",
+	);
 
 	// Settle on-chain: winner paid via the dispute path's distributions.
 	const res = await resolveOpenBounty({
 		descriptor,
 		resolver,
 		contractId: posted.contractId,
-		submissions: [sub1, stolen, sub2],
+		submissions: [sub1, stolenReplay, sub2],
 		disputeRaiser: buyer,
 	});
 	const got = await creditedSum(
@@ -180,7 +203,7 @@ async function main() {
 		throw new Error("ledger incomplete");
 
 	console.log(
-		"\nRESULT: PASS — open race: sloppy work rejected, stolen evidence rejected by signature, the real worker won the full escrowed pot without ever holding an escrow role.",
+		"\nRESULT: PASS — open race: sloppy work rejected, a REPLAYED signature rejected, the real worker paid the full escrowed pot without ever holding an escrow role. Documented limit: a re-signed copy of the evidence arriving first would win, so evidence goes to the resolver and commit-reveal is roadmapped.",
 	);
 }
 

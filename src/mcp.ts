@@ -49,7 +49,7 @@ import {
 } from "./pay/governed.js";
 import { disputeJob } from "./pay/job.js";
 import { isStellar, type Offer, offerUSD, readOffers } from "./pay/offers.js";
-import { autoApprove, decide, explorer } from "./pay/policy.js";
+import { autoApprove, decide, explorer, resolveHost } from "./pay/policy.js";
 import { list as listReceiptRows, record } from "./pay/receipts.js";
 import { history, sendUSDC } from "./pay/send.js";
 import {
@@ -259,6 +259,14 @@ function getGoverned(): Promise<Governed> {
 			catalog,
 			approve: approveGate(w),
 			refusalReason: (offer, url) => gateRefusal(offer, url),
+			// Every redirect hop re-runs BOTH gates the caller-supplied URL got:
+			// the SSRF guard and the per-host spend policy. Without this a 302
+			// walked the agent onto loopback/metadata addresses and onto hosts the
+			// operator had explicitly denied.
+			guard: async (u) =>
+				(await blockedTarget(u)) ??
+				resolveHost(u, { requested: MAX_PER_CALL }).blocked ??
+				null,
 			budgetPerCall: MAX_PER_CALL,
 		});
 		return governed;

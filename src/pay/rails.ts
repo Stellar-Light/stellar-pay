@@ -49,6 +49,13 @@ export type EscrowState = {
 	buyer: string;
 	provider: string;
 	resolver: string;
+	/** who may approve the milestone, and who may sign the release. A vetting
+	 * stranger MUST see these: an escrow can name a neutral dispute_resolver
+	 * while the BUYER quietly holds approve + release, which lets the buyer
+	 * take the work and pay itself. Not visible in the roles the agreement
+	 * renders, so it has to come off the struct. */
+	approver: string;
+	releaseSigner: string;
 	tokenContract: string;
 	/** the terms address: sha256 of the agreement doc, pinned at init */
 	engagementId: string;

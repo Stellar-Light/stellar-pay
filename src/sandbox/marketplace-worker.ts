@@ -61,7 +61,12 @@ async function main() {
 
 	// discover + vet — the feed is untrusted input.
 	const listings = await fetchFeed(FEED_URL);
-	const judged = [];
+	const judged: Array<{
+		contractId: string;
+		claimedAmount: string | undefined;
+		valid: boolean;
+		failed: string[];
+	}> = [];
 	for (const listing of listings) {
 		const vet = await vetListing({ listing, source: me });
 		judged.push({

@@ -339,6 +339,8 @@ check(
 		buyer: buyerKP.publicKey(),
 		provider: buyerKP.publicKey(),
 		resolver: resolverKP.publicKey(),
+		approver: resolverKP.publicKey(),
+		releaseSigner: resolverKP.publicKey(),
 		tokenContract: "CTOKEN",
 		engagementId: viaKeypair.hash,
 	};
@@ -370,6 +372,14 @@ check(
 	check(
 		"worker vet: description not matching engagement_id → terms-pinned fails",
 		failed({ ...honest, description: `${viaKeypair.doc} ` }) === "terms-pinned",
+	);
+	check(
+		"worker vet: buyer holds approve/release → decision-seats fails",
+		failed({
+			...honest,
+			approver: buyerKP.publicKey(),
+			releaseSigner: buyerKP.publicKey(),
+		}) === "decision-seats",
 	);
 }
 
