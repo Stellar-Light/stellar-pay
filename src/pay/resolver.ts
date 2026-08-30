@@ -49,7 +49,15 @@ export type ResolverPolicy = (
 	ctx: ResolverContext,
 ) => "yes" | "no" | Promise<"yes" | "no">;
 
-/** Deterministic: yes iff the evidence carries the expected deliverable hash. */
+/** Deterministic: yes iff the evidence carries the expected deliverable hash.
+ *
+ * SOUNDNESS CONDITION (be honest about what this proves): it proves the
+ * worker KNOWS the hash, not that they HAVE the deliverable. It is only
+ * meaningful when the expected hash is NOT derivable from the public
+ * agreement (e.g. the buyer computes it over a deliverable that travels out
+ * of band, and hands it to the resolver privately). If the hash is printed
+ * in the terms, any worker can echo it — use verificationEvidencePolicy or
+ * a callbackPolicy that re-hashes the actual artifact instead. */
 export function hashMatchPolicy(expectedHash: string): ResolverPolicy {
 	return ({ evidence }) =>
 		evidence.toLowerCase().includes(expectedHash.toLowerCase()) ? "yes" : "no";

@@ -289,6 +289,10 @@ export async function drawFromVault(o: {
 	)) as TxResult;
 	if (res.success === false) {
 		const refusal = res.error?.message ?? "refused";
+		// Only a real cap refusal is a POLICY decision; a network/RPC failure
+		// receipted as "spending-limit" would be the ledger lying about what
+		// the chain decided.
+		const isCapRefusal = /spending limit|exceed/i.test(refusal);
 		record({
 			kind: "policy-decision",
 			network: "stellar:testnet",
@@ -297,7 +301,9 @@ export async function drawFromVault(o: {
 			payee: o.wallet.publicKey,
 			detail: {
 				allowed: false,
-				rule: "vault spending-limit (on-chain)",
+				rule: isCapRefusal
+					? "vault spending-limit (on-chain)"
+					: "vault draw failed (unclassified — not a chain refusal)",
 				vault: v.contractId,
 				reason: refusal.slice(0, 200),
 			},

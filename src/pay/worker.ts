@@ -58,6 +58,9 @@ export async function fetchFeed(from: string): Promise<OpenBountyListing[]> {
 		const r = await fetch(from, { signal: AbortSignal.timeout(10_000) });
 		if (!r.ok) throw new Error(`feed ${from}: HTTP ${r.status}`);
 		text = await r.text();
+		// A feed is a stranger's server; bound what we'll parse.
+		if (text.length > 2_000_000)
+			throw new Error(`feed ${from}: over 2MB — refusing to parse`);
 	} else {
 		text = readFileSync(from, "utf8");
 	}
@@ -193,33 +196,41 @@ export async function submitPacket(o: {
 }
 
 /** Everything credited to `account` in effects AFTER `cursor` — SUMMED, never
- * .find(): settlement can credit in several records and fee crumbs exist. */
+ * .find() (settlement can credit in several records and fee crumbs exist),
+ * and PAGED: a busy account can push the payout past the first page. */
 async function creditedSince(
 	account: string,
 	cursor: string,
 ): Promise<{ stroops: bigint; opHref: string | null }> {
-	const q = cursor ? `&cursor=${encodeURIComponent(cursor)}` : "";
-	const r = await fetch(
-		`${HORIZON}/accounts/${account}/effects?order=asc&limit=100${q}`,
-		{ signal: AbortSignal.timeout(10_000) },
-	);
-	if (!r.ok) return { stroops: 0n, opHref: null };
-	const d = (await r.json()) as {
-		_embedded?: {
-			records?: Array<{
-				type: string;
-				amount?: string;
-				_links?: { operation?: { href?: string } };
-			}>;
-		};
-	};
 	let stroops = 0n;
 	let opHref: string | null = null;
-	for (const rec of d._embedded?.records ?? []) {
-		if (rec.type !== "account_credited") continue;
-		const [i = "0", f = ""] = (rec.amount ?? "0").split(".");
-		stroops += BigInt(i) * 10_000_000n + BigInt((f + "0000000").slice(0, 7));
-		opHref = rec._links?.operation?.href ?? opHref;
+	let next = cursor;
+	for (let page = 0; page < 10; page++) {
+		const q = next ? `&cursor=${encodeURIComponent(next)}` : "";
+		const r = await fetch(
+			`${HORIZON}/accounts/${account}/effects?order=asc&limit=100${q}`,
+			{ signal: AbortSignal.timeout(10_000) },
+		);
+		if (!r.ok) break;
+		const d = (await r.json()) as {
+			_embedded?: {
+				records?: Array<{
+					type: string;
+					amount?: string;
+					paging_token?: string;
+					_links?: { operation?: { href?: string } };
+				}>;
+			};
+		};
+		const records = d._embedded?.records ?? [];
+		for (const rec of records) {
+			if (rec.paging_token) next = rec.paging_token;
+			if (rec.type !== "account_credited") continue;
+			const [i = "0", f = ""] = (rec.amount ?? "0").split(".");
+			stroops += BigInt(i) * 10_000_000n + BigInt((f + "0000000").slice(0, 7));
+			opHref = rec._links?.operation?.href ?? opHref;
+		}
+		if (records.length < 100) break;
 	}
 	return { stroops, opHref };
 }
