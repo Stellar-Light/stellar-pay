@@ -84,8 +84,16 @@ check(
 	String(ok.res.status),
 );
 
-internal.close();
-bouncer.close();
+// Close DETERMINISTICALLY before exiting. `server.close()` only stops new
+// connections — it stays pending while keep-alive sockets drain, and calling
+// process.exit() in that window tore down handles mid-close: on Windows CI
+// every run of this file passed 4/4 and then died with
+// `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING) … src\win\async.c`,
+// which reads like a test failure and is really an unclean exit.
+for (const s of [internal, bouncer]) {
+	s.closeAllConnections?.(); // drop keep-alive sockets so close() can finish
+	await new Promise<void>((r) => s.close(() => r()));
+}
 console.log(
 	`\n${fail === 0 ? "ALL PASS" : `${fail} FAILED`} — ${pass}/${pass + fail} redirect-gate checks`,
 );
