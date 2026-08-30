@@ -65,7 +65,13 @@ import {
 	policyPath,
 	resolveHost,
 } from "./pay/policy.js";
-import { BRIDGES, EXCHANGES, onramps, partnerRamps } from "./pay/ramps.js";
+import {
+	BRIDGES,
+	CASHOUT_NOTE,
+	EXCHANGES,
+	onramps,
+	partnerRamps,
+} from "./pay/ramps.js";
 import {
 	checkLedger,
 	list as listReceipts,
@@ -658,6 +664,63 @@ async function cmdAccount(a: Args): Promise<void> {
 	);
 	process.exitCode = 1;
 	return;
+}
+
+/** `cashout` — the exit an EARNING agent needs.
+ *
+ * The counterpart to `topup`, and the missing end of the loop this whole
+ * project is about: if people pay agents for work, the agent has to be able to
+ * realise it. We surface routes and hand over the numbers; the withdrawal
+ * itself happens at an anchor, under their KYC. See CASHOUT_NOTE. */
+async function cmdCashout(a: Args): Promise<void> {
+	await ensureSecretLoaded(a.account);
+	const w = loadWallet();
+	const bal = await balances(w.publicKey, w.network);
+	const anchors = await partnerRamps("off-ramp");
+	const out = {
+		address: w.publicKey,
+		network: w.network,
+		balances: bal,
+		note: CASHOUT_NOTE,
+		anchors: anchors.map((r) => ({
+			name: r.name,
+			url: r.url,
+			regions: r.regions,
+			usdc: r.usdc,
+		})),
+		exchanges: EXCHANGES.map((e) => ({
+			...e,
+			how: "deposit USDC over the Stellar network, then withdraw to a bank",
+		})),
+	};
+	emit(a, out, () => {
+		console.log(`address  ${w.publicKey}`);
+		console.log(`holding  ${bal.usdc ?? "0"} USDC · ${bal.xlm ?? "0"} XLM`);
+		if (w.network !== "stellar:pubnet")
+			console.error(
+				"\nNOTE: this is a TESTNET wallet — testnet assets have no value and cannot be cashed out. The routes below are the mainnet ones, listed so you know where the exit is.",
+			);
+		if (anchors.length) {
+			console.log("\nfiat anchors (USDC on Stellar → your bank/cash):");
+			for (const r of anchors)
+				console.log(
+					`  ${r.name}${r.usdc ? "" : " (check asset support)"} — ${r.url}${r.regions.length ? `  [${r.regions.join(", ")}]` : ""}`,
+				);
+		} else {
+			console.log(
+				"\nfiat anchors: none returned by the directory right now — try the exchange route below",
+			);
+		}
+		console.log("\nexchange route:");
+		for (const e of EXCHANGES)
+			console.log(
+				`  ${e.name} — deposit USDC on the STELLAR network, then withdraw to a bank · ${e.url}`,
+			);
+		console.log(`\n${CASHOUT_NOTE}`);
+		console.error(
+			"\ntip: send earnings to the deposit address an anchor or exchange gives you with:\n  stellar-pay send <their-G…-address> --amount <N>",
+		);
+	});
 }
 
 async function cmdTopup(a: Args): Promise<void> {
@@ -1697,6 +1760,7 @@ WALLET
   account export [--name N] [<file>]         back up (to a 0600 file, or stderr)
   account default --name N | remove --name N
   topup [--buy] [--amount N]                 fund the wallet (QR + on-ramps; --buy opens a card ramp)
+  cashout [--json]                          the EXIT: where USDC on Stellar converts to fiat
   send <G…address|account-name> --amount <USDC|max> [--yes]
                                              send USDC; 'max' drains the balance
   history [--limit N] [--json]
@@ -1731,6 +1795,7 @@ const commands: Record<string, (a: Args, init: RequestInit) => Promise<void>> =
 		account: cmdAccount,
 		accounts: cmdAccount,
 		topup: cmdTopup,
+		cashout: cmdCashout,
 		send: cmdSend,
 		history: cmdHistory,
 		receipts: cmdReceipts,

@@ -24,15 +24,30 @@ export type Ramp = {
 const DIRECTORY =
 	process.env.STELLAR_PAY_DIRECTORY ?? "https://www.stellarlight.xyz";
 
-let cache: { at: number; ramps: Ramp[] } | null = null;
-
 /** On-ramp anchors from the partner directory, USDC + global first. */
-export async function partnerRamps(): Promise<Ramp[]> {
-	if (cache && Date.now() - cache.at < 60 * 60_000) return cache.ramps;
+export type RampDirection = "on-ramp" | "off-ramp";
+
+const cacheByDir = new Map<RampDirection, { at: number; ramps: Ramp[] }>();
+
+/** Anchors from the partner directory, in one direction.
+ *
+ * `off-ramp` is not a new data source — the directory has always carried these
+ * rows (MoneyGram, FinClusive, Bitso, Anclap, Honey Coin); we filtered them
+ * out. That left an agent which EARNS with no documented way to realise it,
+ * which is a strange hole in a project about paying agents for work. */
+export async function partnerRamps(
+	direction: RampDirection = "on-ramp",
+): Promise<Ramp[]> {
+	const hit = cacheByDir.get(direction);
+	if (hit && Date.now() - hit.at < 60 * 60_000) return hit.ramps;
 	let out: Ramp[] = [];
 	try {
+		const query =
+			direction === "off-ramp"
+				? "USDC fiat off-ramp cash out withdraw"
+				: "USDC fiat on-ramp buy crypto";
 		const r = await fetch(
-			`${DIRECTORY}/api/partners?q=${encodeURIComponent("USDC fiat on-ramp buy crypto")}&limit=40`,
+			`${DIRECTORY}/api/partners?q=${encodeURIComponent(query)}&limit=40`,
 			{
 				headers: { accept: "application/json" },
 				signal: AbortSignal.timeout(15_000),
@@ -51,7 +66,7 @@ export async function partnerRamps(): Promise<Ramp[]> {
 				}>;
 			};
 			out = (d.partners ?? [])
-				.filter((p) => (p.rampTypes ?? []).includes("on-ramp"))
+				.filter((p) => (p.rampTypes ?? []).includes(direction))
 				.map((p) => {
 					const assets = p.assets ?? [];
 					return {
@@ -73,7 +88,7 @@ export async function partnerRamps(): Promise<Ramp[]> {
 	} catch {
 		// directory unreachable — fall through to the curated paths only
 	}
-	cache = { at: Date.now(), ramps: out };
+	cacheByDir.set(direction, { at: Date.now(), ramps: out });
 	return out;
 }
 
@@ -86,6 +101,19 @@ export const EXCHANGES: Array<{ name: string; url: string }> = [
 	{ name: "Coinbase", url: "https://www.coinbase.com" },
 	{ name: "Kraken", url: "https://www.kraken.com" },
 ];
+
+/**
+ * The honest shape of cashing out, stated once so no command implies more.
+ *
+ * We do NOT move your money off Stellar and cannot: every fiat exit runs
+ * through an anchor's own KYC and their SEP-24 flow, in their interface, under
+ * their licences. What we can do is tell you exactly which doors exist for the
+ * asset you actually hold, and hand you the address and amount to paste. That
+ * is the same posture as `topup`, and the same reason `verify` exists: be the
+ * neutral thing that tells you the truth about a route you then walk yourself.
+ */
+export const CASHOUT_NOTE =
+	"stellar-pay does not perform the withdrawal: fiat exits run through an anchor's own KYC and interface. These are the routes that exist for USDC on Stellar.";
 
 /** Cross-chain routes for USDC you already hold elsewhere. */
 export const BRIDGES: Array<{ name: string; url: string; note: string }> = [

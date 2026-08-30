@@ -374,6 +374,7 @@ same spend governance.
 ```sh
 stellar-pay setup --save main                 # new wallet, sealed in an encrypted local keystore
 stellar-pay topup                             # get USDC in: QR + address + live on-ramps; waits for the deposit
+stellar-pay cashout                           # get value OUT: live fiat anchors + the exchange route
 stellar-pay balance                           # USDC + XLM at a glance
 stellar-pay send <G...address|name> --amount 1.5   # send USDC (confirms first); --amount max drains
 stellar-pay account export --name main backup.json # 0600 backup; import restores it
@@ -411,7 +412,7 @@ Each row links to its section — full flags there, not a pointer to the pitch.
 | **[Escrowed jobs](#-the-work-layer--escrowed-jobs-testnet-preview)** | `bounty post/assign/open/list/commit/pack/submit/dispute/resolve/watch/status` — testnet |
 | **[The vault](#-fund-an-agent-the-vault-testnet)** | `vault create/topup/draw/status` |
 | **[Receipts](#-receipts-the-evidence-substrate)** | `receipts`, `receipts check`, `--verify` |
-| **[Manage accounts](#-wallet)** | `setup --save`, the `account` family, `--account`, `send`, `history` |
+| **[Manage accounts](#-wallet)** | `setup --save`, the `account` family, `--account`, `send`, `history`, `topup`/`cashout` |
 | **[Find things to pay for](#find-things-to-pay-for)** | `search` over the daily-probed catalog |
 | **[Spend policy](#-for-agents-mcp-claude-code-raven)** | per-host ceilings, deny, allowlist |
 | **[Exit codes & JSON](#exit-codes--json)** | what to branch on in a script |
