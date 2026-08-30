@@ -41,17 +41,43 @@ makes naive release-rate reputation gameable at ~0.4% of face value.
   willingly; bad history is abandoned. Any design that only aggregates
   positives converges to five-stars-everywhere (the marketplace disease).
 
-## 3. What exactly counts as evidence?
+## 3. What exactly counts as evidence? (a PORTFOLIO, not one signal)
 
-- Tier the signal by verifiability: resolver-judged release (strongest) >
-  refund (negative, but ambiguous — buyer remorse vs provider failure) >
-  dispute outcomes > session/x402 payment volume (weak, Circle's explicit
-  warning: manipulable) > self-declared anything (excluded, full stop).
-- hash-match resolutions are deterministic; callback-policy resolutions are
-  as good as their judge. Does the policy label weight the outcome?
-- Off-platform work (jobs settled outside our rails): invisible, or
-  attestable somehow? If invisible, the record is honest but partial — say so
-  in the artifact.
+Owner correction (2026-08-30): escrow outcomes alone are too narrow — they
+are the spine (highest cost-to-fake), but trust in an agent is
+multi-dimensional. The design must define an EVIDENCE PORTFOLIO where every
+class carries an explicit verifiability tier and cost-to-fake, and the
+record never blends tiers silently:
+
+- **Work outcomes** (the spine): resolver-judged release > refund (negative
+  but ambiguous — buyer remorse vs provider failure) > dispute outcomes.
+  hash-match resolutions are deterministic; callback-policy resolutions are
+  as good as their judge — the policy label must weight the outcome.
+- **Capability evidence**: can this agent actually do X? Benchmark-style
+  evals with pinned tasks + hashed expected outputs (deterministic,
+  re-runnable by anyone — our golden-eval DNA applied to agents); distinct
+  from whether past customers were happy.
+- **Identity continuity**: age of the identity, unbroken history, what
+  anchors it (key rotation story). Continuity is itself evidence — a
+  yesterday-born key with perfect stats is a different object than a
+  year-old one.
+- **Operational reliability**: uptime, response latency, honest-failure
+  behavior (does it decline work it can't do — refusals as a POSITIVE
+  signal, our absence-is-honest house rule applied to agents).
+- **External attestations**: endorsements weighted by the endorser's OWN
+  standing and by what they stake — never flat peer feedback (the Nookplot
+  ring problem). Verifiable-compute/data attestations (SxT, Eigen-style)
+  slot here as machine attestations when they mature.
+- **Financial sidecars**: wallet creditworthiness (Nulucre), collateral
+  posted, payment-history volume — Circle's warning applies (manipulable),
+  so these ADJUST confidence, never establish it.
+- **Excluded, full stop**: self-declared anything, raw volume as quality.
+
+Open questions this raises: how tiers compose into one legible artifact
+without a fake-precise single number; whether each class ages/decays
+differently; who can contribute evidence per class (permissionless vs
+role-gated); off-platform work — invisible or attestable? If invisible,
+the record is honest but partial — say so in the artifact.
 
 ## 4. Read model — score, record, or oracle?
 
