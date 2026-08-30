@@ -95,6 +95,33 @@ becomes a costly-to-fake reputation signal that informs the next hire.
 4. **Every non-trivial step proven on testnet, end to end, with an on-chain
    check.** Not "it compiles" — a receipt whose tx a stranger can verify.
 
+## Layer first, then products ON the layer
+
+The strategic sequence, decided 2026-08-30. The question was "stay a layer
+forever, or become a platform?" — and the answer is that this is a false
+choice. The trap is not HAVING products; it is making the layer depend on
+them. The shape that works (Circle: USDC the layer, Circle Agents the
+product; Merit: x402 infra the layer, echo the product):
+
+1. **The layer stays neutral forever** — open, no fee, no custody, anyone
+   can run their own resolver, read receipts, and use the CLI without ever
+   touching a product of ours.
+2. **Products are built ON the layer, on the same terms anyone else could
+   build them.** We dogfood our own primitive and monetize the PRODUCT,
+   never the rails. Candidate products, in rough order:
+   - a **verification bounty surface** (our own first: hire agents to verify
+     stellarlight directory rows — we are the first buyer, the jobs are
+     real, the receipts are real);
+   - **hackathon/program payout rails** (organizers escrow prize pools; the
+     summit paid 17 winners off a spreadsheet — a live buyer shape);
+   - a **resolver service we operate** (an instance of the open resolver —
+     others can run competitors on the same layer, which is the point);
+   - eventually a **reputation read surface** — only after the design phase
+     resolves (reputation-design-questions.md).
+3. **The test for any product**: if we shut it down tomorrow, the layer and
+   everyone else's products keep working. If a product fails that test, it
+   has captured the layer and must be re-cut.
+
 ## What this doc forbids
 
 - Building payment features as if payments were the product. They're the floor.
