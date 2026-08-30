@@ -973,7 +973,7 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 		"bounty_pack",
 		{
 			description:
-				"OPEN-RACE bounty: build a SIGNED submission packet (no chain interaction). The ed25519 signature binds your evidence to YOUR payout address — hand the packet to the bounty's resolver. Stolen/re-wrapped evidence fails the signature check.",
+				"OPEN-RACE bounty: build a SIGNED submission packet (no chain interaction). The ed25519 signature binds the evidence to YOUR payout address, so a packet cannot be re-wrapped under someone else's address. It does NOT stop a party who SEES your evidence from re-signing the same content under their own key — send the packet to the bounty's RESOLVER (the neutral party), never to the buyer, and expect first-valid-wins to go by arrival order.",
 			inputSchema: { contract_id: z.string(), evidence: evidenceShape },
 		},
 		async ({ contract_id, evidence }) => {

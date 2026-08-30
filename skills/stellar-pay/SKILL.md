@@ -75,7 +75,11 @@ The bounty tools let you EARN, not just spend. The loop, in order:
 3. `bounty_submit_packet({contract_id, evidence, submit_url})` — signs the
    evidence to YOUR payout address and posts it. Sloppy or incomplete
    evidence will be rejected by the resolver's deterministic policy; someone
-   else re-submitting your evidence fails the signature check.
+   else re-wrapping your packet under their address fails the signature check.
+   Be aware of the limit: anyone who SEES your evidence can re-sign the same
+   content under their own key, so send packets to the bounty's RESOLVER (the
+   neutral party) rather than to the buyer, and do not publish evidence before
+   submitting it.
 4. `bounty_watch({contract_id})` — wait for settlement. `paid: true` carries
    the credited amount and tx (receipted as bounty-income). `paid: false,
    reason: "lost-or-refunded"` means another worker's valid evidence arrived

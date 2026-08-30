@@ -152,7 +152,11 @@ export function offerUSD(o: Offer): number | null {
 	if (!o.amount || !o.asset) return null;
 	if (USDC_SAC[o.network] !== o.asset) return null;
 	const usd = Number(o.amount) / 10_000_000;
-	return Number.isFinite(usd) ? usd : null;
+	// NEGATIVE is as dangerous as NaN and less obvious: -$100 satisfies every
+	// `usd > ceiling` test, so the gate approves it, and adding it to a running
+	// session total RAISES the remaining budget. A price is a non-negative
+	// number or it is not a price.
+	return Number.isFinite(usd) && usd >= 0 ? usd : null;
 }
 
 export function describeOffer(o: Offer): string {

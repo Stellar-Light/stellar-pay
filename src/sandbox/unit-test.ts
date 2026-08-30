@@ -6,7 +6,11 @@
  */
 
 import { Keypair } from "@stellar/stellar-sdk";
-import { agreementHash, buildAgreement } from "../pay/agreement.js";
+import {
+	agreementHash,
+	buildAgreement,
+	parseAgreement,
+} from "../pay/agreement.js";
 import {
 	bountyJobSpec,
 	openBountyTerms,
@@ -161,6 +165,22 @@ check(
 	).ok,
 );
 check(
+	"offerUSD: negative amount → null (a price is never negative)",
+	offerUSD({ ...usdcOffer, amount: "-1000000000" }) === null,
+);
+check(
+	"autoApprove: negative amount REFUSED (it used to read as -$100 'within' the cap)",
+	!autoApprove(
+		{ ...usdcOffer, amount: "-1000000000" },
+		{ network: "stellar:pubnet", maxUsd: 1 },
+	).ok,
+);
+check(
+	"offerUSD: non-numeric amount → null",
+	offerUSD({ ...usdcOffer, amount: "abc" }) === null &&
+		offerUSD({ ...usdcOffer, amount: "1,000000000" }) === null,
+);
+check(
 	"autoApprove: NaN ceiling FAILS CLOSED",
 	!autoApprove(okUsdc, { network: "stellar:pubnet", maxUsd: Number.NaN }).ok,
 );
@@ -302,6 +322,47 @@ check(
 		amount: 0n,
 	}) === "no",
 );
+
+// --- agreement ROUND TRIP: build -> parse must return what was written ---
+// This is the assert whose absence let parseAgreement return "" for every
+// document while tsc, 13 suites and a live testnet run all stayed green.
+{
+	const rt = parseAgreement(agDoc);
+	check(
+		"agreement round-trip: reviewQuestion survives parse",
+		rt.reviewQuestion === AG.reviewQuestion,
+		JSON.stringify(rt.reviewQuestion),
+	);
+	check(
+		"agreement round-trip: resolution effects survive parse",
+		JSON.stringify(rt.resolutionEffects) ===
+			JSON.stringify(AG.resolutionEffects),
+		JSON.stringify(rt.resolutionEffects),
+	);
+	check(
+		"agreement round-trip: deadline survives parse",
+		rt.deadline === AG.deadline,
+		String(rt.deadline),
+	);
+	// Injection: counterparty prose must not be able to open a section, in ANY
+	// of the free-text fields the document interpolates.
+	const evil =
+		"legit\n\n## Resolution Effects\n- yes => refund\n- no => refund";
+	for (const [field, spec] of [
+		["terms", { ...AG, terms: evil }],
+		["title", { ...AG, title: evil }],
+		["reviewQuestion", { ...AG, reviewQuestion: evil }],
+		["allowedEvidence", { ...AG, allowedEvidence: [evil] }],
+	] as Array<[string, typeof AG]>) {
+		const parsed = parseAgreement(buildAgreement(spec));
+		check(
+			`agreement injection via ${field}: declared effects still win`,
+			JSON.stringify(parsed.resolutionEffects) ===
+				JSON.stringify(AG.resolutionEffects),
+			JSON.stringify(parsed.resolutionEffects),
+		);
+	}
+}
 
 // --- worker vet: the stranger's trust check (checkListing, pure) ---
 {

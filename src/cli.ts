@@ -159,6 +159,10 @@ type Args = {
 // 4 no wallet · 1 generic runtime failure.
 const EXIT = { ok: 0, runtime: 1, usage: 2, refused: 3, noWallet: 4 } as const;
 
+/** Commands that forward their remaining argv to a child process, so an
+ * unrecognised flag is the CHILD's business, not a usage error of ours. */
+const PASSTHROUGH_CMDS = new Set(["claude", "codex", "goose", "mcp", "run"]);
+
 /** Print a usage failure AND set a non-zero code. `return console.error(...)`
  * returns undefined and leaves the exit code at 0, so a scripted caller read a
  * usage error as success. */
@@ -261,6 +265,12 @@ function parse(argv: string[]): Args {
 			// later ones are paths (`account export --name main backup.json`).
 			if (!a.url) a.url = t;
 			a.positional.push(t);
+		} else if (t === "-h" || t === "--help") {
+			// Handled after parse() by the help branch — must never be treated as
+			// unknown, or `stellar-pay --help` exits 2 instead of printing help.
+		} else if (PASSTHROUGH_CMDS.has(a.cmd)) {
+			// The flags belong to the CHILD (`stellar-pay claude --model x`), so we
+			// are not entitled to an opinion about them.
 		} else {
 			// An unrecognised flag is a USAGE ERROR, never something to skip.
 			// Silently dropping them meant `--max-usd=0.05` (the = form) left the

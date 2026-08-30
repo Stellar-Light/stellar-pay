@@ -75,7 +75,13 @@ export function buildAgreement(a: AgreementInput): string {
 		`  - address: "${a.buyer}"\n    role: buyer`,
 		`  - address: "${a.provider}"\n    role: provider`,
 	].join("\n");
-	const evidence = a.allowedEvidence.map((e) => `- ${e}`).join("\n");
+	// EVERY free-text field a counterparty controls gets escaped, not just
+	// `terms`. Escaping one field and interpolating four others is the same bug
+	// with a smaller blast radius: title, the review question, each allowed-
+	// evidence line and the policy label all land in the parsed document too.
+	const evidence = a.allowedEvidence
+		.map((e) => `- ${demoteHeadings(e)}`)
+		.join("\n");
 	const effects = a.resolutionEffects
 		.map(([ans, out]) => `- ${ans} => ${out}`)
 		.join("\n");
@@ -86,13 +92,13 @@ contract_type: trustless-work-single-release
 parties:
 ${parties}
 resolver: "${a.resolver}"
-resolver_policy: ${a.resolverPolicy}
+resolver_policy: ${demoteHeadings(a.resolverPolicy)}
 deadline: "${a.deadline}"
 ---
 
 # Agreement
 
-${a.title}
+${demoteHeadings(a.title)}
 
 ## Terms
 
@@ -102,7 +108,7 @@ Settlement rails: Trustless Work single-release escrow on ${a.network}. Payment:
 
 ## Review Question
 
-${a.reviewQuestion}
+${demoteHeadings(a.reviewQuestion)}
 
 ## Allowed Evidence
 
@@ -131,14 +137,39 @@ export function parseAgreement(doc: string): {
 	 * time passing, or a vanished counterparty freezes the escrow forever */
 	deadline: string | null;
 } {
-	// LINE-ANCHORED (the `m` flag + `^`): an unanchored match let counterparty
-	// prose mid-document open a section and override the real terms.
-	const section = (name: string) => {
-		const m = doc.match(
-			new RegExp(`^## ${name}\\n([\\s\\S]*?)(?:\\n## |\\n*$)`, "m"),
-		);
-		return m?.[1]?.trim() ?? "";
-	};
+	// A LINE SCANNER, not a regex. The regex that lived here needed `^` anchored
+	// to line starts to stop counterparty prose from opening a section — but the
+	// `m` flag that gives you `^` also turns `$` into end-of-LINE, which made the
+	// lazy body match terminate on the first newline. Every field came back
+	// empty, silently, and the resolver's yes=>release/no=>refund FALLBACK
+	// happened to match the standard case, so the tests still passed while
+	// on-chain receipts recorded reviewQuestion: "". Scanning lines cannot fail
+	// that way and reads like what it does.
+	//
+	// FIRST occurrence wins, and headings in counterparty text are escaped at
+	// build time (demoteHeadings), so a document contains only the headings
+	// buildAgreement emitted.
+	const sections = new Map<string, string>();
+	{
+		let current: string | null = null;
+		let buf: string[] = [];
+		const flush = () => {
+			if (current !== null && !sections.has(current))
+				sections.set(current, buf.join("\n").trim());
+		};
+		for (const line of doc.split("\n")) {
+			const h = /^## (.+)$/.exec(line);
+			if (h) {
+				flush();
+				current = (h[1] ?? "").trim();
+				buf = [];
+			} else if (current !== null) {
+				buf.push(line);
+			}
+		}
+		flush();
+	}
+	const section = (name: string) => sections.get(name) ?? "";
 	const effects: Array<[string, string]> = section("Resolution Effects")
 		.split("\n")
 		.map((l) =>
