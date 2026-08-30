@@ -41,6 +41,7 @@ import {
 	nativeToScVal,
 	Operation,
 	rpc,
+	scValToNative,
 	TransactionBuilder,
 	xdr,
 } from "@stellar/stellar-sdk";
@@ -66,6 +67,11 @@ export type JobSpec = {
 	provider: string;
 	/** arbitrates disputes; defaults to buyer — DECLARED in the receipt */
 	judge?: string;
+	/** the AUTOMATED resolver (G…): when set, it holds approver +
+	 * release_signer + dispute_resolver, so a neutral third agent decides the
+	 * outcome from terms + evidence (see resolver.ts). Unset = buyer decides
+	 * (the buyer-approves default). */
+	resolver?: string;
 	/** SEP-41 token contract (SAC) the job pays in */
 	tokenContract: string;
 	/** amount in the token's base units (i128) */
@@ -186,11 +192,16 @@ function escrowScVal(
 		[
 			"roles",
 			map([
-				["approver", addr(o.buyer.publicKey())],
+				// The decision roles (approve/release/resolve) go to the resolver
+				// when one is set — a neutral third agent — else to the buyer.
+				["approver", addr(o.resolver ?? o.buyer.publicKey())],
 				["service_provider", addr(o.provider)],
 				["platform", addr(o.buyer.publicKey())],
-				["release_signer", addr(o.buyer.publicKey())],
-				["dispute_resolver", addr(o.judge ?? o.buyer.publicKey())],
+				["release_signer", addr(o.resolver ?? o.buyer.publicKey())],
+				[
+					"dispute_resolver",
+					addr(o.resolver ?? o.judge ?? o.buyer.publicKey()),
+				],
 				["receiver", addr(o.provider)],
 			]),
 		],
@@ -423,6 +434,144 @@ export async function releaseJob(o: {
 		tx,
 		refs: [o.prevReceiptId],
 		detail: { contractId: o.contractId, twFeeAddress: o.twFeeAddress },
+	});
+	return { tx, receiptId };
+}
+
+/** Read the escrow using an explicit funded source key (the usual path —
+ * the resolver already holds one). */
+export async function readEscrowAs(
+	contractId: string,
+	source: Keypair,
+): Promise<Awaited<ReturnType<typeof readEscrow>>> {
+	const prev = process.env.STELLAR_ESCROW_READER_SECRET;
+	process.env.STELLAR_ESCROW_READER_SECRET = source.secret();
+	try {
+		return await readEscrow(contractId);
+	} finally {
+		if (prev === undefined) delete process.env.STELLAR_ESCROW_READER_SECRET;
+		else process.env.STELLAR_ESCROW_READER_SECRET = prev;
+	}
+}
+
+/** Read the on-chain escrow (get_escrow, simulate-only) and surface what a
+ * resolver needs: the agreement doc (description), the submitted evidence,
+ * and the settlement flags. */
+export async function readEscrow(contractId: string): Promise<{
+	description: string;
+	evidence: string;
+	milestoneStatus: string;
+	approved: boolean;
+	released: boolean;
+	disputed: boolean;
+	amount: bigint;
+	buyer: string;
+	provider: string;
+}> {
+	const s = server();
+	// A read (simulate) needs a real source account but no authorization.
+	// STELLAR_ESCROW_READER_SECRET names a funded testnet key; callers that
+	// hold any escrow key can pass their own via readEscrowAs().
+	const { Keypair } = await import("@stellar/stellar-sdk");
+	const readerSecret = process.env.STELLAR_ESCROW_READER_SECRET;
+	if (!readerSecret)
+		throw new Error(
+			"readEscrow needs a funded source: set STELLAR_ESCROW_READER_SECRET or use readEscrowAs(contractId, keypair)",
+		);
+	const acct = await s.getAccount(Keypair.fromSecret(readerSecret).publicKey());
+	const tx = new TransactionBuilder(acct, {
+		fee: BASE_FEE,
+		networkPassphrase: Networks.TESTNET,
+	})
+		.addOperation(new Contract(contractId).call("get_escrow"))
+		.setTimeout(30)
+		.build();
+	const sim = await s.simulateTransaction(tx);
+	if (rpc.Api.isSimulationError(sim))
+		throw new Error(`get_escrow simulation failed: ${sim.error}`);
+	const retval = sim.result?.retval;
+	if (!retval) throw new Error("get_escrow returned no value");
+	// biome-ignore lint/suspicious/noExplicitAny: decoded contract struct
+	const e = scValToNative(retval) as any;
+	const m0 = e.milestones?.[0] ?? {};
+	return {
+		description: String(e.description ?? ""),
+		evidence: String(m0.evidence ?? ""),
+		milestoneStatus: String(m0.status ?? ""),
+		approved: Boolean(m0.approved),
+		released: Boolean(e.flags?.released),
+		disputed: Boolean(e.flags?.disputed),
+		amount: BigInt(e.amount ?? 0),
+		buyer: String(e.roles?.approver ?? ""),
+		provider: String(e.roles?.receiver ?? ""),
+	};
+}
+
+/** Raise a dispute (any escrow party). */
+export async function disputeJob(o: {
+	signer: Keypair;
+	contractId: string;
+	prevReceiptId?: string;
+}): Promise<{ tx: string; receiptId: string }> {
+	const tx = await invoke(
+		o.contractId,
+		"dispute_escrow",
+		[Address.fromString(o.signer.publicKey()).toScVal()],
+		o.signer,
+	);
+	const receiptId = record({
+		kind: "job-dispute",
+		network: "stellar:testnet",
+		payer: o.signer.publicKey(),
+		tx,
+		refs: o.prevReceiptId ? [o.prevReceiptId] : undefined,
+		detail: { contractId: o.contractId },
+	});
+	return { tx, receiptId };
+}
+
+/** Resolve a dispute by redirecting funds (dispute_resolver). `distributions`
+ * maps recipient address → base-unit amount; the resolver decides the split
+ * (refund = everything to the buyer). */
+export async function resolveDisputeJob(o: {
+	disputeResolver: Keypair;
+	contractId: string;
+	twFeeAddress: string;
+	distributions: Array<[string, bigint]>;
+	prevReceiptId?: string;
+}): Promise<{ tx: string; receiptId: string }> {
+	const distMap = xdr.ScVal.scvMap(
+		o.distributions
+			.slice()
+			.sort(([a], [b]) => a.localeCompare(b))
+			.map(
+				([to, amt]) =>
+					new xdr.ScMapEntry({
+						key: Address.fromString(to).toScVal(),
+						val: nativeToScVal(amt, { type: "i128" }),
+					}),
+			),
+	);
+	const tx = await invoke(
+		o.contractId,
+		"resolve_dispute",
+		[
+			Address.fromString(o.disputeResolver.publicKey()).toScVal(),
+			Address.fromString(o.twFeeAddress).toScVal(),
+			distMap,
+		],
+		o.disputeResolver,
+	);
+	const receiptId = record({
+		kind: "job-resolve-dispute",
+		network: "stellar:testnet",
+		payer: o.disputeResolver.publicKey(),
+		tx,
+		refs: o.prevReceiptId ? [o.prevReceiptId] : undefined,
+		detail: {
+			contractId: o.contractId,
+			distributions: o.distributions.map(([a, v]) => [a, v.toString()]),
+		},
 	});
 	return { tx, receiptId };
 }

@@ -1,36 +1,36 @@
 /**
- * AutoContracts v1 agreement documents for stellar-pay jobs.
+ * Job agreements — a Stellar-native, resolver-readable terms document.
  *
- * AutoContracts (autocontracts.org/llms.txt, auto.contracts/v1) is the
- * terms-and-judgment STANDARD that sits above escrow rails: a markdown
- * agreement with YAML frontmatter, one bounded review question, allowed
- * evidence, and answer=>outcome effects, resolved by a third-party resolver
- * agent. Trustless Work is the RAILS (roles, milestones, fund/release);
- * this file makes a job's terms speak AutoContracts, so any conforming
- * resolver can evaluate a Stellar job unchanged.
+ * Prior art, credited: AutoContracts (autocontracts.org) pairs an escrow with
+ * a markdown agreement — a bounded review question, allowed evidence, and
+ * answer=>outcome effects — resolved by a third-party resolver agent. That
+ * STRUCTURE is good agreement design and we keep it. Their WIRE FORMAT is
+ * EVM (keccak hashes, EVM chain_id, a Solidity interface) and does not touch
+ * Stellar, so we do NOT emit it: no Stellar resolver would read an
+ * auto.contracts/v1 document, and pinning an EVM keccak on a Soroban contract
+ * was cargo-cult. This is our own format, hashed with sha256 like everything
+ * else in stellar-pay and on Stellar.
  *
- * The integration point is the hash. TW pins engagement_id (our spec hash)
- * on-chain; AutoContracts pins termsHash = keccak256(document_bytes). We
- * build the document HERE, take its keccak256, and that becomes the job's
- * terms hash — so the on-chain escrow and the off-chain agreement are the
- * same object, addressable by either ecosystem's convention.
+ * The document lives on-chain as the escrow's `description`; its sha256 is
+ * the escrow's `engagement_id`. A resolver (human, or the automated resolver
+ * in resolver.ts) reads the doc, inspects the allowed evidence, answers the
+ * review question, and maps the answer through the resolution effects to
+ * release or refund.
  *
- * Hash rules are theirs, exactly: LF line endings, a single trailing
- * newline, no BOM. Deviating breaks cross-verification, so canonicalize.
+ * Canonical bytes: LF line endings, exactly one trailing newline, no BOM —
+ * plain hygiene so the hash is stable across whoever renders it.
  */
-import { keccak256, toBytes } from "viem";
+import { createHash } from "node:crypto";
 
 export type AgreementInput = {
-	/** stellar:testnet | stellar:pubnet — recorded as chain_id 0 (Stellar is
-	 * not an EVM chain; the CAIP-2 id rides contract_type instead, and the
-	 * network is named in Terms). AutoContracts' chain_id is EVM-shaped; we
-	 * declare 0 and carry the real network in `network` + the body. */
+	/** stellar:testnet | stellar:pubnet */
 	network: string;
 	/** buyer / approver / release-signer address (G…) */
 	buyer: string;
 	/** service provider / receiver address (G…) */
 	provider: string;
-	/** resolver = TW dispute_resolver address (G…) */
+	/** the party that answers the review question (G…) — TW dispute_resolver
+	 * (and, for the automated case, approver + release_signer) */
 	resolver: string;
 	/** human-readable resolver policy label */
 	resolverPolicy: string;
@@ -50,15 +50,12 @@ export type AgreementInput = {
 	amount: bigint;
 };
 
-/** Canonicalize to AutoContracts' hash rules: LF endings, exactly one
- * trailing newline, no BOM. Applied to the whole document before hashing
- * AND before emit, so what we hash is byte-for-byte what we hand out. */
+/** LF endings, exactly one trailing newline, no BOM — a stable hash preimage. */
 function canonicalize(doc: string): string {
 	return `${doc.replace(/\r\n/g, "\n").replace(/﻿/g, "").replace(/\n+$/, "")}\n`;
 }
 
-/** Build the AutoContracts v1 agreement document (frontmatter + required
- * sections, in the required order). */
+/** Build the agreement document (frontmatter + the four resolver sections). */
 export function buildAgreement(a: AgreementInput): string {
 	const parties = [
 		`  - address: "${a.buyer}"\n    role: buyer`,
@@ -69,11 +66,9 @@ export function buildAgreement(a: AgreementInput): string {
 		.map(([ans, out]) => `- ${ans} => ${out}`)
 		.join("\n");
 	const doc = `---
-standard: auto.contracts/v1
-version: 1
-chain_id: 0
-contract_type: stellar-trustless-work-single-release
+format: stellar-pay/agreement-v1
 network: ${a.network}
+contract_type: trustless-work-single-release
 parties:
 ${parties}
 resolver: "${a.resolver}"
@@ -106,8 +101,37 @@ ${effects}
 	return canonicalize(doc);
 }
 
-/** termsHash = keccak256(document_bytes), AutoContracts' convention — 0x-hex.
- * This is the cross-ecosystem address of the agreement. */
+/** termsHash = sha256(document_bytes), 0x-hex — the agreement's address,
+ * Stellar-native (sha256 is what Soroban, SEP-10, and the rest of stellar-pay
+ * already use). */
 export function agreementHash(doc: string): string {
-	return keccak256(toBytes(doc));
+	return `0x${createHash("sha256").update(Buffer.from(doc, "utf8")).digest("hex")}`;
+}
+
+/** Parse the resolver-relevant fields back out of a document — what an
+ * automated resolver reads off-chain from the escrow's description. */
+export function parseAgreement(doc: string): {
+	reviewQuestion: string;
+	resolutionEffects: Array<[string, string]>;
+} {
+	const section = (name: string) => {
+		const m = doc.match(
+			new RegExp(`## ${name}\\n([\\s\\S]*?)(?:\\n## |\\n*$)`),
+		);
+		return m?.[1]?.trim() ?? "";
+	};
+	const effects: Array<[string, string]> = section("Resolution Effects")
+		.split("\n")
+		.map((l) =>
+			l
+				.replace(/^-\s*/, "")
+				.split("=>")
+				.map((x) => x.trim()),
+		)
+		.filter((p) => p.length === 2)
+		.map((p) => [p[0] as string, p[1] as string]);
+	return {
+		reviewQuestion: section("Review Question"),
+		resolutionEffects: effects,
+	};
 }

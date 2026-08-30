@@ -37,7 +37,9 @@ export type ReceiptKind =
 	| "job-deliver"
 	| "job-approve"
 	| "job-release"
-	| "job-dispute";
+	| "job-dispute"
+	| "job-resolve-dispute"
+	| "job-resolved";
 
 export type ReceiptRow = {
 	id: string;
