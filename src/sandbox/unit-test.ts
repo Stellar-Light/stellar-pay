@@ -6,6 +6,7 @@
  */
 
 import { agreementHash, buildAgreement } from "../pay/agreement.js";
+import { verificationEvidencePolicy } from "../pay/bounty.js";
 import { offerUSD, readOffers } from "../pay/offers.js";
 import { autoApprove } from "../pay/policy.js";
 
@@ -233,6 +234,64 @@ check(
 	"agreement: a changed term changes the hash",
 	agreementHash(agDoc) !==
 		agreementHash(buildAgreement({ ...AG, terms: "do a different thing" })),
+);
+
+// --- bounty evidence policy: deterministic coverage/schema judge ---
+const NOW = Date.parse("2026-08-30T00:00:00Z");
+const pol = verificationEvidencePolicy(
+	{ items: ["a", "b"], maxEvidenceAgeDays: 7 },
+	() => NOW,
+);
+const entry = (item: string, over: Record<string, unknown> = {}) => ({
+	item,
+	url: "https://example.com/x",
+	verdict: "row present",
+	checkedAt: "2026-08-29T12:00:00Z",
+	excerpt: "proof text",
+	...over,
+});
+const judge = (ev: unknown) =>
+	pol({
+		evidence: JSON.stringify(ev),
+		reviewQuestion: "",
+		description: "",
+		amount: 0n,
+	});
+check(
+	"bounty policy: complete valid evidence → yes",
+	judge([entry("a"), entry("b")]) === "yes",
+);
+check("bounty policy: missing item → no", judge([entry("a")]) === "no");
+check(
+	"bounty policy: duplicate instead of coverage → no",
+	judge([entry("a"), entry("a")]) === "no",
+);
+check(
+	"bounty policy: unknown extra item → no",
+	judge([entry("a"), entry("b"), entry("c")]) === "no",
+);
+check(
+	"bounty policy: stale evidence (8 days) → no",
+	judge([entry("a"), entry("b", { checkedAt: "2026-08-22T00:00:00Z" })]) ===
+		"no",
+);
+check(
+	"bounty policy: non-http url → no",
+	judge([entry("a"), entry("b", { url: "ftp://x" })]) === "no",
+);
+check(
+	"bounty policy: empty verdict/excerpt → no",
+	judge([entry("a"), entry("b", { verdict: " " })]) === "no" &&
+		judge([entry("a"), entry("b", { excerpt: "" })]) === "no",
+);
+check(
+	"bounty policy: non-JSON → no",
+	pol({
+		evidence: "not json",
+		reviewQuestion: "",
+		description: "",
+		amount: 0n,
+	}) === "no",
 );
 
 console.log(

@@ -43,7 +43,9 @@ async function credited(txHash: string, who: string): Promise<bigint> {
 		.filter((x) => x.type === "account_credited" && x.account === who)
 		.reduce((acc, x) => {
 			const [i = "0", f = ""] = (x.amount ?? "0").split(".");
-			return acc + BigInt(i) * 10_000_000n + BigInt((f + "0000000").slice(0, 7));
+			return (
+				acc + BigInt(i) * 10_000_000n + BigInt((f + "0000000").slice(0, 7))
+			);
 		}, 0n);
 }
 
@@ -172,7 +174,9 @@ async function main() {
 		`  buyer refunded ${buyerGot} stroops (must be ≥ ${minRefund}, the principal — not fee crumbs): ${buyerGot >= minRefund ? "✓" : "✗"}`,
 	);
 	if (resB.answer !== "no" || resB.outcome !== "refund" || buyerGot < minRefund)
-		throw new Error("Case B: resolver did not refund the PRINCIPAL to the buyer");
+		throw new Error(
+			"Case B: resolver did not refund the PRINCIPAL to the buyer",
+		);
 
 	// Receipts: both judgments recorded with answer + policy + evidence.
 	const rows = readFileSync(join(DIR, "receipts.jsonl"), "utf8")
