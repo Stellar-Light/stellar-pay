@@ -155,16 +155,37 @@ const claimedNetwork = (x: Entry) =>
 		: x.networks.some((n) => n === "stellar:pubnet" || n === "stellar") ||
 			x.source === "curated";
 
-const filter = (e: Entry[], o: { all?: boolean }) =>
-	o.all
-		? e
-		: e.filter(
-				(x) =>
-					x.acceptsStellar &&
-					x.lastStatus === "402" &&
-					isFresh(x) &&
-					claimedNetwork(x),
-			);
+/** How stale the newest row is, in hours — null when the snapshot is empty. */
+export function catalogAgeHours(entries: Entry[]): number | null {
+	const newest = entries
+		.map((x) => Date.parse(x.lastCheckedAt ?? ""))
+		.filter((t) => Number.isFinite(t))
+		.reduce((a, b) => Math.max(a, b), 0);
+	return newest > 0 ? (Date.now() - newest) / 3_600_000 : null;
+}
+
+const filter = (e: Entry[], o: { all?: boolean }) => {
+	if (o.all) return e;
+	const live = e.filter(
+		(x) =>
+			x.acceptsStellar &&
+			x.lastStatus === "402" &&
+			isFresh(x) &&
+			claimedNetwork(x),
+	);
+	// A BLACKOUT MUST ANNOUNCE ITSELF. When the snapshot has rows but every one
+	// is stale, the publish job is broken — and the symptom users saw was
+	// "no live match", which blames their phrasing for our outage. (That is
+	// exactly what happened: a missing env var killed the publish for six days
+	// and nothing said so.) Failing closed is right; failing SILENTLY is not.
+	if (e.length > 0 && live.length === 0) {
+		const age = catalogAgeHours(e);
+		console.error(
+			`stellar-pay: the catalog snapshot is ${age == null ? "undated" : `${Math.floor(age)}h stale`} — every row is outside the ${FRESH_MS / 3_600_000}h freshness window, so nothing is being offered. This is a publish outage on our side, not your query.`,
+		);
+	}
+	return live;
+};
 
 const STOP = new Set(
 	"a an the to for of in on with and or is are do does can i my me get find search api".split(
