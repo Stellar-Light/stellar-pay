@@ -1,6 +1,6 @@
 {
 	"name": "stellar-pay",
-	"version": "0.1.8",
+	"version": "0.1.9",
 	"description": "Stellar payments layer for agents: a pay.sh-shaped client (curl that answers 402s with a Stellar wallet, x402 + MPP) over a probed catalog of Stellar-payable APIs. Private while the lane is new.",
 	"license": "MIT",
 	"type": "module",
