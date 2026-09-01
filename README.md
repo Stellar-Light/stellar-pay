@@ -18,18 +18,9 @@ all of it. stellar-pay is that loop as a CLI, an MCP server, and a library —
 neutral (no gateway, no operator's cut) and self-custody (your keys, caps
 enforced by the chain, not by a platform's servers).
 
-```mermaid
-flowchart LR
-    H["Human"] -->|"funds, sets an on-chain cap"| V["Vault<br/>smart account"]
-    V -->|"agent draws float<br/>chain refuses over-cap"| A["Agent<br/>wallet + CLI/MCP"]
-    A -->|"pays per request"| P["Paid APIs<br/>x402, MPP, sessions"]
-    A -->|"hires or works"| W["Jobs and bounties<br/>escrow + agreements"]
-    W --> R["Resolver<br/>policy judges evidence"]
-    R -->|"release or refund"| W
-    A --> L["Receipts ledger<br/>tamper-evident, verifiable on chain"]
-    W --> L
-    L -.->|"the substrate for"| REP["Reputation<br/>design phase"]
-```
+![The payment loop: a human funds a chain-capped vault; the agent draws float, pays 402 APIs, hires or works via escrow, and everything lands in a tamper-evident receipts ledger](https://raw.githubusercontent.com/Stellar-Light/stellar-pay/main/docs/diagrams/payment-loop.png)
+
+<sup>[diagram source](https://github.com/Stellar-Light/stellar-pay/blob/main/docs/diagrams/payment-loop.mmd)</sup>
 
 **What you can use today, plainly.** The **payment client is the product**:
 paying 402s (x402 + MPP), the probed catalog, the wallet, the spend policy and
@@ -151,24 +142,9 @@ not the point of it: they are a job whose evidence contract is a checklist, so
 they are the easiest shape to demo end to end. The same escrow, agreements and
 resolver underneath serve any job with a checkable deliverable.
 
-```mermaid
-sequenceDiagram
-    participant B as Buyer
-    participant E as Soroban escrow
-    participant F as Feed at any URL
-    participant W as Worker agent
-    participant R as Resolver
-    B->>E: post open bounty, funds escrowed,<br/>terms hash = engagement_id
-    B->>F: publish descriptor + submitUrl
-    W->>F: discover listings
-    W->>E: VET against the chain: terms pinned?<br/>struct matches? pot funded? still open?
-    Note over W: refuses tampered or unfunded rows
-    W->>W: does the actual work
-    W->>R: commit the evidence hash first,<br/>then reveal the signed packet
-    R->>E: judge by declared policy,<br/>earliest valid committer wins
-    E->>W: pays the winner, or refunds the buyer
-    Note over W,B: both ledgers receipt their half
-```
+![Bounty flow: buyer escrows funds on Soroban, worker vets terms against the chain, commits evidence, resolver judges by declared policy and pays or refunds](https://raw.githubusercontent.com/Stellar-Light/stellar-pay/main/docs/diagrams/bounty-flow.png)
+
+<sup>[diagram source](https://github.com/Stellar-Light/stellar-pay/blob/main/docs/diagrams/bounty-flow.mmd)</sup>
 
 A buyer posts and escrows, a worker discovers and proves the work, a resolver
 judges by the declared policy — the full command set is in
@@ -212,21 +188,9 @@ Handing an agent a funded key is how budgets die. The vault inverts custody:
 **bulk funds live in a smart account the human owns; the agent's key can only
 draw float under a cap the chain enforces.**
 
-```mermaid
-flowchart TD
-    subgraph OWNER["Human owns"]
-        PK["Durable passkey<br/>persisted, reopens across restarts"]
-        SA["Smart account, the vault<br/>holds the bulk funds"]
-    end
-    subgraph AGENT["Agent holds"]
-        AK["Agent ed25519 key<br/>float account for 402s"]
-    end
-    PK -->|"owner rule"| SA
-    AK -->|"draw, ONLY via a token-scoped rule<br/>carrying a spending-limit policy"| SA
-    SA -->|"under cap: float moves"| AK
-    SA -.->|"over cap: __check_auth REFUSES<br/>receipted as an on-chain decision"| AK
-    AK -->|"pays 402s, funds work"| X["APIs and escrows"]
-```
+![Vault custody: bulk funds live in a smart account the human owns; the agent key can only draw float under a cap the chain itself enforces](https://raw.githubusercontent.com/Stellar-Light/stellar-pay/main/docs/diagrams/vault-custody.png)
+
+<sup>[diagram source](https://github.com/Stellar-Light/stellar-pay/blob/main/docs/diagrams/vault-custody.mmd)</sup>
 
 ```sh
 stellar-pay vault create --cap-xlm 5    # deploy; owner = durable passkey, agent = THIS wallet

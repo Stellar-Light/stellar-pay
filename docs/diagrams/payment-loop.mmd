@@ -1,0 +1,10 @@
+flowchart LR
+    H["Human"] -->|"funds, sets an on-chain cap"| V["Vault<br/>smart account"]
+    V -->|"agent draws float<br/>chain refuses over-cap"| A["Agent<br/>wallet + CLI/MCP"]
+    A -->|"pays per request"| P["Paid APIs<br/>x402, MPP, sessions"]
+    A -->|"hires or works"| W["Jobs and bounties<br/>escrow + agreements"]
+    W --> R["Resolver<br/>policy judges evidence"]
+    R -->|"release or refund"| W
+    A --> L["Receipts ledger<br/>tamper-evident, verifiable on chain"]
+    W --> L
+    L -.->|"the substrate for"| REP["Reputation<br/>design phase"]
