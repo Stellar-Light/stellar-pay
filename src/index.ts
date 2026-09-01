@@ -90,8 +90,16 @@ export {
 	type BountyDescriptor,
 	bountyStatus,
 	type EvidenceEntry,
+	// SECOND-PARTY SURFACE (design audit): the functions someone writing an
+	// independent worker or resolver needs were exactly the ones missing from
+	// this file — you could consume the package, but you could not implement
+	// against the formats it defines. A wire format nobody else can produce is
+	// not a format.
+	makeCommit,
 	makeSubmission,
+	type OpenCommit,
 	type OpenSubmission,
+	openBountyTerms,
 	pickWinner,
 	postBounty,
 	postOpenBounty,
@@ -146,6 +154,12 @@ export {
 // the chain (never trust the feed), submit signed evidence, collect.
 export {
 	awaitPayout,
+	// A feed is a public format: publishing one must not require reading our
+	// CLI's source. BOUNTY_FEED_FORMAT + buildFeed are the producer half that
+	// `fetchFeed` (the consumer half) was already exported without.
+	BOUNTY_FEED_FORMAT,
+	type BountyFeed,
+	buildFeed,
 	checkListing,
 	fetchFeed,
 	type OpenBountyListing,

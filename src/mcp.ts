@@ -885,13 +885,17 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 		"bounty_post",
 		{
 			description:
-				"Author a verification-bounty descriptor (off-chain, shareable): the items to verify, the instructions, the payout, and the resolver that will judge. Escrow happens at bounty_assign (directed) or bounty_open (open race). TESTNET ONLY. If resolver is omitted it defaults to YOUR address — then refunds via dispute are impossible (a resolver cannot dispute its own escrow), so prefer a neutral resolver.",
+				"Author a verification-bounty descriptor (off-chain, shareable): the items to verify, the instructions, the payout, and the resolver that will judge. Escrow happens at bounty_assign (directed) or bounty_open (open race). TESTNET ONLY. `resolver` is REQUIRED and must be a neutral third party: a resolver cannot dispute its own escrow, so naming yourself makes refunds impossible.",
 			inputSchema: {
 				title: z.string().min(1),
 				items: z.array(z.string().min(1)).min(1),
 				instructions: z.string().min(1),
 				amount_xlm: z.number().positive().max(1000),
-				resolver: z.string().optional(),
+				resolver: z
+					.string()
+					.describe(
+						"the neutral third party that will judge — REQUIRED; it must not be you",
+					),
 				token_contract: z.string().optional(),
 			},
 		},
@@ -907,7 +911,12 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 				const w = getWallet();
 				const d = postBounty({
 					buyer: w.publicKey,
-					resolver: resolver ?? w.publicKey,
+					// The default used to be the caller's own address, and the tool
+					// description warned in the same breath that this makes refunds
+					// impossible — i.e. the default configuration was the broken
+					// one, reachable by omitting a field (audit finding 10).
+					// Naming yourself is still possible, it just has to be typed.
+					resolver,
 					title,
 					items,
 					instructions,

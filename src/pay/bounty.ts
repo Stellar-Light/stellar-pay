@@ -40,8 +40,20 @@ import {
 	openJob,
 	readEscrowAs,
 	resolveDisputeJob,
+	twFeeAddressFor,
 } from "./job.js";
 import { record } from "./receipts.js";
+
+/**
+ * The network this module settles on. It defaults to TESTNET, unlike
+ * wallet.ts which defaults to pubnet, because the whole work layer is
+ * testnet-gated — every escrow call here is hardcoded to testnet today. The
+ * value exists so the TW fee rule can tell "we are on play money" from
+ * "someone set pubnet", and it will be the seam to thread a real network
+ * through when the work layer stops being testnet-only.
+ */
+const NETWORK = process.env.STELLAR_NETWORK ?? "stellar:testnet";
+
 import { type ResolverPolicy, resolveJob } from "./resolver.js";
 
 export type BountyDescriptor = {
@@ -158,7 +170,7 @@ ${d.items.map((i) => `- ${i}`).join("\n")}${
 		],
 		resolverPolicy: "evidence-schema:verification-v1",
 		...(d.deadline ? { deadline: d.deadline } : {}),
-		twFeeAddress: buyer.publicKey(),
+		twFeeAddress: twFeeAddressFor(buyer.publicKey(), NETWORK),
 	};
 }
 
@@ -271,7 +283,7 @@ export async function resolveBounty(o: {
 	return resolveJob({
 		resolver: o.resolver,
 		contractId: o.contractId,
-		twFeeAddress: o.descriptor.buyer,
+		twFeeAddress: twFeeAddressFor(o.descriptor.buyer, NETWORK),
 		policy: verificationEvidencePolicy(o.descriptor),
 		policyLabel: "evidence-schema:verification-v1",
 		disputeRaiser: o.disputeRaiser,
@@ -767,7 +779,7 @@ export async function resolveOpenBounty(o: {
 	const rd = await resolveDisputeJob({
 		disputeResolver: o.resolver,
 		contractId: o.contractId,
-		twFeeAddress: o.descriptor.buyer,
+		twFeeAddress: twFeeAddressFor(o.descriptor.buyer, NETWORK),
 		distributions: [[payee, BigInt(o.descriptor.amount)]],
 		prevReceiptId: disputeReceiptId,
 	});
