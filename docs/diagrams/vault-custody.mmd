@@ -1,0 +1,13 @@
+flowchart TD
+    subgraph OWNER["Human owns"]
+        PK["Durable passkey<br/>persisted, reopens across restarts"]
+        SA["Smart account, the vault<br/>holds the bulk funds"]
+    end
+    subgraph AGENT["Agent holds"]
+        AK["Agent ed25519 key<br/>float account for 402s"]
+    end
+    PK -->|"owner rule"| SA
+    AK -->|"draw, ONLY via a token-scoped rule<br/>carrying a spending-limit policy"| SA
+    SA -->|"under cap: float moves"| AK
+    SA -.->|"over cap: __check_auth REFUSES<br/>receipted as an on-chain decision"| AK
+    AK -->|"pays 402s, funds work"| X["APIs and escrows"]

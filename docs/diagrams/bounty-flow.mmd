@@ -1,0 +1,16 @@
+sequenceDiagram
+    participant B as Buyer
+    participant E as Soroban escrow
+    participant F as Feed at any URL
+    participant W as Worker agent
+    participant R as Resolver
+    B->>E: post open bounty, funds escrowed,<br/>terms hash = engagement_id
+    B->>F: publish descriptor + submitUrl
+    W->>F: discover listings
+    W->>E: VET against the chain: terms pinned?<br/>struct matches? pot funded? still open?
+    Note over W: refuses tampered or unfunded rows
+    W->>W: does the actual work
+    W->>R: commit the evidence hash first,<br/>then reveal the signed packet
+    R->>E: judge by declared policy,<br/>earliest valid committer wins
+    E->>W: pays the winner, or refunds the buyer
+    Note over W,B: both ledgers receipt their half
