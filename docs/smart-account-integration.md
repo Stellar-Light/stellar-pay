@@ -40,17 +40,25 @@ x402 client
 ```
 
 `@x402/stellar`'s `ExactStellarScheme` takes any `ClientStellarSigner`
-(`{ address, signAuthEntry, signTransaction? }`) — so the plug point is exact:
-build a `ClientStellarSigner` whose `address` is the vault C-address and whose
-`signAuthEntry` produces the smart-account authorization (digest via
-`computeEntryAuthDigest`, signed by the agent's `Ed25519Signer`). No fork. The facilitator
-only has to submit the transaction as-is (it already does verify+settle
-address-agnostically); a facilitator that assumes classic G-address payers is
-the one external dependency, and mpp-router / a self-hosted OZ Channels
-facilitator can be checked against a real C-address payer.
+(`{ address, signAuthEntry, signTransaction? }`), which *looks* like an exact
+plug point. It is not, and this doc used to claim otherwise. `signAuthEntry`
+(SEP-43) returns raw signature bytes that stellar-base's `authorizeEntry` then
+re-wraps in the classic `{public_key, signature}` credential — after calling
+`Keypair.fromPublicKey()` on the address, which rejects a `C…` account. A
+smart-account payer needs to hand the scheme a *fully built* authorization
+entry (or an `authorizeEntry` override), and `ExactStellarScheme` exposes no
+such hook. So the adapter needs an upstream client change first; until it
+lands, this path means patching the scheme, not plugging into it.
 
-**Status:** designed, not yet built — it needs a deployed smart account to
-test end to end (see caveat 2), so it lands with the vault, not before.
+The facilitator, on the other hand, needs nothing: the reference
+implementation already verifies and settles address-agnostically (any
+non-void signature, enforcing re-simulation). It should still be *proved*
+against a real `C…` payer before we rely on it — that is a conformance probe,
+not a change request.
+
+**Status:** designed, not yet built — it needs (a) the upstream client hook
+above and (b) a deployed smart account to test end to end (see caveat 2).
+We are asking `coinbase/x402` for (a); it cannot land before that.
 
 ## The setup step is the user's, in a browser (not a blocker for us)
 
