@@ -4,6 +4,7 @@
  * copies could be deleted and the whole suite stayed green. It is now one
  * exported rule, and these checks fail if any clause is weakened or removed.
  */
+// NEGATIVE CONTROL: 3 checks fail against the pre-fix curl.ts (2026-09-01) — a test that cannot fail is not evidence.
 import { pinMismatch } from "../pay/curl.js";
 import type { Offer } from "../pay/offers.js";
 

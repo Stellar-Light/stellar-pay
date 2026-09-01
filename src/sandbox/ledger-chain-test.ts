@@ -13,6 +13,7 @@
  * and link. The chain catches corruption and partial edits; `verifyOnChain`
  * is the real anchor for a payment.
  */
+// NEGATIVE CONTROL: 4 checks fail against the pre-fix ledger (2026-09-01) — a test that cannot fail is not evidence.
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
