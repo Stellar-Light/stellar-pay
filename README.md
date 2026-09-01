@@ -729,10 +729,14 @@ each and who owns it.
   Sessions are the honest primitive for "pay repeatedly without asking" —
   a delegation UX on top is not designed yet.
 - **Paying 402s directly from the smart account.** `@x402/stellar` signs
-  with classic keys; contract accounts authorize differently, and the
-  facilitator would need to accept it. Hence the vault→float pattern
-  (bulk funds capped on-chain, small float at the paying key) — an SDF ask,
-  not a stellar-pay bug.
+  with classic keys, and the blocker is on the *client* side: stellar-base's
+  `authorizeEntry` hard-wraps the classic credential shape and rejects a
+  `C…` address outright, with no override exposed by `ExactStellarScheme`.
+  The reference facilitator already accepts contract-account payers — an
+  earlier version of this bullet had that backwards. Hence the vault→float
+  pattern (bulk funds capped on-chain, small float at the paying key) until
+  the client hook lands upstream; we are asking `coinbase/x402` for it, and
+  the wiring on our side is ours to build once it does — not an SDF ask.
 - **x402 `upto` scheme.** Requires authoring the scheme spec upstream; when
   it lands in `@x402/stellar` we inherit it by bumping the dependency.
 - **Windows Hello / Linux biometric gating; per-signature biometrics in the
