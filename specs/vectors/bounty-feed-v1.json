@@ -1,0 +1,33 @@
+{
+  "$note": "The envelope a publisher serves. generatedAt is per-publish and therefore excluded from the fixture — everything else is stable.",
+  "format": "stellar-pay/bounty-feed-v1",
+  "$volatile": [
+    "generated_at"
+  ],
+  "feed": {
+    "format": "stellar-pay/bounty-feed-v1",
+    "schema_version": "1",
+    "generated_at": "<per-instance, NOT signed>",
+    "bounties": [
+      {
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAV",
+        "descriptor": {
+          "format": "stellar-pay/bounty-v1",
+          "kind": "verification",
+          "title": "Verify two directory rows",
+          "items": [
+            "row-alpha",
+            "row-beta"
+          ],
+          "instructions": "Confirm each row resolves and record a short excerpt.",
+          "amount": "25000000",
+          "tokenContract": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+          "maxEvidenceAgeDays": 7,
+          "resolver": "GDWUSKGGFDI4FRXK5EBTRECZSVQSSWJHHJOGH6JWG3AUMFFMQ435DIAG",
+          "buyer": "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR",
+          "submitUrl": "https://resolver.example/inbox"
+        }
+      }
+    ]
+  }
+}

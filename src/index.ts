@@ -105,6 +105,7 @@ export {
 	postOpenBounty,
 	resolveBounty,
 	resolveOpenBounty,
+	submissionDigest,
 	submitBounty,
 	verificationEvidencePolicy,
 } from "./pay/bounty.js";

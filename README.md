@@ -237,6 +237,24 @@ nothing of ours. Treat the ledger as the index and Horizon as the witness.
 This ledger is deliberately the substrate reputation will be built from — see
 [Not built yet](#not-built-yet--and-why).
 
+## 📐 The formats, specified
+
+Everything above payment — the bounty descriptor, the agreement whose hash the
+escrow pins, the commit, the submission packet, the feed — is specified in
+[`specs/SPEC.md`](specs/SPEC.md) with reproducible test vectors in
+[`specs/vectors/`](specs/vectors). Preimages, canonicalisation rules, the
+ordering rule a resolver must follow, and the checks a worker must run before
+doing any work.
+
+The vectors are generated from the implementation through its public entry
+point and re-checked in CI, so the published bytes are the bytes we emit. Where
+a format has a weakness — the `JSON.stringify` key-order dependency, a
+self-signed timestamp that is a claim rather than an authority — the spec says
+so rather than describing the version we wish we had shipped.
+
+Paying the 402 itself is x402 and MPP. Those are other people's specs and we are
+a client of them; nothing in `specs/` redefines or forks them.
+
 ## 🔍 A catalog that's evidence, not a listing
 
 Registries list endpoints that died months ago, and "supports x402" says

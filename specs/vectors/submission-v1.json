@@ -1,0 +1,51 @@
+{
+  "$note": "The bytes a worker signs. Without a nonce it is a plain submission; with one it is the reveal that opens a commit. signature is base64 ed25519 over the digest.",
+  "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAV",
+  "worker": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U",
+  "evidence": [
+    {
+      "item": "row-alpha",
+      "url": "https://alpha.example",
+      "verdict": "live",
+      "checkedAt": "2026-09-01T00:00:00.000Z",
+      "excerpt": "alpha ok"
+    },
+    {
+      "item": "row-beta",
+      "url": "https://beta.example",
+      "verdict": "live",
+      "checkedAt": "2026-09-01T00:00:00.000Z",
+      "excerpt": "beta ok"
+    }
+  ],
+  "digestNoNonce": "91f07a4177bdea7e7821c5a5019a3121f337ea2317f9f6d90af2bb65ac92b401",
+  "nonce": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+  "digestWithNonce": "53a6410f7c20781861368cc0a3695bbbc800c282e15e915c45be112157fcfd42",
+  "$volatile": [
+    "signedAt"
+  ],
+  "reveal": {
+    "format": "stellar-pay/submission-v1",
+    "bountyContract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAV",
+    "worker": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U",
+    "evidence": [
+      {
+        "item": "row-alpha",
+        "url": "https://alpha.example",
+        "verdict": "live",
+        "checkedAt": "2026-09-01T00:00:00.000Z",
+        "excerpt": "alpha ok"
+      },
+      {
+        "item": "row-beta",
+        "url": "https://beta.example",
+        "verdict": "live",
+        "checkedAt": "2026-09-01T00:00:00.000Z",
+        "excerpt": "beta ok"
+      }
+    ],
+    "signedAt": "<per-instance, NOT signed>",
+    "signature": "eV57hRDScvt+XCjGWoqYHTNqkKCS+01GQcoERVcNL0JaSZq/IV8oFnjyvzQhoFtHUc3b3fhoG8ZBHuQw4M1WAA==",
+    "nonce": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+  }
+}
