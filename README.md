@@ -10,35 +10,6 @@ The neutral, self-custody layer for human-to-agent work: paying today, escrowed 
 
 ---
 
-Before agent-to-agent commerce goes mainstream, **human-to-agent commerce is
-the wedge**: people paying agents to complete real work. That takes more than
-a payment rail — it takes funding an agent safely, hiring one you don't
-trust, verifying what it did, paying on the verdict, and keeping evidence of
-all of it. stellar-pay is that loop as a CLI, an MCP server, and a library —
-neutral (no gateway, no operator's cut) and self-custody: your keys, and a
-spend policy **you** write that refuses before it signs.
-
-Precisely, because the distinction matters: on mainnet, spend is bounded by
-that policy file — per-host allowlists and per-call ceilings enforced in this
-process, not by a platform's servers and **not** by the chain. The smart-account
-vault does put a cap on-chain, but it caps *draws from the vault*, in XLM, on
-testnet. Anyone who tells you their agent's spending is chain-enforced should
-be asked which account the payment actually leaves.
-
-![The payment loop: a human funds a capped vault; the agent draws float, pays 402 APIs, hires or works via escrow, and everything lands in a tamper-evident receipts ledger](https://raw.githubusercontent.com/Stellar-Light/stellar-pay/main/docs/diagrams/payment-loop.png)
-
-<sup>[diagram source](https://github.com/Stellar-Light/stellar-pay/blob/main/docs/diagrams/payment-loop.mmd)</sup>
-
-**What you can use today, plainly.** The **payment client is the product**:
-paying 402s (x402 + MPP), the probed catalog, the wallet, the spend policy and
-the `run` proxy all work on **mainnet**, and that is what `npm install
-stellar-pay` gives you. The **work layer** below — jobs, agreements, bounties,
-the vault, payment channels — is **testnet-only**, because it reuses contracts
-that are not audited (see [`docs/ECOSYSTEM-ASKS.md`](docs/ECOSYSTEM-ASKS.md)).
-It is real and proven end to end, and it is a preview, not something to run a
-business on this week. Direction and the quality bar live in
-[`docs/SPINE.md`](docs/SPINE.md).
-
 ## Try it now
 
 A real on-chain payment, with play money, in **one command** — no wallet, no
@@ -72,6 +43,38 @@ Or hand the whole toolkit to an agent:
 ```sh
 npx stellar-pay claude   # Claude Code with the payment + work tools mounted
 ```
+
+
+---
+
+Before agent-to-agent commerce goes mainstream, **human-to-agent commerce is
+the wedge**: people paying agents to complete real work. That takes more than
+a payment rail — it takes funding an agent safely, hiring one you don't
+trust, verifying what it did, paying on the verdict, and keeping evidence of
+all of it. stellar-pay is that loop as a CLI, an MCP server, and a library —
+neutral (no gateway, no operator's cut) and self-custody: your keys, and a
+spend policy **you** write that refuses before it signs.
+
+Precisely, because the distinction matters: on mainnet, spend is bounded by
+that policy file — per-host allowlists and per-call ceilings enforced in this
+process, not by a platform's servers and **not** by the chain. The smart-account
+vault does put a cap on-chain, but it caps *draws from the vault*, in XLM, on
+testnet. Anyone who tells you their agent's spending is chain-enforced should
+be asked which account the payment actually leaves.
+
+![The payment loop: a human funds a capped vault; the agent draws float, pays 402 APIs, hires or works via escrow, and everything lands in a tamper-evident receipts ledger](https://raw.githubusercontent.com/Stellar-Light/stellar-pay/main/docs/diagrams/payment-loop.png)
+
+<sup>[diagram source](https://github.com/Stellar-Light/stellar-pay/blob/main/docs/diagrams/payment-loop.mmd)</sup>
+
+**What you can use today, plainly.** The **payment client is the product**:
+paying 402s (x402 + MPP), the probed catalog, the wallet, the spend policy and
+the `run` proxy all work on **mainnet**, and that is what `npm install
+stellar-pay` gives you. The **work layer** below — jobs, agreements, bounties,
+the vault, payment channels — is **testnet-only**, because it reuses contracts
+that are not audited (see [`docs/ECOSYSTEM-ASKS.md`](docs/ECOSYSTEM-ASKS.md)).
+It is real and proven end to end, and it is a preview, not something to run a
+business on this week. Direction and the quality bar live in
+[`docs/SPINE.md`](docs/SPINE.md).
 
 ## 💵 Pay for any API
 
