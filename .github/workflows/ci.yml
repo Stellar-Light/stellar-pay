@@ -64,11 +64,23 @@ jobs:
       - run: npm run test:osstore  # exercises the real OS store on each runner
       - run: npm run test:keychain  # macOS-only; SKIPs on the linux runner
 
-  # The macOS half of "the OS secret store differs per platform". Off the PR
-  # path (see the note in `check`), so it must not be the only thing standing
-  # between a Keychain regression and npm — publish-npm.yml waits on this job.
+  # macOS is MANUAL-ONLY, and the reason is not preference.
+  #
+  # No macOS job has ever completed in this repository. Across the last 100
+  # workflow runs every `macos-latest` job is `cancelled` or still `queued` —
+  # zero successes, going back before this file was reorganised. The runners
+  # are not slow here, they are unavailable, so a macOS job is not a gate: it
+  # is a permanent pending status that makes every commit read 4/6 and, when
+  # it was wired as `needs:` on publish, would have hung the next release.
+  #
+  # A check that cannot run must not pretend to be a check. This stays as
+  # workflow_dispatch so it is one click away if runners ever appear, and the
+  # Keychain path is verified LOCALLY instead — `npm run test:osstore` and
+  # `npm run test:keychain` on a Mac, which is where this project is
+  # developed. That is weaker than CI and this comment is the honest record
+  # of it rather than a green tick that means nothing.
   macos:
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
