@@ -95,6 +95,7 @@ import {
 	sessionFetch,
 } from "./pay/session.js";
 import { getChannel, listChannels } from "./pay/session-store.js";
+import { blockedTarget, payGuard } from "./pay/ssrf.js";
 import {
 	createVault,
 	drawFromVault,
@@ -415,9 +416,11 @@ async function cmdRun(a: Args): Promise<void> {
 		// The wrapped child's 402s follow redirects too: re-run the per-host
 		// spend policy on every hop, so a 302 cannot walk a payment onto a host
 		// the operator denied (or one an allowlist never named).
+		// The full gate on every hop — SSRF ∪ spend policy. Until 2026-09-01
+		// this door ran only the policy half, so a 302 to 169.254.169.254 or
+		// 127.0.0.1 walked through (audit F7).
 		guard: (u) =>
-			resolveHost(u, { requested: a.maxUsd, requestedExplicit: a.maxUsdSet })
-				.blocked,
+			payGuard(u, { requested: a.maxUsd, requestedExplicit: a.maxUsdSet }),
 		onPaid: (p) =>
 			console.error(
 				`  ✓ paid ${p.usd != null ? `$${p.usd.toFixed(4)}` : "?"} via ${p.protocol.toUpperCase()} for ${p.url}${p.hash ? ` · ${explorer(wallet.network, p.hash)}` : ""}`,
@@ -914,6 +917,27 @@ async function cmdSession(a: Args): Promise<void> {
 		const url = a.positional[1];
 		if (!url || !URL.canParse(url))
 			return usageError("usage: stellar-pay session open <url> [--deposit 5]");
+		// The deposit IS the spend and the channel can pay it out without another
+		// prompt, so both gates run BEFORE anything is deployed or fetched.
+		// Neither ran here until 2026-09-01: a denied host could still be handed
+		// a funded channel (audit finding 1).
+		const ssrf = await blockedTarget(url);
+		if (ssrf) {
+			console.error(ssrf);
+			process.exitCode = EXIT.refused;
+			return;
+		}
+		// requested:0 — resolveHost only ever BLOCKS on deny/allowlist, so this
+		// runs exactly those branches. The USD ceiling deliberately does NOT
+		// apply: the deposit is denominated in XLM and pricing it would need an
+		// oracle this path must not depend on. A per-host XLM deposit cap is a
+		// separate knob, not an invented conversion.
+		const gate = resolveHost(url, { requested: 0 });
+		if (gate.blocked) {
+			console.error(`refused: ${gate.blocked}`);
+			process.exitCode = EXIT.refused;
+			return;
+		}
 		await ensureSecretLoaded(a.account);
 		const wallet = loadWallet();
 		// The seller's receiving account comes from THEIR OWN 402 — never from
@@ -1511,6 +1535,14 @@ async function cmdCurl(a: Args, init: RequestInit): Promise<void> {
 	// at `session open`, which is where approval happened). No per-call
 	// prompt: the channel cannot pay the seller more than the deposit.
 	if (a.session) {
+		// A channel opened yesterday must not outlive a deny rule written today:
+		// re-run the host gate on every session call, not just at open.
+		const sessGate = resolveHost(a.url, { requested: 0 });
+		if (sessGate.blocked) {
+			console.error(`refused: ${sessGate.blocked}`);
+			process.exitCode = EXIT.refused;
+			return;
+		}
 		const host = hostOf(a.url);
 		const { fetch: sf, channel } = sessionFetch(host);
 		const cumBefore = BigInt(channel.lastCumulative ?? "0");
@@ -1610,9 +1642,11 @@ async function cmdCurl(a: Args, init: RequestInit): Promise<void> {
 		approve,
 		// A deny/allowlist rule is worthless if a 302 moves the payment to an
 		// unchecked host — re-run the host gate on every hop.
+		// The full gate on every hop — SSRF ∪ spend policy. Until 2026-09-01
+		// this door ran only the policy half, so a 302 to 169.254.169.254 or
+		// 127.0.0.1 walked through (audit F7).
 		guard: (u) =>
-			resolveHost(u, { requested: a.maxUsd, requestedExplicit: a.maxUsdSet })
-				.blocked,
+			payGuard(u, { requested: a.maxUsd, requestedExplicit: a.maxUsdSet }),
 		prefer: a.prefer,
 	});
 	const bodyText = await r.res.text();
