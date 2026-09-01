@@ -13,17 +13,31 @@ on:
   workflow_dispatch:
 
 jobs:
-  # There is deliberately NO macOS gate here. One was added on 2026-09-01 to
-  # hold Keychain coverage after macOS left the PR matrix — but macOS jobs have
-  # never once completed in this repo (100 runs checked: all cancelled or
-  # queued), so `needs: macos-gate` would have blocked every future release
-  # waiting on a runner that never arrives. Gating an irreversible step on an
-  # unavailable runner is worse than not gating it: it fails closed on the one
-  # action you cannot retry your way out of.
-  #
-  # Keychain/osstore are verified locally on a Mac before release. Written
-  # down here because an absent check should be visible, not assumed.
+  # The macOS gate is BACK (2026-09-01, same day it was removed). The note
+  # that used to sit here said macOS jobs had never once completed in this
+  # repo. That was wrong: they were assigned within seconds — and then hung
+  # on our own keychain test's interactive dialog until five of them held the
+  # org's entire macOS concurrency allowance, which is what made every later
+  # job look like "no runner ever arrives". With the test headless on CI and
+  # a timeout on the job, a Keychain regression must not reach npm: this
+  # blocks the only irreversible step, and it can no longer block forever.
+  macos-gate:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      STELLAR_PAY_KEYCHAIN_HEADLESS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:keystore
+      - run: npm run test:osstore
+      - run: npm run test:keychain
+
   publish:
+    needs: macos-gate
     runs-on: ubuntu-latest
     permissions:
       contents: read

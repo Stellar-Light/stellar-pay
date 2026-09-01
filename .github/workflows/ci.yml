@@ -5,8 +5,6 @@ on:
   push:
     branches: [main]
   pull_request:
-  schedule:
-    - cron: "17 5 * * *" # nightly macOS platform check
   workflow_dispatch:
 permissions: { contents: read }
 
@@ -14,19 +12,20 @@ jobs:
   check:
     # The OS secret store differs per platform (Keychain / libsecret / DPAPI),
     # so the store test only means something if it runs on all three.
-    # macOS is NOT in this matrix, deliberately (2026-09-01). GitHub's macOS
-    # runners are the scarcest pool on the platform and every PR sat for tens
-    # of minutes on a `Queued` check that was not required to merge — so the
-    # honest options were "wait for a gate nobody enforced" or "merge past it
-    # every time", and the second is how a gate stops meaning anything. The
-    # Keychain/`osstore` coverage macOS exists for now runs in the `macos` job
-    # below: on main, nightly, on demand, and — the one that actually matters —
-    # as a blocking gate before anything is published to npm.
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    # A hang must never hold a runner for GitHub's 6-hour default again: on
+    # 2026-09-01 five macOS jobs stuck on an interactive Keychain dialog held
+    # the org's entire macOS concurrency allowance, and every later macOS job
+    # showed "Waiting for a runner" — our own jobs were the runners.
+    timeout-minutes: 20
+    env:
+      # Honoured only on darwin AND only when GitHub sets GITHUB_ACTIONS; see
+      # src/sandbox/keychain-check.ts and the -T note in src/pay/keystore.ts.
+      STELLAR_PAY_KEYCHAIN_HEADLESS: "1"
     # Windows is BLOCKING as of 2026-08-30. It was advisory because two real
     # bugs made it permanently red — a libuv assertion in a test's teardown,
     # and an OS-store backend that had never once worked — and an advisory job
@@ -63,37 +62,8 @@ jobs:
       - run: npm run test:scrimp
       - run: npm run test:keystore
       - run: npm run test:osstore  # exercises the real OS store on each runner
-      - run: npm run test:keychain  # macOS-only; SKIPs on the linux runner
+      - run: npm run test:keychain  # macOS-only; SKIPs elsewhere; headless on CI (see file)
 
-  # macOS is MANUAL-ONLY, and the reason is not preference.
-  #
-  # No macOS job has ever completed in this repository. Across the last 100
-  # workflow runs every `macos-latest` job is `cancelled` or still `queued` —
-  # zero successes, going back before this file was reorganised. The runners
-  # are not slow here, they are unavailable, so a macOS job is not a gate: it
-  # is a permanent pending status that makes every commit read 4/6 and, when
-  # it was wired as `needs:` on publish, would have hung the next release.
-  #
-  # A check that cannot run must not pretend to be a check. This stays as
-  # workflow_dispatch so it is one click away if runners ever appear, and the
-  # Keychain path is verified LOCALLY instead — `npm run test:osstore` and
-  # `npm run test:keychain` on a Mac, which is where this project is
-  # developed. That is weaker than CI and this comment is the honest record
-  # of it rather than a green tick that means nothing.
-  macos:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 24 }
-      - run: npm ci
-      - run: npx tsc --noEmit
-      - run: npm run build
-      - run: npm run test:units
-      - run: npm run test:keystore
-      - run: npm run test:osstore  # the real Keychain, not a mock
-      - run: npm run test:keychain # macOS-only; the reason this job exists
 
   secrets:
     runs-on: ubuntu-latest

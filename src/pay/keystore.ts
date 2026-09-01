@@ -242,8 +242,23 @@ function keychainSet(name: string, secret: string): void {
 			// per-signature presence gate; without it the keychain is only
 			// storage, and any process running as this user could read the seed
 			// silently.
+			//
+			// HEADLESS CI EXCEPTION (2026-09-01). On a GitHub runner that dialog
+			// has no one to click it: `find-generic-password -w` blocked forever,
+			// the job had no timeout, and five such hangs held the org's entire
+			// macOS concurrency allowance — every later macOS job "waited for a
+			// runner" that our own stuck jobs were occupying. So, ONLY when GitHub
+			// itself says we are in Actions (GITHUB_ACTIONS is set by the runner,
+			// not by users) AND the test opts in explicitly, the item pre-trusts
+			// the `security` tool so the real add/read path can be exercised
+			// without a prompt. The test also points this at a throwaway keychain.
+			// A user's machine never takes this branch: there, the prompt IS the
+			// product.
 			"-T",
-			"",
+			process.env.GITHUB_ACTIONS === "true" &&
+			process.env.STELLAR_PAY_KEYCHAIN_HEADLESS === "1"
+				? "/usr/bin/security"
+				: "",
 			// -U MUST precede -w: `-w` consumes the NEXT argv token as the
 			// password, so ["-w","-U"] silently stored the literal string "-U".
 			"-U",
