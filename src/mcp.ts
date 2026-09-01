@@ -62,6 +62,7 @@ import {
 	sessionFetch,
 } from "./pay/session.js";
 import { getChannel, listChannels } from "./pay/session-store.js";
+import { blockedTarget, payGuard } from "./pay/ssrf.js";
 import { drawFromVault, vaultStatus } from "./pay/vault.js";
 import { balances, loadWallet, type Wallet } from "./pay/wallet.js";
 import {
@@ -140,72 +141,8 @@ function newSendToken(
 	return t;
 }
 
-/**
- * SSRF guard for the agent-driven `curl` tool: a prompt-injected agent must not
- * be able to reach the loopback/private/link-local network (cloud metadata at
- * 169.254.169.254, internal services) or a non-http(s) scheme. Returns a reason
- * string when the target is blocked, or null when it's allowed. The sandbox and
- * local dev opt in with STELLAR_PAY_ALLOW_PRIVATE=1.
- */
-function privateIp(h: string): boolean {
-	// IPv4-mapped IPv6: Node's URL canonicalizes to the HEX form
-	// ([::ffff:127.0.0.1] → ::ffff:7f00:1); unwrap either form and re-check
-	// the embedded IPv4.
-	const mapped =
-		/^::ffff:(?:([0-9a-f]{1,4}):([0-9a-f]{1,4})|(\d+\.\d+\.\d+\.\d+))$/.exec(h);
-	if (mapped) {
-		if (mapped[3]) return privateIp(mapped[3]);
-		const hi = Number.parseInt(mapped[1] as string, 16);
-		const lo = Number.parseInt(mapped[2] as string, 16);
-		return privateIp(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`);
-	}
-	return (
-		h === "localhost" ||
-		h === "::1" ||
-		h === "::" ||
-		h === "0.0.0.0" ||
-		/^127\./.test(h) ||
-		/^0\./.test(h) ||
-		/^10\./.test(h) ||
-		/^192\.168\./.test(h) ||
-		/^172\.(1[6-9]|2\d|3[01])\./.test(h) ||
-		/^169\.254\./.test(h) || // link-local incl. cloud metadata
-		/^(fe80:|fc|fd)/.test(h) ||
-		h.endsWith(".local") ||
-		h.endsWith(".internal")
-	);
-}
-
-export async function blockedTarget(raw: string): Promise<string | null> {
-	if (process.env.STELLAR_PAY_ALLOW_PRIVATE === "1") return null;
-	let u: URL;
-	try {
-		u = new URL(raw);
-	} catch {
-		return `"${raw}" is not a valid URL`;
-	}
-	if (u.protocol !== "http:" && u.protocol !== "https:")
-		return `refused: ${u.protocol} is not an http(s) URL`;
-	const h = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-	if (privateIp(h))
-		return `refused: ${h} is a loopback/private/link-local address — the paid catalog is public hosts only`;
-	// A public NAME can still resolve to a private address (DNS rebinding).
-	// Resolve and re-check every address; an unresolvable host is left for the
-	// fetch itself to fail. The check-then-fetch gap is not fully closable
-	// without socket pinning, but this removes the plain rebinding path.
-	if (!/^[\d.]+$/.test(h) && !h.includes(":")) {
-		try {
-			const { lookup } = await import("node:dns/promises");
-			const addrs = await lookup(h, { all: true, verbatim: true });
-			for (const a of addrs)
-				if (privateIp(a.address.toLowerCase()))
-					return `refused: ${h} resolves to ${a.address}, a loopback/private/link-local address`;
-		} catch {
-			// unresolvable — let fetch report it
-		}
-	}
-	return null;
-}
+// SSRF guard lives in pay/ssrf.ts so the CLI doors share it verbatim.
+export { blockedTarget } from "./pay/ssrf.js";
 
 /** The work layer is testnet-only, and saying so in a tool DESCRIPTION is not
  * an enforcement. These tools move real balances to agent-chosen addresses
@@ -300,10 +237,7 @@ function getGoverned(): Promise<Governed> {
 			// the SSRF guard and the per-host spend policy. Without this a 302
 			// walked the agent onto loopback/metadata addresses and onto hosts the
 			// operator had explicitly denied.
-			guard: async (u) =>
-				(await blockedTarget(u)) ??
-				resolveHost(u, { requested: MAX_PER_CALL }).blocked ??
-				null,
+			guard: (u) => payGuard(u, { requested: MAX_PER_CALL }),
 			budgetPerCall: MAX_PER_CALL,
 		});
 		return governed;
@@ -1282,6 +1216,13 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 		async ({ url, deposit_xlm }) => {
 			const blocked = await blockedTarget(url);
 			if (blocked) return json({ error: blocked });
+			// The deposit is a spend the channel can pay out with no further
+			// prompt, so the per-host spend policy gates the OPEN. Without this
+			// a denied host still got a funded channel (audit finding 1).
+			// requested:0 runs only the deny/allowlist branches — see the CLI
+			// twin for why the USD ceiling cannot price an XLM deposit.
+			const gate = resolveHost(url, { requested: 0 });
+			if (gate.blocked) return json({ error: `refused: ${gate.blocked}` });
 			try {
 				const w = getWallet();
 				// The seller's payTo comes from THEIR live 402, never a catalog.
