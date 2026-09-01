@@ -3,3 +3,4 @@ node_modules/
 .local/
 catalog.json
 dist/
+PLANS-BRIEF.md
