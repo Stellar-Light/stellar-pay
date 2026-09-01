@@ -342,7 +342,12 @@ import { Keypair as _KP } from "@stellar/stellar-sdk";
 // else specifies commit-reveal, this is a serialization change and nothing
 // more: the digest already commits to (format, contract, worker, evidence,
 // nonce), which is the union of what such a spec would need.
-const COMMIT_FORMAT = "stellar-pay/commit-v1" as const;
+// v2 (2026-09-01): `committedAt` joined the SIGNED preimage. In v1 the field
+// existed on the packet and looked authoritative while sitting OUTSIDE the
+// signature, so whoever relayed a commit could rewrite it — and the resolver
+// ordered the race by array position regardless. Bumped rather than silently
+// changed: a v1 packet is not a v2 packet and must not be read as one.
+const COMMIT_FORMAT = "stellar-pay/commit-v2" as const;
 
 /** A COMMIT: "I already have evidence whose hash is X" — published BEFORE the
  * evidence itself is shown to anyone.
@@ -369,10 +374,13 @@ function commitHashOf(
 	worker: string,
 	evidence: EvidenceEntry[],
 	nonce: string,
+	committedAt: string,
 ): string {
 	const ev = _ch("sha256").update(JSON.stringify(evidence)).digest("hex");
 	return _ch("sha256")
-		.update(`${COMMIT_FORMAT}|${contractId}|${worker}|${ev}|${nonce}`)
+		.update(
+			`${COMMIT_FORMAT}|${contractId}|${worker}|${ev}|${nonce}|${committedAt}`,
+		)
 		.digest("hex");
 }
 
@@ -385,11 +393,15 @@ export function makeCommit(o: {
 	nonce?: string;
 }): { commit: OpenCommit; nonce: string } {
 	const nonce = o.nonce ?? _rb(32).toString("hex");
+	// Stamp BEFORE hashing so the timestamp the worker signs is the timestamp
+	// the packet carries — the two can never disagree.
+	const committedAt = new Date().toISOString();
 	const commitHash = commitHashOf(
 		o.contractId,
 		o.worker.publicKey(),
 		o.evidence,
 		nonce,
+		committedAt,
 	);
 	const sig = o.worker.sign(Buffer.from(commitHash, "hex"));
 	return {
@@ -399,7 +411,7 @@ export function makeCommit(o: {
 			bountyContract: o.contractId,
 			worker: o.worker.publicKey(),
 			commitHash,
-			committedAt: new Date().toISOString(),
+			committedAt,
 			signature: Buffer.from(sig).toString("base64"),
 		},
 	};
@@ -554,12 +566,25 @@ export function pickWinner(
 	contractId: string,
 	submissions: OpenSubmission[],
 	policy: ResolverPolicy,
-	/** COMMIT-REVEAL: the commits the resolver received, in arrival order. When
-	 * supplied, a submission must open one of them and the winner is the valid
-	 * reveal whose COMMIT came first — so a thief who only sees the evidence at
-	 * reveal time cannot win by submitting faster. Omit for the plain
-	 * first-valid-wins race. */
-	commits?: OpenCommit[],
+	/**
+	 * COMMIT-REVEAL, and it is REQUIRED (audit finding 2b). It used to be
+	 * optional, and every caller made it optional too — CLI `--commits`, MCP
+	 * `commits`, and the reference worker that `test:marketplace` runs as "the
+	 * thesis end to end", which did not commit at all. So the documented
+	 * protection was off on the demo path: a thief who saw the evidence at
+	 * reveal time simply submitted faster and won.
+	 *
+	 * Order is by the worker's SIGNED `committedAt`, not by position in this
+	 * array. Array position was supplied by the resolver, which meant the party
+	 * adjudicating the race also decided who came first, invisibly.
+	 *
+	 * Honest limit: a self-signed timestamp is a CLAIM, not an authority — a
+	 * worker can date their own commit early (though only for evidence they had
+	 * already produced). What it buys is that cheating becomes DETECTABLE:
+	 * anyone holding two commits can check the resolver honoured their order.
+	 * An on-chain commit mailbox is the real fix and is a rails ask.
+	 */
+	commits: OpenCommit[],
 ): {
 	winner: OpenSubmission | null;
 	judged: Array<{ worker: string; valid: boolean; reason: string }>;
@@ -567,6 +592,27 @@ export function pickWinner(
 	const judged: Array<{ worker: string; valid: boolean; reason: string }> = [];
 	let winner: OpenSubmission | null = null;
 	let bestRank = Number.POSITIVE_INFINITY;
+	// Rank the commits OURSELVES rather than trusting the order we were handed.
+	// Signature-checked first, then sorted by the signed `committedAt`, with a
+	// deterministic tie-break on commitHash so two commits in the same
+	// millisecond resolve the same way for every party that re-runs this — a
+	// tie broken by array position would hand the decision back to whoever
+	// assembled the array. A commit dated in the future is discarded: it is the
+	// one timestamp claim that is definitionally false.
+	const now = Date.now();
+	const ranked = [...commits]
+		.filter(
+			(c) =>
+				commitIsValid(contractId, c) &&
+				typeof c.committedAt === "string" &&
+				Number.isFinite(Date.parse(c.committedAt)) &&
+				Date.parse(c.committedAt) <= now + 60_000,
+		)
+		.sort(
+			(a, z) =>
+				Date.parse(a.committedAt) - Date.parse(z.committedAt) ||
+				a.commitHash.localeCompare(z.commitHash),
+		);
 	for (const s of submissions) {
 		if (s.format !== SUBMISSION_FORMAT) {
 			// Say what is actually wrong. Reporting a version mismatch as
@@ -600,17 +646,22 @@ export function pickWinner(
 		}
 		// COMMIT-REVEAL: the reveal must open a commit this worker made earlier.
 		let commitRank: number | null = null;
-		if (commits) {
+		{
 			if (!s.nonce) {
 				judged.push({ worker: s.worker, valid: false, reason: "no-nonce" });
 				continue;
 			}
-			const want = commitHashOf(contractId, s.worker, s.evidence, s.nonce);
-			const idx = commits.findIndex(
+			const idx = ranked.findIndex(
 				(c) =>
-					commitIsValid(contractId, c) &&
 					c.worker === s.worker &&
-					c.commitHash === want,
+					c.commitHash ===
+						commitHashOf(
+							contractId,
+							s.worker,
+							s.evidence,
+							s.nonce as string,
+							c.committedAt,
+						),
 			);
 			if (idx < 0) {
 				// Either no commit exists for this exact evidence+worker, or the
@@ -643,14 +694,12 @@ export function pickWinner(
 				: "evidence-rejected",
 		});
 		if (!valid) continue;
-		if (commits) {
-			// EARLIEST COMMIT wins, regardless of who revealed first.
-			if (winner == null || (commitRank ?? 0) < bestRank) {
-				winner = s;
-				bestRank = commitRank ?? 0;
-			}
-		} else if (!winner) {
-			winner = s; // plain race: first valid wins; keep judging for the record
+		// EARLIEST SIGNED COMMIT wins, regardless of who revealed first. The
+		// old `else` branch — plain first-valid-wins when no commits were
+		// supplied — is gone with the optional parameter that fed it.
+		if (winner == null || (commitRank ?? 0) < bestRank) {
+			winner = s;
+			bestRank = commitRank ?? 0;
 		}
 	}
 	return { winner, judged };
@@ -664,8 +713,13 @@ export async function resolveOpenBounty(o: {
 	resolver: Keypair;
 	contractId: string;
 	submissions: OpenSubmission[];
-	/** commits in ARRIVAL ORDER; when given, the earliest committer wins */
-	commits?: OpenCommit[];
+	/** Every commit the resolver received. REQUIRED: the race is decided by
+	 *  the earliest SIGNED commit, and a resolver that could omit this
+	 *  argument was a resolver that could quietly run the old
+	 *  fastest-reveal-wins race instead. Pass [] only to mean "nobody
+	 *  committed", which now resolves to no winner rather than to a
+	 *  free-for-all. */
+	commits: OpenCommit[];
 	/** a party with standing (the buyer) to raise the dispute that unlocks
 	 * distribution-based settlement. Optional when the escrow is ALREADY
 	 * disputed (CLI flows: the buyer runs `bounty dispute` in its own call —

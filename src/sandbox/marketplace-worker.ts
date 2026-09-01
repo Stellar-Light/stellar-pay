@@ -16,7 +16,7 @@
  * Exit codes: 0 paid · 5 lost the race / refunded · 6 nothing workable.
  */
 import { Keypair } from "@stellar/stellar-sdk";
-import type { EvidenceEntry } from "../pay/bounty.js";
+import { type EvidenceEntry, makeCommit } from "../pay/bounty.js";
 import {
 	awaitPayout,
 	fetchFeed,
@@ -89,12 +89,32 @@ async function main() {
 	const evidence = await doTheWork(d.items);
 	evt({ evt: "worked", items: evidence.map((e) => e.item) });
 
-	// submit — the signature binds this evidence to OUR payout address.
+	// COMMIT, then reveal (audit finding 2c). This reference worker — the one
+	// `test:marketplace` runs as "the thesis end to end" — used to skip the
+	// commit entirely and POST its evidence straight to the inbox, which is
+	// how the demo path ran the fastest-reveal race the README said it had
+	// replaced. The commit goes out BEFORE the evidence, so a thief who only
+	// sees the evidence at reveal time has nothing to open.
+	const { commit, nonce } = makeCommit({
+		worker: me,
+		contractId: pick.contractId,
+		evidence,
+	});
+	await fetch(d.submitUrl, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(commit),
+	}).catch(() => undefined);
+	evt({ evt: "committed", commitHash: commit.commitHash.slice(0, 12) });
+
+	// reveal — the signature binds this evidence to OUR payout address, and the
+	// nonce opens the commit above.
 	const sub = await submitPacket({
 		worker: me,
 		contractId: pick.contractId,
 		evidence,
 		url: d.submitUrl,
+		nonce,
 	});
 	evt({ evt: "submitted", status: sub.status });
 

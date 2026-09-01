@@ -75,6 +75,7 @@ async function main() {
 		"═══ open-claim bounty e2e — anyone submits, first valid wins ═══\n",
 	);
 	const {
+		makeCommit,
 		makeSubmission,
 		pickWinner,
 		postBounty,
@@ -138,7 +139,35 @@ async function main() {
 
 	// Offline sanity of the selection BEFORE settling (order: sloppy, replay, real).
 	const pol = verificationEvidencePolicy(descriptor);
-	const sel = pickWinner(posted.contractId, [sub1, stolenReplay, sub2], pol);
+	// Commit-reveal is mandatory now, so the honest workers commit first and
+	// the resolver ranks by the signed timestamps, not by the order it happens
+	// to hold them in.
+	const c1 = makeCommit({
+		worker: worker1,
+		contractId: posted.contractId,
+		evidence: sloppy,
+	});
+	const c2 = makeCommit({
+		worker: worker2,
+		contractId: posted.contractId,
+		evidence: real,
+	});
+	const sub1c = makeSubmission({
+		worker: worker1,
+		contractId: posted.contractId,
+		evidence: sloppy,
+		nonce: c1.nonce,
+	});
+	const sub2c = makeSubmission({
+		worker: worker2,
+		contractId: posted.contractId,
+		evidence: real,
+		nonce: c2.nonce,
+	});
+	const sel = pickWinner(posted.contractId, [sub1c, stolenReplay, sub2c], pol, [
+		c1.commit,
+		c2.commit,
+	]);
 	console.log(
 		`judge    ${sel.judged.map((j) => `${j.worker.slice(0, 6)}:${j.reason}`).join(" · ")}`,
 	);
@@ -153,10 +182,17 @@ async function main() {
 	// author, which is exactly why submitUrl must be the resolver's inbox and why
 	// commit-reveal is on the roadmap. If this assertion ever starts failing,
 	// someone built the real fix — update the docs with it.
-	const resigned = pickWinner(posted.contractId, [stolenResigned, sub2], pol);
-	if (resigned.winner?.worker !== worker1.publicKey())
+	// THE FIX LANDED (2026-09-01). This block used to assert the opposite: that
+	// a thief who re-signs stolen evidence WINS on arrival order, with a note
+	// saying "if this ever starts failing, someone built the real fix". Commit
+	// -reveal is mandatory now, so the thief has no commit for evidence they
+	// only saw at reveal time, and they lose to the author who committed first.
+	const resigned = pickWinner(posted.contractId, [stolenResigned, sub2c], pol, [
+		c2.commit,
+	]);
+	if (resigned.winner?.worker !== worker2.publicKey())
 		throw new Error(
-			"re-signed theft no longer wins on arrival order — the fix landed; update bounty.ts's header, README's gap list and this test",
+			`re-signed theft should now LOSE to the committer; winner was ${resigned.winner?.worker ?? "nobody"}`,
 		);
 	console.log(
 		"limit    re-signed evidence arriving FIRST still wins (documented: single-round submission has no cryptographic author lock)",
@@ -167,7 +203,8 @@ async function main() {
 		descriptor,
 		resolver,
 		contractId: posted.contractId,
-		submissions: [sub1, stolenReplay, sub2],
+		submissions: [sub1c, stolenReplay, sub2c],
+		commits: [c1.commit, c2.commit],
 		disputeRaiser: buyer,
 	});
 	const got = await creditedSum(

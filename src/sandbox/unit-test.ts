@@ -411,12 +411,26 @@ check(
 		"submission: carries its format",
 		sub.format === "stellar-pay/submission-v1",
 	);
+	// pickWinner now REQUIRES commits, so the happy path builds one. A reveal
+	// with no matching commit is not a winner at all any more.
+	const solo = makeCommit({ worker: kp, contractId: CID, evidence: ev });
+	const soloReveal = makeSubmission({
+		worker: kp,
+		contractId: CID,
+		evidence: ev,
+		nonce: solo.nonce,
+	});
 	check(
-		"submission: a valid packet wins",
-		pickWinner(CID, [sub], pol).winner?.worker === kp.publicKey(),
+		"submission: a valid packet with a matching commit wins",
+		pickWinner(CID, [soloReveal], pol, [solo.commit]).winner?.worker ===
+			kp.publicKey(),
+	);
+	check(
+		"submission: a reveal with NO commit cannot win (commit-reveal is mandatory)",
+		pickWinner(CID, [sub], pol, []).winner === null,
 	);
 	const wrongFormat = { ...sub, format: "stellar-pay/submission-v0" as never };
-	const j = pickWinner(CID, [wrongFormat], pol).judged[0];
+	const j = pickWinner(CID, [wrongFormat], pol, []).judged[0];
 	check(
 		"submission: an unknown format says so, not 'bad-signature'",
 		j?.valid === false && String(j?.reason).startsWith("unsupported-format:"),
@@ -479,12 +493,24 @@ check(
 		withCommits.winner?.worker === author.publicKey(),
 		String(withCommits.winner?.worker),
 	);
-	// Without commits this is the old race, and the thief takes it — the exact
-	// property the README documents as the reason commit-reveal exists.
-	const withoutCommits = pickWinner(CID, [thiefReveal, authorReveal], pol);
+	// This used to assert that WITHOUT commits the thief wins — true, and the
+	// reason commit-reveal exists, but it documented an optional protection
+	// that every caller left off. The race cannot be run without commits now,
+	// so the property to pin is that the thief loses when the resolver is
+	// handed NOTHING as well: no commits, no winner, rather than a free-for-all.
+	const noCommits = pickWinner(CID, [thiefReveal, authorReveal], pol, []);
 	check(
-		"plain race: the same thief WINS without commit-reveal (why it exists)",
-		withoutCommits.winner?.worker === thief.publicKey(),
+		"no commits supplied → nobody wins (the old code paid the fastest thief)",
+		noCommits.winner === null,
+	);
+	// And the resolver cannot reorder the race by the order it hands them over.
+	const reversed = pickWinner(CID, [thiefReveal, authorReveal], pol, [
+		thiefCommit.commit,
+		commit,
+	]);
+	check(
+		"resolver cannot reorder: the earliest SIGNED commit still wins",
+		reversed.winner?.worker === author.publicKey(),
 	);
 	// A reveal with no commit behind it is refused outright.
 	const noCommit = pickWinner(CID, [thiefReveal], pol, [commit]);
