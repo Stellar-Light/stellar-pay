@@ -718,10 +718,14 @@ each and who owns it.
   flooded. Today's mitigations: deterministic evidence policies (sloppy work
   loses regardless of volume) and first-valid-wins. The real fix is the
   reputation layer, which is why its bar is set where it is.
-- **A sealed session store.** The vault owner passkey and channel commitment
-  seeds sit plaintext in `sessions.json` (flagged in the files that write
-  them). Sealing them into the encrypted keystore is queued; the wallet
-  secret itself is already sealed.
+- **A fully sealed session store.** Half done. The vault owner passkey now
+  lives in the OS secret store (macOS Keychain / libsecret / Windows DPAPI),
+  migrated out of `sessions.json` one-way on first use, and the vault refuses
+  to operate on a machine with no usable store unless you set
+  `STELLAR_PAY_ALLOW_PLAINTEXT_VAULT=1` and own that risk. The channel
+  commitment seeds still sit plaintext in `sessions.json` (mode 0600, flagged
+  in the file that writes them); sealing those is queued. The wallet secret
+  itself has always been sealed.
 - **Seller-side session settlement.** Our sandbox serves channel mode, but
   the operator loop (settle-without-close, batch settlement) isn't built —
   the client side was the wedge.
