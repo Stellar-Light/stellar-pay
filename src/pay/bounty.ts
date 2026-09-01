@@ -403,11 +403,16 @@ export function makeCommit(o: {
 	contractId: string;
 	evidence: EvidenceEntry[];
 	nonce?: string;
+	/** Override the stamp. Present so a fixture can be reproduced exactly —
+	 *  the published vectors pin a timestamp, and a value that only `new Date()`
+	 *  can produce is a value no second implementation can check itself
+	 *  against. Real commits leave this unset. */
+	committedAt?: string;
 }): { commit: OpenCommit; nonce: string } {
 	const nonce = o.nonce ?? _rb(32).toString("hex");
 	// Stamp BEFORE hashing so the timestamp the worker signs is the timestamp
 	// the packet carries — the two can never disagree.
-	const committedAt = new Date().toISOString();
+	const committedAt = o.committedAt ?? new Date().toISOString();
 	const commitHash = commitHashOf(
 		o.contractId,
 		o.worker.publicKey(),
@@ -486,7 +491,10 @@ export type OpenSubmission = {
 // close enough that an exporter is mechanical.
 const SUBMISSION_FORMAT = "stellar-pay/submission-v1" as const;
 
-function submissionDigest(
+/** The exact bytes a worker signs. Published because a second implementation
+ *  cannot produce a valid submission without reproducing this preimage —
+ *  keeping it module-private made the format unimplementable from outside. */
+export function submissionDigest(
 	contractId: string,
 	worker: string,
 	evidence: EvidenceEntry[],

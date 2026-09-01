@@ -1,0 +1,21 @@
+{
+  "$note": "descriptor → agreement document → engagement_id. agreementHash is the value the escrow pins on chain; a worker recomputes it from the feed row and refuses if it differs.",
+  "descriptor": {
+    "format": "stellar-pay/bounty-v1",
+    "kind": "verification",
+    "title": "Verify two directory rows",
+    "items": [
+      "row-alpha",
+      "row-beta"
+    ],
+    "instructions": "Confirm each row resolves and record a short excerpt.",
+    "amount": "25000000",
+    "tokenContract": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+    "maxEvidenceAgeDays": 7,
+    "resolver": "GDWUSKGGFDI4FRXK5EBTRECZSVQSSWJHHJOGH6JWG3AUMFFMQ435DIAG",
+    "buyer": "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR",
+    "submitUrl": "https://resolver.example/inbox"
+  },
+  "agreementDoc": "---\nformat: stellar-pay/agreement-v1\nnetwork: stellar:testnet\ncontract_type: trustless-work-single-release\nparties:\n  - address: \"GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR\"\n    role: buyer\n  - address: \"GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR\"\n    role: provider\nresolver: \"GDWUSKGGFDI4FRXK5EBTRECZSVQSSWJHHJOGH6JWG3AUMFFMQ435DIAG\"\nresolver_policy: evidence-schema:verification-v1\ndeadline: \"2100-01-01T00:00:00Z\"\n---\n\n# Agreement\n\nVerify two directory rows\n\n## Terms\n\nConfirm each row resolves and record a short excerpt.\n\nItems to verify (evidence must cover EVERY item, exactly once):\n- row-alpha\n- row-beta\n\nSigned submission packets POST to: https://resolver.example/inbox\nEvidence sent anywhere else is outside these terms.\n\nSettlement rails: Trustless Work single-release escrow on stellar:testnet. Payment: 25000000 base units of token CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA, released to the provider on an approving resolution, refunded to the buyer otherwise. Platform fee: 0. Trustless Work protocol fee: 0.3%.\n\n## Review Question\n\nIs the submitted evidence a valid JSON array with exactly one entry per requested item, each carrying item, url (http/https), non-empty verdict, checkedAt (ISO 8601, within the freshness bound), and a non-empty excerpt?\n\n## Allowed Evidence\n\n- the milestone evidence string (the evidence JSON document itself)\n\n## Resolution Effects\n\n- yes => release\n- no => refund\n",
+  "agreementHash": "0x95b6154e301457d82e958178f041e8694d79750fdb147cbbf7b7a7fedbcc3108"
+}

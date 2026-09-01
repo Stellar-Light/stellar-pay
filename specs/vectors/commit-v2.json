@@ -1,0 +1,31 @@
+{
+  "$note": "commitHash = sha256(`${format}|${contractId}|${worker}|${sha256(JSON.stringify(evidence))}|${nonce}|${committedAt}`), hex. committedAt is INSIDE the preimage — v1 left it outside the signature, where a relay could rewrite it.",
+  "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAV",
+  "worker": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U",
+  "evidence": [
+    {
+      "item": "row-alpha",
+      "url": "https://alpha.example",
+      "verdict": "live",
+      "checkedAt": "2026-09-01T00:00:00.000Z",
+      "excerpt": "alpha ok"
+    },
+    {
+      "item": "row-beta",
+      "url": "https://beta.example",
+      "verdict": "live",
+      "checkedAt": "2026-09-01T00:00:00.000Z",
+      "excerpt": "beta ok"
+    }
+  ],
+  "nonce": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+  "committedAt": "2026-09-01T12:00:00.000Z",
+  "commit": {
+    "format": "stellar-pay/commit-v2",
+    "bountyContract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAV",
+    "worker": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U",
+    "commitHash": "7835afc653e66e6b339800b41549a553125db86eb645a99781e6be1693c44d0a",
+    "committedAt": "2026-09-01T12:00:00.000Z",
+    "signature": "amUiVa9PbB1RhCuOr4WX2FXcZuXq/4ZQ1kvBvZXNAE2oShvegpyQxDmt0RHApVEiIlu2Kyj2YG47KXT9FzMoCA=="
+  }
+}

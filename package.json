@@ -53,7 +53,9 @@
 		"test:ledger": "tsx src/sandbox/ledger-chain-test.ts",
 		"test:feed-tamper": "tsx src/sandbox/feed-tamper-test.ts",
 		"test:second-party": "tsx src/sandbox/second-party-test.ts",
-		"test:vault-key": "tsx src/sandbox/vault-key-test.ts"
+		"test:vault-key": "tsx src/sandbox/vault-key-test.ts",
+		"vectors": "tsx src/sandbox/gen-vectors.ts",
+		"test:vectors": "tsx src/sandbox/vectors-test.ts"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.3.2",
@@ -94,7 +96,8 @@
 		"docs",
 		"llms.txt",
 		"skills",
-		"vendor"
+		"vendor",
+		"specs"
 	],
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
