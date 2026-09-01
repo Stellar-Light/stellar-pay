@@ -55,6 +55,7 @@ jobs:
       - run: npm run test:ledger    # deletion is caught, not just editing
       - run: npm run test:feed-tamper # a hostile feed cannot retarget the inbox
       - run: npm run test:second-party # a stranger can implement our formats
+      - run: npm run test:vault-key   # the owner key is not plaintext beside the agent key
       - run: npm run test:catalog  # the catalog's own claim
       - run: npm run test:send     # send_usdc guards (no funds move)
       - run: npm run test:ssrf

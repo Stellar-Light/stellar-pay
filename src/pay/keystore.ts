@@ -455,6 +455,40 @@ async function readSecret(name: string, acct: Account): Promise<string> {
 	return unseal(acct.sealed, await passphrase());
 }
 
+/**
+ * Generic OS-store slots, for secrets that are not wallet accounts.
+ *
+ * The vault's OWNER key (a P-256 PEM that authenticates as the human who owns
+ * the smart account) sat in plaintext in sessions.json — so disk read access
+ * WAS the owner role, on a rule that cannot carry a spending limit. That is a
+ * worse exposure than the wallet secret next to it, which has been encrypted
+ * since day one, and it is the same OS store either way. Labels are namespaced
+ * under the same `stellar-pay:` service as accounts, so `osStoreName()` and the
+ * cross-platform osstore test cover these too.
+ */
+export function putOsSecret(label: string, value: string): void {
+	keychainSet(`slot/${label}`, value);
+}
+export function getOsSecret(label: string): string | null {
+	try {
+		const v = keychainGet(`slot/${label}`);
+		return v || null;
+	} catch {
+		return null;
+	}
+}
+export function deleteOsSecret(label: string): void {
+	try {
+		keychainDelete(`slot/${label}`);
+	} catch {
+		/* already gone */
+	}
+}
+/** Is an OS secret store usable on this machine at all? */
+export function hasOsStore(): boolean {
+	return osStore() !== null;
+}
+
 export async function exportSecret(name?: string): Promise<string> {
 	const st = read();
 	const key = name ?? st.default;

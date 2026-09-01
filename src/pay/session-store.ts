@@ -114,6 +114,15 @@ export function getVault(): import("./vault.js").VaultRecord | null {
 	return (read().vault as import("./vault.js").VaultRecord | undefined) ?? null;
 }
 
+/** Overwrite the stored vault record. Distinct from putVault, which refuses
+ *  to replace an existing vault — this is for in-place edits to the one that
+ *  is already there (migrating the owner key out of plaintext). */
+export function updateVault(v: Record<string, unknown>) {
+	const d = read();
+	d.vault = v;
+	write(d);
+}
+
 export function putVault(v: Record<string, unknown>) {
 	const d = read();
 	if (d.vault) throw new Error("vault already exists");

@@ -28,9 +28,15 @@ import {
 	MemoryStorage,
 	SmartAccountKit,
 } from "smart-account-kit";
+import {
+	getOsSecret,
+	hasOsStore,
+	osStoreName,
+	putOsSecret,
+} from "./keystore.js";
 import { softwarePasskey } from "./passkey.js";
 import { record } from "./receipts.js";
-import { getVault, putVault } from "./session-store.js";
+import { getVault, putVault, updateVault } from "./session-store.js";
 import type { Wallet } from "./wallet.js";
 
 const CFG = {
@@ -52,7 +58,14 @@ const DAY_LEDGERS = 17_280;
 export type VaultRecord = {
 	contractId: string;
 	network: "stellar:testnet";
-	ownerPasskeyPem: string;
+	/**
+	 * LEGACY ONLY. The owner key used to live here in plaintext, which made
+	 * read access to sessions.json equivalent to being the vault's owner — on
+	 * a rule that cannot carry a spending limit, so the reader is uncapped.
+	 * New vaults store it in the OS secret store and leave this undefined;
+	 * `ownerKeyOf` migrates an existing one on first use.
+	 */
+	ownerPasskeyPem?: string;
 	ownerCredentialId: string;
 	agentPublicKey: string;
 	tokenContract: string;
@@ -66,6 +79,56 @@ type TxResult = {
 	hash?: string;
 	error?: { message?: string };
 };
+
+const OWNER_SLOT = "vault-owner-passkey";
+
+/**
+ * The vault owner's private key, from the OS secret store — migrating a
+ * legacy plaintext copy out of sessions.json the first time we see one.
+ *
+ * Migration is deliberately one-way and eager: reading it is exactly when we
+ * know the machine can produce the value, so it is the only moment we can
+ * move it without asking the user to do anything. If there is no OS store we
+ * do NOT silently keep the plaintext — the operator has to say so.
+ */
+function ownerKeyOf(v: VaultRecord): string {
+	const stored = getOsSecret(OWNER_SLOT);
+	if (stored) return stored;
+	if (!v.ownerPasskeyPem)
+		throw new Error(
+			`the vault owner key is not in ${osStoreName()} and this record has no legacy copy — the vault cannot be operated from this machine`,
+		);
+	// A store being PRESENT is not a store being WRITABLE: a locked keychain,
+	// a headless session with no keyring daemon, or a policy-restricted host
+	// all throw here. That must not brick the vault — it means the key could
+	// not be secured, which is the same situation as having no store at all.
+	let migrated = false;
+	if (hasOsStore()) {
+		try {
+			putOsSecret(OWNER_SLOT, v.ownerPasskeyPem);
+			const { ownerPasskeyPem: _dropped, ...withoutKey } = v;
+			updateVault(withoutKey);
+			migrated = true;
+			console.error(
+				`stellar-pay: moved the vault owner key out of sessions.json into ${osStoreName()} (it was stored in plaintext).`,
+			);
+		} catch (e) {
+			console.error(
+				`stellar-pay: could not write the vault owner key to ${osStoreName()} (${(e as Error).message.split("\n")[0]}) — it stays in plaintext for now.`,
+			);
+		}
+	}
+	if (!migrated && process.env.STELLAR_PAY_ALLOW_PLAINTEXT_VAULT !== "1") {
+		throw new Error(
+			"the vault owner key is stored in PLAINTEXT in sessions.json and no OS secret store is available to move it into. Anyone who can read that file is the vault's owner. Install one (linux: `apt install libsecret-tools`) or set STELLAR_PAY_ALLOW_PLAINTEXT_VAULT=1 to accept the risk explicitly.",
+		);
+	}
+	return v.ownerPasskeyPem;
+}
+
+/** Test seam: the migration is the security property, so it needs to be
+ *  assertable without deploying a smart account. */
+export const __ownerKeyOfForTest = ownerKeyOf;
 
 function kitFor(v: {
 	ownerPasskeyPem?: string;
@@ -155,7 +218,9 @@ export async function createVault(o: {
 	const rec: VaultRecord = {
 		contractId,
 		network: "stellar:testnet",
-		ownerPasskeyPem: passkey.privateKeyPem,
+		// The owner key goes to the OS store, never into this record. On a
+		// machine with no OS store the operator has to opt in explicitly —
+		// silently writing an uncapped owner key in plaintext is not a default.
 		ownerCredentialId: passkey.credentialId,
 		agentPublicKey: o.wallet.publicKey,
 		tokenContract: token,
@@ -261,7 +326,7 @@ export async function drawFromVault(o: {
 			`this wallet (${o.wallet.publicKey.slice(0, 8)}…) is not the vault's agent (${v.agentPublicKey.slice(0, 8)}…)`,
 		);
 	const { kit } = kitFor({
-		ownerPasskeyPem: v.ownerPasskeyPem,
+		ownerPasskeyPem: ownerKeyOf(v),
 		ownerCredentialId: v.ownerCredentialId,
 		deployerSecret: o.wallet.keypair.secret(),
 	});
