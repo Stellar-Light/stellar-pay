@@ -9,6 +9,7 @@
  * network fee (~0.00001 XLM). That is the one place a stellar-pay wallet needs
  * XLM at all.
  */
+
 import {
 	Asset,
 	BASE_FEE,
@@ -19,6 +20,7 @@ import {
 	Operation,
 	TransactionBuilder,
 } from "@stellar/stellar-sdk";
+import { record } from "./receipts.js";
 import {
 	balances,
 	HORIZON,
@@ -211,6 +213,22 @@ export async function sendAsset(
 		b.addOperation(Operation.payment({ destination: to, asset, amount }));
 		if (memo) b.addMemo(buildMemo(memo));
 		return b;
+	});
+	// Every outbound transfer is a receipt, written HERE rather than at the two
+	// call sites — `send` and MCP `send_usdc` both funnel through this
+	// function, and until 2026-09-01 neither wrote a row at all, so real USDC
+	// left the wallet with nothing in the ledger to verify later (audit
+	// finding 3). One door, one receipt: a future caller cannot forget.
+	record({
+		kind: "payment",
+		network: wallet.network,
+		url: `stellar:${to}`,
+		amount,
+		asset: code,
+		payer: wallet.publicKey,
+		payee: to,
+		tx: hash,
+		detail: { surface: "send", ...(memo ? { memo } : {}) },
 	});
 	return { hash, to, amount, asset: code, memo };
 }

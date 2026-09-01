@@ -217,14 +217,22 @@ draws — lands in a local, content-addressed ledger:
 
 ```sh
 stellar-pay receipts                    # the ledger
-stellar-pay receipts check              # tamper check: every id must re-derive from its content
+stellar-pay receipts check              # integrity: ids re-derive, links resolve, no unreadable lines
 stellar-pay receipts --verify <id>      # prove a row against Horizon (tx + credited effects)
 ```
 
-Row ids are sha256 of the row's content, refs chain rows into attributions
-(open → fund → deliver → resolved), and `--verify` re-derives a payment from
-the chain. This ledger is deliberately the substrate reputation will be built
-from — see [Not built yet](#not-built-yet--and-why).
+Row ids are sha256 of the row's content, `refs` chain rows into attributions
+(open → fund → deliver → resolved), and each row's `prev` links it to the one
+before — so a **deleted** row, not just an edited one, is caught.
+
+**What this does and does not prove.** `receipts check` detects editing,
+deletion, reordering and corruption. It cannot defend the file against its own
+owner: anyone who can write it can rewrite it whole and recompute every id and
+link consistently. The real anchor for a payment is the chain —
+`receipts --verify <id>` proves the row against Horizon, and that check needs
+nothing of ours. Treat the ledger as the index and Horizon as the witness.
+This ledger is deliberately the substrate reputation will be built from — see
+[Not built yet](#not-built-yet--and-why).
 
 ## 🔍 A catalog that's evidence, not a listing
 

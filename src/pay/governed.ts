@@ -113,8 +113,31 @@ export function buildGoverned(o: {
 			if (usd != null) headers.set(HDR.usd, String(usd));
 			headers.set(HDR.offer, describeSafe(r.paid.offer));
 		} else if (r.blocked) {
+			// A refusal is a decision the operator paid for and must be able to
+			// audit: until 2026-09-01 this door set a response header and wrote
+			// NOTHING, so an agent refused fifty times left no trace in
+			// `stellar-pay receipts` (audit finding 3).
+			record({
+				kind: "policy-decision",
+				network: o.wallet.network,
+				url,
+				detail: { allowed: false, rule: r.blocked, surface: "mcp" },
+			});
 			headers.set(HDR.refused, r.blocked.replace(/[^\x20-\x7e]/g, ""));
 		} else if (r.declined && r.offers[0]) {
+			record({
+				kind: "policy-decision",
+				network: o.wallet.network,
+				url,
+				amount: r.offers[0].amount,
+				asset: r.offers[0].asset,
+				payee: r.offers[0].payTo,
+				detail: {
+					allowed: false,
+					rule: o.refusalReason(r.offers[0], url),
+					surface: "mcp",
+				},
+			});
 			// The reason embeds the challenge's asset string, which is
 			// attacker-controlled — strip anything a header can't carry so a
 			// crafted 402 can't make Headers.set throw and abort the request.

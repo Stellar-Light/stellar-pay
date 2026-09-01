@@ -134,7 +134,9 @@ export type ProxyOptions = {
 	onPaid?: (info: {
 		url: string;
 		usd: number | null;
-		protocol: string;
+		/** the union payFetch actually emits — widening this to `string` meant
+		 *  the value could not be handed to a receipt row without a cast. */
+		protocol: "x402" | "mpp" | "channel";
 		hash: string | null;
 	}) => void;
 	onRefused?: (info: { url: string; reason: string }) => void;

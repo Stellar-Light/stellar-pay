@@ -421,10 +421,33 @@ async function cmdRun(a: Args): Promise<void> {
 		// 127.0.0.1 walked through (audit F7).
 		guard: (u) =>
 			payGuard(u, { requested: a.maxUsd, requestedExplicit: a.maxUsdSet }),
-		onPaid: (p) =>
+		// Both hooks write to the ledger. `run` pays real money through the
+		// proxy and, until 2026-09-01, recorded NOTHING — not the payments and
+		// not the refusals — so `receipts --verify` could not prove a spend
+		// this door made (audit finding 3).
+		onPaid: (p) => {
+			record({
+				kind: "payment",
+				network: wallet.network,
+				protocol: p.protocol,
+				url: p.url,
+				payer: wallet.publicKey,
+				tx: p.hash ?? null,
+				detail: { surface: "run", ...(p.usd != null ? { usd: p.usd } : {}) },
+			});
 			console.error(
 				`  ✓ paid ${p.usd != null ? `$${p.usd.toFixed(4)}` : "?"} via ${p.protocol.toUpperCase()} for ${p.url}${p.hash ? ` · ${explorer(wallet.network, p.hash)}` : ""}`,
-			),
+			);
+		},
+		onRefused: (x) => {
+			record({
+				kind: "policy-decision",
+				network: wallet.network,
+				url: x.url,
+				detail: { allowed: false, rule: x.reason, surface: "run" },
+			});
+			console.error(`  ✗ refused ${x.url}: ${x.reason}`);
+		},
 	});
 	console.error(
 		`stellar-pay: proxy on 127.0.0.1:${proxy.port}, wrapping \`${command}\` (Ctrl-C to stop)`,
@@ -1428,12 +1451,30 @@ async function cmdReceipts(a: Args): Promise<void> {
 	if (a.positional[0] === "check") {
 		const r = checkLedger();
 		emit(a, r, () => {
-			console.log(
-				r.ok
-					? `ledger intact: ${r.rows} row(s), every id re-derives from its content`
-					: `TAMPERED: ${r.bad.length} row(s) whose id does not match content`,
-			);
-			for (const b of r.bad) console.log(`  ${b.id} ≠ ${b.expected}`);
+			if (r.ok) {
+				console.log(
+					`ledger intact: ${r.rows} row(s) — every id re-derives from its content and every link resolves`,
+				);
+				console.log(
+					"  (a local file cannot prove itself against its own owner: verify a payment with `receipts --verify <id>`, which checks the chain)",
+				);
+				return;
+			}
+			const parts = [
+				r.bad.length && `${r.bad.length} edited`,
+				r.unlinked.length &&
+					`${r.unlinked.length} unlinked (deleted or reordered)`,
+				r.unreadable.length && `${r.unreadable.length} unreadable`,
+			].filter(Boolean);
+			console.log(`TAMPERED: ${parts.join(", ")}`);
+			for (const b of r.bad)
+				console.log(`  edited      ${b.id} ≠ ${b.expected}`);
+			for (const u of r.unlinked)
+				console.log(
+					`  unlinked    ${u.id} → prev ${u.prev} is not an earlier row`,
+				);
+			for (const u of r.unreadable)
+				console.log(`  unreadable  line ${u.line}: ${u.text}`);
 		});
 		if (!r.ok) process.exitCode = EXIT.runtime;
 		return;

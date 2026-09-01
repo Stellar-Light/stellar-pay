@@ -41,6 +41,7 @@ jobs:
       - run: npm run test:hostile   # seller-controlled headers
       - run: npm run test:redirect  # redirects cannot escape the gates
       - run: npm run test:guards    # every paying door runs the SAME gate
+      - run: npm run test:ledger    # deletion is caught, not just editing
       - run: npm run test:catalog  # the catalog's own claim
       - run: npm run test:send     # send_usdc guards (no funds move)
       - run: npm run test:ssrf
