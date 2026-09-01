@@ -104,6 +104,32 @@ if (!storeUsable) {
 	deleteOsSecret(SLOT);
 }
 
+// ── THE CREATE PATH ────────────────────────────────────────────────────────
+// The first version of this test only exercised MIGRATION (a legacy record
+// with a plaintext key), so it stayed green while `createVault` stored the key
+// NOWHERE — the record had dropped it and nothing wrote it to the store. A
+// fresh vault was bricked on its first draw and every test passed. Storing the
+// key is a claim; this checks the claim is true. Source-level because the
+// create path deploys a smart account, which an offline test cannot do.
+{
+	const src = readFileSync(new URL("../pay/vault.ts", import.meta.url), "utf8");
+	const start = src.indexOf("export async function createVault");
+	const end = src.indexOf("export async function drawFromVault");
+	const createBody = start >= 0 && end > start ? src.slice(start, end) : "";
+	check(
+		createBody.length > 0 && /putOsSecret\(\s*OWNER_SLOT/.test(createBody),
+		"createVault writes the owner key to the OS store (not just a comment saying it does)",
+	);
+	check(
+		/STELLAR_PAY_ALLOW_PLAINTEXT_VAULT/.test(createBody),
+		"and when it cannot, creation refuses unless the operator opted in",
+	);
+	check(
+		/ownerPasskeyPem: passkey\.privateKeyPem/.test(createBody),
+		"the plaintext fallback survives for that explicit opt-in (not a dead end)",
+	);
+}
+
 console.log(
 	`\n${bad === 0 ? "ALL PASS" : `${bad} FAILED`} — ${ok}/${ok + bad}`,
 );
