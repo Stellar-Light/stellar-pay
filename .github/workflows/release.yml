@@ -24,6 +24,16 @@ on:
 permissions:
   contents: write
 
+# Two of the four triggers fire on the SAME release (push on package.json and
+# workflow_run after publish), so two runs raced: both passed the "already
+# released?" check, both waited for npm, both tagged, and the loser painted a
+# failure with `Release.tag_name already exists` (0.1.14, 2026-09-01). This
+# serializes them. cancel-in-progress stays false on purpose: the second run
+# must still execute and take the idempotent exit, not be dropped.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -68,8 +78,15 @@ jobs:
             fi
             sleep 10
           done
-          git tag "$TAG"
+          git tag "$TAG" 2>/dev/null || true # a concurrent run may have tagged first
           git push origin "$TAG"
+          # Re-check right before creating: the check at the top of this step
+          # can pass in two runs at once (see the concurrency note up top), and
+          # the registry wait above is exactly the window they collide in.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "$TAG was released by a concurrent run — nothing to do"
+            exit 0
+          fi
           # --generate-notes auto-detects the previous tag as the range start.
           gh release create "$TAG" --title "$TAG" --generate-notes --verify-tag
           echo "released $TAG"
