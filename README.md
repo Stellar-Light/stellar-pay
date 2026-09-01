@@ -18,7 +18,7 @@ all of it. stellar-pay is that loop as a CLI, an MCP server, and a library —
 neutral (no gateway, no operator's cut) and self-custody (your keys, caps
 enforced by the chain, not by a platform's servers).
 
-![The payment loop: a human funds a chain-capped vault; the agent draws float, pays 402 APIs, hires or works via escrow, and everything lands in a tamper-evident receipts ledger](https://raw.githubusercontent.com/Stellar-Light/stellar-pay/main/docs/diagrams/payment-loop.svg)
+![The payment loop: a human funds a chain-capped vault; the agent draws float, pays 402 APIs, hires or works via escrow, and everything lands in a tamper-evident receipts ledger](https://raw.githubusercontent.com/Stellar-Light/stellar-pay/main/docs/diagrams/payment-loop.png)
 
 <sup>[diagram source](https://github.com/Stellar-Light/stellar-pay/blob/main/docs/diagrams/payment-loop.mmd)</sup>
 
@@ -142,7 +142,7 @@ not the point of it: they are a job whose evidence contract is a checklist, so
 they are the easiest shape to demo end to end. The same escrow, agreements and
 resolver underneath serve any job with a checkable deliverable.
 
-![Bounty flow: buyer escrows funds on Soroban, worker vets terms against the chain, commits evidence, resolver judges by declared policy and pays or refunds](https://raw.githubusercontent.com/Stellar-Light/stellar-pay/main/docs/diagrams/bounty-flow.svg)
+![Bounty flow: buyer escrows funds on Soroban, worker vets terms against the chain, commits evidence, resolver judges by declared policy and pays or refunds](https://raw.githubusercontent.com/Stellar-Light/stellar-pay/main/docs/diagrams/bounty-flow.png)
 
 <sup>[diagram source](https://github.com/Stellar-Light/stellar-pay/blob/main/docs/diagrams/bounty-flow.mmd)</sup>
 
@@ -188,7 +188,7 @@ Handing an agent a funded key is how budgets die. The vault inverts custody:
 **bulk funds live in a smart account the human owns; the agent's key can only
 draw float under a cap the chain enforces.**
 
-![Vault custody: bulk funds live in a smart account the human owns; the agent key can only draw float under a cap the chain itself enforces](https://raw.githubusercontent.com/Stellar-Light/stellar-pay/main/docs/diagrams/vault-custody.svg)
+![Vault custody: bulk funds live in a smart account the human owns; the agent key can only draw float under a cap the chain itself enforces](https://raw.githubusercontent.com/Stellar-Light/stellar-pay/main/docs/diagrams/vault-custody.png)
 
 <sup>[diagram source](https://github.com/Stellar-Light/stellar-pay/blob/main/docs/diagrams/vault-custody.mmd)</sup>
 
