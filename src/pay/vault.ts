@@ -215,12 +215,33 @@ export async function createVault(o: {
 	if (ruleRes.success === false)
 		throw new Error(`cap rule install failed: ${ruleRes.error?.message}`);
 
+	// PUT THE KEY SOMEWHERE BEFORE CLAIMING IT IS SOMEWHERE. The previous
+	// change removed `ownerPasskeyPem` from this record with a comment saying
+	// the key "goes to the OS store" and never wrote it there — so a freshly
+	// created vault had its owner key in neither place and threw on the first
+	// draw. The comment was the whole implementation. Storing it is now the
+	// statement, and the fallback is explicit rather than assumed.
+	let sealedOwnerKey = false;
+	if (hasOsStore()) {
+		try {
+			putOsSecret(OWNER_SLOT, passkey.privateKeyPem);
+			sealedOwnerKey = true;
+		} catch (e) {
+			console.error(
+				`stellar-pay: could not write the vault owner key to ${osStoreName()} (${(e as Error).message.split("\n")[0]})`,
+			);
+		}
+	}
+	if (!sealedOwnerKey && process.env.STELLAR_PAY_ALLOW_PLAINTEXT_VAULT !== "1")
+		throw new Error(
+			`the vault owner key cannot be stored safely on this machine (${osStoreName()} unavailable or not writable). It authenticates as the vault's OWNER on a rule that carries no spending limit, so writing it in plaintext is not something to do by default. Install an OS secret store (linux: \`apt install libsecret-tools\`) or set STELLAR_PAY_ALLOW_PLAINTEXT_VAULT=1 to accept the risk explicitly.`,
+		);
+
 	const rec: VaultRecord = {
 		contractId,
 		network: "stellar:testnet",
-		// The owner key goes to the OS store, never into this record. On a
-		// machine with no OS store the operator has to opt in explicitly —
-		// silently writing an uncapped owner key in plaintext is not a default.
+		// Present ONLY when the operator explicitly accepted plaintext above.
+		...(sealedOwnerKey ? {} : { ownerPasskeyPem: passkey.privateKeyPem }),
 		ownerCredentialId: passkey.credentialId,
 		agentPublicKey: o.wallet.publicKey,
 		tokenContract: token,
