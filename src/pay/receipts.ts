@@ -67,6 +67,15 @@ export type ReceiptRow = {
 	tx?: string | null;
 	/** attribution: ids of receipts this row builds on */
 	refs?: string[];
+	/**
+	 * Ledger link: the id of the row that preceded this one when it was
+	 * written. Distinct from `refs` (which is semantic attribution and may be
+	 * empty): `prev` is structural, so a deleted, reordered, or spliced-out
+	 * row leaves a dangling link that `checkLedger` reports. Absent only on
+	 * the first row, and on rows written before 2026-09-01 when the ledger had
+	 * no chain at all.
+	 */
+	prev?: string;
 	detail?: Record<string, unknown>;
 };
 
@@ -95,30 +104,54 @@ export function record(row: Omit<ReceiptRow, "id" | "at">): string {
 		row = refs.length ? { ...row, refs } : { ...row, refs: undefined };
 	}
 	const at = new Date().toISOString();
-	const id = contentId({ ...row, at });
+	// Link to the current tail BEFORE hashing, so the link is part of the
+	// content and cannot be rewritten without breaking the row's own id.
+	const prev = lastId() ?? undefined;
+	const id = contentId({ ...row, at, prev });
 	// The at that was HASHED must be the at that is STORED — the first
 	// version let the store stamp its own (milliseconds-later) timestamp and
 	// no id could ever re-derive. The tamper check caught its own author.
-	appendRaw({ id, at, ...row });
+	appendRaw({ id, at, prev, ...row });
 	return id;
+}
+
+/** Every line, with unparseable ones KEPT as errors rather than dropped —
+ *  silently skipping a corrupt line removed it from both `list` and the
+ *  tamper check, so damaging one byte of a refusal row erased it from the
+ *  record entirely (audit finding 3). */
+function readLines(): Array<
+	{ ok: true; row: ReceiptRow } | { ok: false; line: number; text: string }
+> {
+	if (!existsSync(sessionPaths.receipts)) return [];
+	return readFileSync(sessionPaths.receipts, "utf8")
+		.split("\n")
+		.map((text, i) => ({ text, line: i + 1 }))
+		.filter((l) => l.text.trim())
+		.map((l) => {
+			try {
+				return { ok: true as const, row: JSON.parse(l.text) as ReceiptRow };
+			} catch {
+				return { ok: false as const, line: l.line, text: l.text.slice(0, 80) };
+			}
+		});
+}
+
+/** Id of the newest well-formed row — the link target for the next append. */
+function lastId(): string | null {
+	const lines = readLines();
+	for (let i = lines.length - 1; i >= 0; i--) {
+		const l = lines[i];
+		if (l?.ok && l.row.id) return l.row.id;
+	}
+	return null;
 }
 
 export function list(opts?: {
 	kind?: ReceiptKind;
 	limit?: number;
 }): ReceiptRow[] {
-	if (!existsSync(sessionPaths.receipts)) return [];
-	const rows = readFileSync(sessionPaths.receipts, "utf8")
-		.split("\n")
-		.filter(Boolean)
-		.map((l) => {
-			try {
-				return JSON.parse(l) as ReceiptRow;
-			} catch {
-				return null;
-			}
-		})
-		.filter((r): r is ReceiptRow => r !== null)
+	const rows = readLines()
+		.flatMap((l) => (l.ok ? [l.row] : []))
 		.filter((r) => !opts?.kind || r.kind === opts.kind);
 	return rows.slice(-(opts?.limit ?? 50));
 }
@@ -155,23 +188,55 @@ export type VerifyResult = {
 };
 
 /**
- * Tamper check: every row's id must re-derive from its own content. The
- * ledger is append-only JSONL, so an edited row's hash stops matching —
- * content-addressing only means something if somebody actually re-checks.
+ * Integrity check over the whole ledger. Three failure classes, because the
+ * first one alone was not enough (audit finding 3):
+ *
+ *   edited     a row's id no longer re-derives from its content;
+ *   unlinked   a row's `prev` names an id that is not an earlier row — what a
+ *              DELETED, reordered, or spliced-out row leaves behind;
+ *   unreadable a line that is not JSON. These used to be dropped on read, so
+ *              corrupting one byte of a refusal removed it from the listing
+ *              AND from this check — the one edit nothing could see.
+ *
+ * WHAT THIS DOES NOT PROVE. Anyone who can write this file can rewrite it
+ * whole and recompute every id and link consistently; a local file cannot
+ * defend against its own owner. This detects corruption and partial edits,
+ * not a determined forger. The real anchor for a PAYMENT row is
+ * `verifyOnChain` — the chain is the witness, this ledger is the index.
  */
 export function checkLedger(): {
 	ok: boolean;
 	rows: number;
 	bad: Array<{ id: string; expected: string }>;
+	unlinked: Array<{ id: string; prev: string }>;
+	unreadable: Array<{ line: number; text: string }>;
 } {
-	const rows = list({ limit: 1_000_000 });
+	const lines = readLines();
 	const bad: Array<{ id: string; expected: string }> = [];
-	for (const r of rows) {
-		const { id, ...rest } = r;
+	const unlinked: Array<{ id: string; prev: string }> = [];
+	const unreadable = lines.flatMap((l) =>
+		l.ok ? [] : [{ line: l.line, text: l.text }],
+	);
+	const seen = new Set<string>();
+	for (const l of lines) {
+		if (!l.ok) continue;
+		const { id, ...rest } = l.row;
 		const expected = contentId(rest);
 		if (expected !== id) bad.push({ id, expected });
+		// A link must name a row that came BEFORE this one. Rows written before
+		// the chain existed carry no prev and are checked by content only —
+		// legacy rows are not evidence of tampering.
+		if (l.row.prev && !seen.has(l.row.prev))
+			unlinked.push({ id, prev: l.row.prev });
+		seen.add(id);
 	}
-	return { ok: bad.length === 0, rows: rows.length, bad };
+	return {
+		ok: bad.length === 0 && unlinked.length === 0 && unreadable.length === 0,
+		rows: lines.filter((l) => l.ok).length,
+		bad,
+		unlinked,
+		unreadable,
+	};
 }
 
 /**
