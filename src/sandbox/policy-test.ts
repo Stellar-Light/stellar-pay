@@ -14,7 +14,9 @@ import type { Offer } from "../pay/offers.js";
 const dir = mkdtempSync(join(tmpdir(), "sp-policy-"));
 const file = join(dir, "policy.json");
 process.env.STELLAR_PAY_POLICY = file;
-const { resolveHost, decide } = await import("../pay/policy.js");
+const { resolveHost, decide, hostRuleCeiling } = await import(
+	"../pay/policy.js"
+);
 
 const PUBNET_USDC = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
 const usdc = (amount: string): Offer => ({
@@ -105,6 +107,35 @@ write({
 		"wildcard *.mpprouter.dev raises ceiling to 0.2",
 		g.maxUsd === 0.2 && !g.blocked,
 		JSON.stringify(g),
+	);
+}
+// Audit finding 5: the SAME tightening rule must hold for the MCP door, which
+// passes requestedExplicit only when the operator actually set
+// STELLAR_PAY_MAX_USD_PER_CALL. Unset (our default) → a host rule may raise,
+// which keeps the README's *.trusted-provider.com example working. Set → the
+// operator's number is a ceiling the policy file cannot lift.
+{
+	const raised = resolveHost("https://apiserver.mpprouter.dev/x", {
+		requested: 0.05,
+	});
+	const pinned = resolveHost("https://apiserver.mpprouter.dev/x", {
+		requested: 0.05,
+		requestedExplicit: true,
+	});
+	check(
+		"an operator-set per-call cap cannot be raised by a host rule",
+		raised.maxUsd === 0.2 && pinned.maxUsd === 0.05,
+		JSON.stringify({ raised: raised.maxUsd, pinned: pinned.maxUsd }),
+	);
+}
+// hostRuleCeiling reports only what the operator WROTE for a host — the input
+// to "was this an advance decision?", which is what stops an in-the-moment
+// prompt from re-litigating a limit its author meant to be final.
+{
+	check(
+		"hostRuleCeiling names an explicit host ceiling and nothing else",
+		hostRuleCeiling("https://apiserver.mpprouter.dev/x") === 0.2 &&
+			hostRuleCeiling("https://nobody-wrote-a-rule.example/x") === null,
 	);
 }
 // an EXPLICIT --max-usd can only tighten, never be raised by the policy

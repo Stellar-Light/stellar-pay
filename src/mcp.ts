@@ -51,7 +51,12 @@ import {
 } from "./pay/governed.js";
 import { disputeJob } from "./pay/job.js";
 import { isStellar, type Offer, offerUSD, readOffers } from "./pay/offers.js";
-import { decide, explorer, resolveHost } from "./pay/policy.js";
+import {
+	decide,
+	explorer,
+	hostRuleCeiling,
+	resolveHost,
+} from "./pay/policy.js";
 import { list as listReceiptRows, record } from "./pay/receipts.js";
 import { history, sendUSDC } from "./pay/send.js";
 import {
@@ -88,6 +93,23 @@ function envCap(name: string, dflt: number): number {
 	return n;
 }
 const MAX_PER_CALL = envCap("STELLAR_PAY_MAX_USD_PER_CALL", 0.05);
+/**
+ * Did the OPERATOR set that ceiling, or is it just our default?
+ *
+ * The distinction is the whole of audit finding 5. The file header calls
+ * STELLAR_PAY_MAX_USD_PER_CALL "the hard floor" and SKILL.md tells the agent
+ * "you cannot override it", but `decide` was called without
+ * `requestedExplicit`, so a host rule in policy.json silently RAISED the
+ * ceiling above it — the CLI's `--max-usd` had the tightening rule and this
+ * door did not.
+ *
+ * Both readings are defensible, so the code now distinguishes them the same
+ * way the CLI already does for --max-usd:
+ *   set explicitly  → an operator decision; policy may only LOWER it.
+ *   left at default → our number; a host rule may raise it, which keeps the
+ *                     README's `"*.trusted-provider.com": 0.50` example working.
+ */
+const MAX_PER_CALL_SET = !!process.env.STELLAR_PAY_MAX_USD_PER_CALL;
 const SESSION_BUDGET = envCap("STELLAR_PAY_SESSION_BUDGET_USD", 1);
 
 // Cumulative mainnet spend this process, enforced across curl AND send_usdc so
@@ -174,15 +196,26 @@ const overBudget = (o: Offer): boolean =>
 const approveGate =
 	(w: Wallet) =>
 	async (o: Offer, url: string): Promise<boolean> => {
-		// The per-host policy (deny / allowlist / host ceiling) layers on top of
-		// the MCP's flat MAX_PER_CALL; MAX_PER_CALL is the pre-policy default.
-		const v = decide(o, { network: w.network, url, requested: MAX_PER_CALL });
+		// The per-host policy layers on top of the flat MAX_PER_CALL, and may
+		// only TIGHTEN it once the operator has set that env var explicitly.
+		const v = decide(o, {
+			network: w.network,
+			url,
+			requested: MAX_PER_CALL,
+			requestedExplicit: MAX_PER_CALL_SET,
+		});
 		if (!v.ok) {
 			// A refusal on network mismatch or a denied host is an operator
 			// decision (or an attack) — never escalate those to a person, who
-			// would just be trained to click yes. A ceiling or budget refusal is
-			// a judgement call, so offer it to the human driving the agent.
+			// would just be trained to click yes. A ceiling refusal is a
+			// judgement call and MAY be offered to the human...
 			if (!/exceeds the ceiling/i.test(v.reason)) return false;
+			// ...unless the operator wrote a ceiling for this host in
+			// policy.json. That is a decision they made in advance and calmly;
+			// re-asking it in the moment, under whatever pressure the agent is
+			// applying, is how a prompt injection gets a human to click through
+			// a limit its author meant to be final (audit finding 5).
+			if (hostRuleCeiling(url) != null) return false;
 			return (
 				(await askHuman(o, url, `Policy refused it: ${v.reason}`)) === true
 			);

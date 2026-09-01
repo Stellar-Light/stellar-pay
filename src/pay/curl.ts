@@ -87,6 +87,19 @@ export function pinMismatch(
 		live.recipient !== offer.payTo
 	)
 		return "the endpoint's payment requirement changed after approval — refusing to sign to a different recipient";
+	// ASYMMETRY IS A MISMATCH (audit finding 7). Every comparison above needs
+	// BOTH sides, so an approved offer with null amount/asset/payTo — what an
+	// unparseable MPP `request` produces — disabled the entire pin: the human
+	// was shown "pay ? of ?", said yes to that, and the endpoint then named
+	// whatever it liked. An approval that could not state a term cannot
+	// authorise a concrete one.
+	for (const [field, approved, now] of [
+		["amount", offer.amount, live.amount],
+		["asset", offer.asset, live.currency],
+		["recipient", offer.payTo, live.recipient],
+	] as const)
+		if (approved == null && now != null)
+			return `the offer you approved did not state its ${field}, and the endpoint is now asking to sign a specific one (${String(now).slice(0, 40)}) — refusing to sign terms that were not on screen`;
 	return null;
 }
 
