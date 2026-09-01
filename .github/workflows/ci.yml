@@ -5,16 +5,27 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "17 5 * * *" # nightly macOS platform check
+  workflow_dispatch:
 permissions: { contents: read }
 
 jobs:
   check:
     # The OS secret store differs per platform (Keychain / libsecret / DPAPI),
     # so the store test only means something if it runs on all three.
+    # macOS is NOT in this matrix, deliberately (2026-09-01). GitHub's macOS
+    # runners are the scarcest pool on the platform and every PR sat for tens
+    # of minutes on a `Queued` check that was not required to merge — so the
+    # honest options were "wait for a gate nobody enforced" or "merge past it
+    # every time", and the second is how a gate stops meaning anything. The
+    # Keychain/`osstore` coverage macOS exists for now runs in the `macos` job
+    # below: on main, nightly, on demand, and — the one that actually matters —
+    # as a blocking gate before anything is published to npm.
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     # Windows is BLOCKING as of 2026-08-30. It was advisory because two real
     # bugs made it permanently red — a libuv assertion in a test's teardown,
@@ -42,6 +53,7 @@ jobs:
       - run: npm run test:redirect  # redirects cannot escape the gates
       - run: npm run test:guards    # every paying door runs the SAME gate
       - run: npm run test:ledger    # deletion is caught, not just editing
+      - run: npm run test:feed-tamper # a hostile feed cannot retarget the inbox
       - run: npm run test:catalog  # the catalog's own claim
       - run: npm run test:send     # send_usdc guards (no funds move)
       - run: npm run test:ssrf
@@ -49,6 +61,24 @@ jobs:
       - run: npm run test:keystore
       - run: npm run test:osstore  # exercises the real OS store on each runner
       - run: npm run test:keychain  # macOS-only; SKIPs on the linux runner
+
+  # The macOS half of "the OS secret store differs per platform". Off the PR
+  # path (see the note in `check`), so it must not be the only thing standing
+  # between a Keychain regression and npm — publish-npm.yml waits on this job.
+  macos:
+    if: github.event_name != 'pull_request'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm run build
+      - run: npm run test:units
+      - run: npm run test:keystore
+      - run: npm run test:osstore  # the real Keychain, not a mock
+      - run: npm run test:keychain # macOS-only; the reason this job exists
 
   secrets:
     runs-on: ubuntu-latest

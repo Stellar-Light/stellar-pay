@@ -131,10 +131,22 @@ export function bountyJobSpec(
 		tokenContract: d.tokenContract,
 		amount: BigInt(d.amount),
 		title: d.title,
+		// submitUrl is PART OF THE TERMS (audit finding 2): it used to live only
+		// on the feed row, so it never reached the agreement, never reached
+		// engagement_id, and `checkListing` had nothing to compare it against.
+		// A hostile feed could copy every pinned field of an honest, funded
+		// bounty and swap ONLY the inbox — the worker vets clean, does the
+		// work, and POSTs its evidence to the attacker, who re-signs it under a
+		// sock puppet and wins the pot. Hashing it here means retargeting the
+		// inbox breaks descriptor-matches-terms, which the worker already checks.
 		spec: `${d.instructions}
 
 Items to verify (evidence must cover EVERY item, exactly once):
-${d.items.map((i) => `- ${i}`).join("\n")}`,
+${d.items.map((i) => `- ${i}`).join("\n")}${
+	d.submitUrl
+		? `\n\nSigned submission packets POST to: ${d.submitUrl}\nEvidence sent anywhere else is outside these terms.`
+		: ""
+}`,
 		reviewQuestion:
 			"Is the submitted evidence a valid JSON array with exactly one entry per requested item, each carrying item, url (http/https), non-empty verdict, checkedAt (ISO 8601, within the freshness bound), and a non-empty excerpt?",
 		allowedEvidence: [

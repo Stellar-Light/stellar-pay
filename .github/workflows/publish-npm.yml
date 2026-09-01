@@ -13,7 +13,24 @@ on:
   workflow_dispatch:
 
 jobs:
+  # macOS left the PR matrix on 2026-09-01 (its runner queue meant every PR
+  # carried a `Queued` check nobody waited for). The coverage did not leave —
+  # it moved HERE, where it blocks the only irreversible step. A Keychain
+  # regression can now reach main; it cannot reach npm.
+  macos-gate:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:keystore
+      - run: npm run test:osstore
+      - run: npm run test:keychain
+
   publish:
+    needs: macos-gate
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -39,6 +56,12 @@ jobs:
       - run: npm run test:policy
       - run: npm run test:ssrf
       - run: npm run test:scrimp
+      # The gates the 2026-09-01 audit added. A publish that skips them would
+      # ship exactly the classes it just closed.
+      - run: npm run test:guards
+      - run: npm run test:ledger
+      - run: npm run test:pin
+      - run: npm run test:feed-tamper
 
       # Guard: abort if this ever runs from the wrong package (a wrong-CWD
       # publish once put an entire unrelated app on the registry).
