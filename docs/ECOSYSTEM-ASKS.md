@@ -24,13 +24,14 @@ Two constraints that generate most of this list, both deliberate:
 ## 1. Blocked on audits — mainnet dates we do not control
 
 The entire work layer is hardcoded to testnet. Not caution theatre: each
-piece reuses a contract whose own README says it is unaudited. **Our mainnet
-date is their audit date.**
+piece reuses a contract we cannot yet call audited: the channel wasm's own
+README says so outright; the vault's *library* is audited but the kit wrapper
+we actually deploy is not. **Our mainnet date is their audit date.**
 
 | What is blocked | The contract | Owner | What unblocks it |
 |---|---|---|---|
 | Payment channels on mainnet (deposit once, pay per call off-chain — measured ~10× per call) | the one-way-channel wasm, deployed by hash, uploaded by the stellar-mpp-sdk demo | SDF | An audit, or a maintained SDF-published build with a support commitment |
-| The vault on mainnet (human funds an agent behind an on-chain spending cap) | OZ smart-account + spending-limit policy contracts via smart-account-kit | SDF / OpenZeppelin | A stated audit posture for the deployed testnet contract set, and mainnet addresses |
+| The vault on mainnet (human funds an agent behind an on-chain spending cap) | OZ smart-account + spending-limit policy, deployed via smart-account-kit | OpenZeppelin (library) / SDF (kit) | Less than we said: the OZ library **is** audited through v0.7.0 (scope includes `spending_limit.rs`) and the spending-limit policy **has** a mainnet address (kit deployments, 2026-07-09). What is unaudited is the kit's `examples/` wrapper build we deploy — so the ask is an audited build of that wrapper, or deploying the audited library contracts directly |
 | Escrowed jobs and bounties on mainnet | Trustless Work single-release escrow | Trustless Work | Their audit, plus clarity on the 0.3% protocol fee recipient for third-party integrators |
 
 **What we shipped instead:** every one of these is proven end to end on
@@ -68,14 +69,25 @@ advance.
   bumping a dependency — our catalog already records `scheme` per endpoint,
   so no data-model change is needed on our side.
 
-### 2.3 A smart account cannot pay a 402 directly
-`@x402/stellar` signs with a classic ed25519 key. A contract account
-authorizes differently, and the facilitator would have to accept that. So
-the vault cannot pay for anything itself.
+### 2.3 A smart account cannot pay a 402 directly — and the blocker is the client, not the facilitator
+`@x402/stellar` signs with a classic ed25519 key. We used to say the
+*facilitator* would have to accept contract-account authorization. That was
+wrong, and we checked: the reference facilitator is already address-agnostic
+(it accepts any non-void signature and re-simulates in enforcing mode). The
+blocker is on the **client** side — stellar-base's `authorizeEntry` hard-wraps
+the classic `{public_key, signature}` credential shape and calls
+`Keypair.fromPublicKey()` on the address, so a `C…` payer never gets past it,
+and `ExactStellarScheme` exposes no `authorizeEntry` override to route around
+that. So the vault cannot pay for anything itself, and the fix lives in the
+x402 client, not in any facilitator.
 
-- **Owner:** SDF (the Stellar x402 scheme + facilitator).
-- **Unblocks it:** contract-account authorization accepted in the scheme and
-  by facilitators.
+- **Owner:** `coinbase/x402` — the Stellar scheme package (`@x402/stellar`)
+  and its use of stellar-base. We are raising this there.
+- **Unblocks it:** a `ClientStellarSigner` that can supply a fully-signed
+  `SorobanAuthorizationEntry` (or an `authorizeEntry` override) so a
+  contract-account payer produces the single legacy-credential entry the
+  scheme already specifies. Facilitators need no change — only a conformance
+  probe with a real `C…` payer to prove it.
 - **We shipped instead:** the vault→float pattern — bulk funds stay behind
   the on-chain cap, and the agent draws a small float to the classic key it
   pays 402s with. It works, and it is strictly weaker: income credited
