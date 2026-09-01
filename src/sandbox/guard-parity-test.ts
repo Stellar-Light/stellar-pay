@@ -8,6 +8,7 @@
  * follows redirects is wired to it (a door running half the union is the bug
  * class, and it is invisible to a test that only checks the halves).
  */
+// NEGATIVE CONTROL: 4 of 12 checks fail against the pre-fix tree (2026-09-01) — a test that cannot fail is not evidence.
 import { readFileSync } from "node:fs";
 import { payGuard } from "../pay/ssrf.js";
 

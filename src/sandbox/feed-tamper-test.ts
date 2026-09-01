@@ -16,6 +16,7 @@
  * `descriptor-matches-terms` check fails. No new check was needed — the
  * binding was the missing part.
  */
+// NEGATIVE CONTROL: 4 of 6 checks fail against the pre-fix bounty.ts (2026-09-01) — a test that cannot fail is not evidence.
 import { Keypair } from "@stellar/stellar-sdk";
 import { openBountyTerms, postBounty } from "../pay/bounty.js";
 

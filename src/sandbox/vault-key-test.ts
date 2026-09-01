@@ -11,6 +11,7 @@
  * contract only — where the key lives and what happens when it cannot be
  * stored safely.
  */
+// NEGATIVE CONTROL: 3 checks fail against the pre-fix vault.ts (2026-09-01) — a test that cannot fail is not evidence.
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

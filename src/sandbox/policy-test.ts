@@ -6,6 +6,7 @@
  * The env var must be set BEFORE ./pay/policy.js is imported (policyPath is
  * read once at module load), so the import is dynamic and comes after.
  */
+// NEGATIVE CONTROL: the suite fails against the pre-fix policy.ts (2026-09-01) — a test that cannot fail is not evidence.
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

@@ -15,10 +15,17 @@ the wedge**: people paying agents to complete real work. That takes more than
 a payment rail — it takes funding an agent safely, hiring one you don't
 trust, verifying what it did, paying on the verdict, and keeping evidence of
 all of it. stellar-pay is that loop as a CLI, an MCP server, and a library —
-neutral (no gateway, no operator's cut) and self-custody (your keys, caps
-enforced by the chain, not by a platform's servers).
+neutral (no gateway, no operator's cut) and self-custody: your keys, and a
+spend policy **you** write that refuses before it signs.
 
-![The payment loop: a human funds a chain-capped vault; the agent draws float, pays 402 APIs, hires or works via escrow, and everything lands in a tamper-evident receipts ledger](https://raw.githubusercontent.com/Stellar-Light/stellar-pay/main/docs/diagrams/payment-loop.png)
+Precisely, because the distinction matters: on mainnet, spend is bounded by
+that policy file — per-host allowlists and per-call ceilings enforced in this
+process, not by a platform's servers and **not** by the chain. The smart-account
+vault does put a cap on-chain, but it caps *draws from the vault*, in XLM, on
+testnet. Anyone who tells you their agent's spending is chain-enforced should
+be asked which account the payment actually leaves.
+
+![The payment loop: a human funds a capped vault; the agent draws float, pays 402 APIs, hires or works via escrow, and everything lands in a tamper-evident receipts ledger](https://raw.githubusercontent.com/Stellar-Light/stellar-pay/main/docs/diagrams/payment-loop.png)
 
 <sup>[diagram source](https://github.com/Stellar-Light/stellar-pay/blob/main/docs/diagrams/payment-loop.mmd)</sup>
 
@@ -237,6 +244,36 @@ nothing of ours. Treat the ledger as the index and Horizon as the witness.
 This ledger is deliberately the substrate reputation will be built from — see
 [Not built yet](#not-built-yet--and-why).
 
+## ✅ Everything here is checkable
+
+Most agent-payment tooling asks you to believe a README. This one is built so
+you don't have to — every claim below has a command next to it, and none of
+them require our cooperation.
+
+| Claim | Check it yourself |
+|---|---|
+| the catalog is fresh | `curl …/catalog.json \| jq '[.[].lastCheckedAt] \| min'` — every row carries its own probe date |
+| a listed endpoint really pays | `stellar-pay verify <url>` — the same validator the probe runs, pointed wherever you like |
+| a payment happened | `stellar-pay receipts --verify <id>` — proves the row against Horizon; needs nothing of ours |
+| the ledger wasn't edited | `stellar-pay receipts check` — ids re-derive, links resolve, corrupt lines are reported |
+| our formats are real | [`specs/vectors/`](specs/vectors) — regenerate with `npm run vectors`, or recompute a hash with `sha256` and no code of ours at all |
+| the code does what it says | **18** offline suites in CI. **Six** carry a recorded *negative control* — run against the pre-fix tree and observed to fail: `grep -r "NEGATIVE CONTROL" src/sandbox/`. The other twelve predate that practice and do not claim it |
+
+**Where a check would be dishonest, there isn't one.** `receipts check` cannot
+defend the file against its own owner — anyone who can write it can rewrite it
+consistently — so the README says that and points at Horizon as the real
+anchor. The commit timestamp is a signed *claim*, not an authority; what it
+buys is that a cheating resolver becomes detectable, not impossible. The
+`specs` note their own canonicalisation hazard.
+
+**Reach without asking permission.** The client reads its offers from the live
+402 response — body and headers — and picks the protocol from what the seller
+actually advertises. There is no manifest to publish, no file a provider has to
+adopt, no registration. If a server speaks x402 or MPP, this pays it today.
+That is a deliberate trade: less metadata than a signed provider manifest, and
+no coordination cost, because a payment layer that only works with sellers who
+adopted your file is a payment layer with no sellers.
+
 ## 📐 The formats, specified
 
 Everything above payment — the bounty descriptor, the agreement whose hash the
@@ -268,8 +305,32 @@ was re-probed within the last 48 hours** — carrying its price, protocol, the
 method that produced the challenge, the networks it actually named, and how
 long it has been alive. (48 hours, not 24, so a single missed daily probe is
 not an outage. The one deliberate exception is our own testnet sandbox,
-marked `curated`, so newcomers have something to pay.) About **390 endpoints**
-qualify today across the x402 Bazaar and mpp-router.
+marked `curated`, so newcomers have something to pay.)
+
+**What that actually amounts to, stated properly.** The published snapshot
+holds **1,261 rows across 5 distinct hosts**, 749 of which accept Stellar, and
+every row was re-probed today. Two gateway hosts account for 1,226 of those
+rows. So this is *deep* coverage of a handful of sellers, not broad coverage of
+the ecosystem — the row count is a count of payable **endpoints**, and quoting
+it as if it were a count of independent providers would be the same
+sleight-of-hand we call out in registries. (This README previously said "about
+390 endpoints", which matched neither number.) Supply on Stellar is genuinely
+thin right now; the catalog's job is to tell you exactly how thin, with dates,
+rather than to look bigger than it is.
+
+Verify any of it yourself, without asking us:
+
+```sh
+curl -s https://raw.githubusercontent.com/Stellar-Light/stellar-pay/catalog/catalog.json \
+  | jq '{rows: length,
+         hosts: [.[].host] | unique | length,
+         stellar: [.[] | select(.acceptsStellar)] | length,
+         oldest_probe: [.[].lastCheckedAt] | min}'
+```
+
+Every row carries `lastCheckedAt`. A catalog without per-row dates cannot be
+audited for staleness at all — you have to take its word — which is why that
+field matters more here than the row count does.
 
 Being in the catalog means it **answered a Stellar 402 at the last probe** —
 strictly better than a registry listing, and still short of a guarantee.
