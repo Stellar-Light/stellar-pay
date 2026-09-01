@@ -157,6 +157,24 @@ export type HostGate = { maxUsd: number; blocked: string | null };
  * requested ceiling (--max-usd / env). An EXPLICIT --max-usd can only tighten
  * the result, never raise it above what the caller asked for.
  */
+/**
+ * The ceiling the operator wrote for THIS host in policy.json, or null if
+ * they wrote none. Distinct from the effective ceiling `resolveHost` returns
+ * (which falls back to a default): callers need to know whether a limit was
+ * an explicit prior decision about this host, because such a decision should
+ * not be re-litigated by an in-the-moment prompt (audit finding 5).
+ */
+export function hostRuleCeiling(
+	url: string,
+	policy?: Policy | null,
+): number | null {
+	const p = policy ?? loadPolicy();
+	if (!p) return null;
+	const host = hostOf(url);
+	const rule = host ? ruleFor(p, host) : null;
+	return rule?.maxUsdPerCall ?? null;
+}
+
 export function resolveHost(
 	url: string,
 	o: { requested: number; requestedExplicit?: boolean; policy?: Policy | null },
