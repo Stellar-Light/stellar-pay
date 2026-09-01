@@ -177,7 +177,10 @@ matter more than the verb list:
   evidence the resolver saw. And the escrow itself is a **commodity we rent**
   behind a swappable seam ([`src/pay/rails.ts`](src/pay/rails.ts)) — today
   [Trustless Work](https://www.trustlesswork.com/)'s Soroban escrow,
-  integrated keyless, their 0.3% fee applying on settlement.
+  integrated keyless. Their 0.3% settlement fee goes to whatever address the
+  caller supplies, so it is only *their* fee if you set `TW_FEE_ADDRESS` —
+  mainnet settlement refuses to proceed without it rather than quietly
+  rebating the fee to the buyer, which is what an unset value used to mean.
 
 Jobs without the bounty wrapper (`openJob`/`fundJob`/`deliverJob`/…) are the
 library's lower layer — same escrow, same agreements, custom terms.

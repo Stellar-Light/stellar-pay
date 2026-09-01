@@ -77,6 +77,38 @@ export type JobSpec = {
  * same JobSpec always yields the same bytes and hash, which is what lets
  * fund re-derive the exact struct open initialized (the rails re-validate
  * it — anti-TOCTOU). */
+/**
+ * Where Trustless Work's 0.3% settlement fee actually goes.
+ *
+ * The header above has told direct callers to set TW_FEE_ADDRESS since this
+ * rails file existed. Nothing ever read it: the bounty path passed the
+ * BUYER's own address, so on mainnet the "fee" would be a silent rebate to
+ * the party posting the work, and the README's "their 0.3% fee applying on
+ * settlement" described something that does not happen (audit finding 10 /
+ * design audit).
+ *
+ * Now: the env var is read. Unset on mainnet is a REFUSAL rather than a quiet
+ * self-rebate — misdirecting a rails provider's fee is not a default anyone
+ * should get by accident. Unset on testnet keeps the buyer placeholder and
+ * says so once, because testnet play money has no fee to misdirect.
+ */
+export function twFeeAddressFor(buyer: string, network: string): string {
+	const declared = process.env.TW_FEE_ADDRESS?.trim();
+	if (declared) return declared;
+	if (network !== "stellar:testnet")
+		throw new Error(
+			"TW_FEE_ADDRESS is not set. Trustless Work's 0.3% settlement fee would be paid to the buyer's own address, which is a rebate, not a fee — set TW_FEE_ADDRESS to their published address before settling on mainnet.",
+		);
+	if (!warnedFee) {
+		warnedFee = true;
+		console.error(
+			"stellar-pay: TW_FEE_ADDRESS unset — using the buyer address as the testnet fee placeholder (mainnet refuses this).",
+		);
+	}
+	return buyer;
+}
+let warnedFee = false;
+
 export function jobAgreement(o: JobSpec): { doc: string; hash: string } {
 	const input: AgreementInput = {
 		network: "stellar:testnet",
