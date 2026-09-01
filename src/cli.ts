@@ -1405,7 +1405,9 @@ workers race with: bounty pack --contract ${r.contractId} --evidence ev.json`,
 				resolver: w.keypair,
 				contractId: a.contract,
 				submissions,
-				commits,
+				// [] rather than undefined: "nobody committed" is a real answer and
+				// resolves to no winner. It is no longer a way to opt out of the race.
+				commits: commits ?? [],
 			});
 			emit(a, r, () =>
 				console.log(

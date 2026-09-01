@@ -47,6 +47,7 @@ async function main() {
 		"../pay/bounty.js"
 	);
 	type OpenSubmission = import("../pay/bounty.js").OpenSubmission;
+	type OpenCommit = import("../pay/bounty.js").OpenCommit;
 
 	const buyer = Keypair.random();
 	const resolver = Keypair.random();
@@ -82,6 +83,9 @@ async function main() {
 		],
 	};
 	const packets: OpenSubmission[] = [];
+	// The worker commits before it reveals, so this inbox receives two packet
+	// kinds. Route by format instead of assuming everything is a submission.
+	const commitsSeen: OpenCommit[] = [];
 	const server = createServer((req, res) => {
 		if (req.method === "GET" && req.url === "/feed") {
 			res.setHeader("content-type", "application/json");
@@ -95,7 +99,10 @@ async function main() {
 			});
 			req.on("end", () => {
 				try {
-					packets.push(JSON.parse(body) as OpenSubmission);
+					const p = JSON.parse(body) as { format?: string };
+					if (String(p.format).startsWith("stellar-pay/commit-"))
+						commitsSeen.push(p as unknown as OpenCommit);
+					else packets.push(p as unknown as OpenSubmission);
 					res.statusCode = 200;
 					res.end('{"ok":true}');
 				} catch {
@@ -153,6 +160,9 @@ async function main() {
 		resolver,
 		contractId: posted.contractId,
 		submissions: packets,
+		// The inbox receives BOTH commits and reveals now (the worker commits
+		// first). Split by format rather than assuming arrival shape.
+		commits: commitsSeen,
 		disputeRaiser: buyer,
 	});
 	console.log(

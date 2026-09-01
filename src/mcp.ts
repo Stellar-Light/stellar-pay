@@ -1070,7 +1070,9 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 						resolver: w.keypair,
 						contractId: contract_id,
 						submissions: submissions as unknown as OpenSubmission[],
-						commits: commits as unknown as OpenCommit[] | undefined,
+						// [] means "nobody committed" → no winner. It is no longer a
+						// way for a resolver to fall back to fastest-reveal-wins.
+						commits: (commits ?? []) as unknown as OpenCommit[],
 					});
 					return json(r);
 				}
