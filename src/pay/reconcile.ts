@@ -47,7 +47,11 @@
  * asset test) and reused that; fixed the one thing it does not do.
  */
 import { Asset, Networks } from "@stellar/stellar-sdk";
-import { list as listReceipts, type ReceiptRow } from "./receipts.js";
+import {
+	list as listReceipts,
+	type ReceiptRow,
+	settlementPayee,
+} from "./receipts.js";
 import { HORIZON, type Network } from "./wallet.js";
 
 const TIMEOUT_MS = 15_000;
@@ -385,7 +389,7 @@ export async function reconcile(opts: {
 			const hit = sent.find(
 				(p) =>
 					!claimed.has(p.tx) &&
-					(!row.payee || p.to === row.payee) &&
+					(!row.payee || p.to === settlementPayee(row.payee)) &&
 					(row.amount == null || p.amountBase === row.amount) &&
 					isNativeRow(row) === (p.assetLabel === "native"),
 			);
@@ -450,7 +454,7 @@ export async function reconcile(opts: {
 		const wantNative = isNativeRow(row);
 		const hit = direct.credits.find(
 			(c) =>
-				(!row.payee || c.payee === row.payee) &&
+				(!row.payee || c.payee === settlementPayee(row.payee)) &&
 				(row.amount == null || c.amountBase === row.amount) &&
 				wantNative === (c.assetLabel === "native"),
 		);
@@ -465,8 +469,9 @@ export async function reconcile(opts: {
 			continue;
 		}
 		const shown =
-			direct.credits.find((c) => !row.payee || c.payee === row.payee) ??
-			direct.credits[0];
+			direct.credits.find(
+				(c) => !row.payee || c.payee === settlementPayee(row.payee),
+			) ?? direct.credits[0];
 		if (!shown) continue; // unreachable: lookupTx never returns "found" with an empty list
 		mismatched.push({
 			id: row.id,

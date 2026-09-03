@@ -12,6 +12,9 @@
  *
  * Offline: no network, no wallet, no funded account.
  */
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Account, Keypair, MuxedAccount } from "@stellar/stellar-sdk";
 import { isMuxed, muxedId, sendAsset, underlyingAccount } from "../pay/send.js";
 
@@ -89,6 +92,47 @@ async function main() {
 		() => sendAsset(wallet as never, "NOTANADDRESS", usdc, "1"),
 		/not a Stellar account address/i,
 		"a non-address is still rejected",
+	);
+
+	// THE SEAM. #31 accepted M… destinations and stored the M… as the row's
+	// payee; Horizon reports the underlying G… on every effect, so three
+	// consumers compared a stored M… against G… chain data with === and
+	// reported a payment that settled exactly where it was sent as unverified
+	// (verifyOnChain), as a confirmed discrepancy (reconcile), and as
+	// verifiable anyway (statement's presence check). Each PR's own tests
+	// passed; nothing crossed the boundary between them. This is that test.
+	const { record, statement, settlementPayee } = await import(
+		"../pay/receipts.js"
+	);
+	check(
+		settlementPayee(m) === g,
+		"a muxed payee resolves to the account Horizon will report",
+	);
+	check(
+		settlementPayee(g) === g,
+		"a plain G… payee resolves to itself, unchanged",
+	);
+	check(settlementPayee(null) === null, "an absent payee stays absent");
+
+	// A row written exactly as sendAsset writes one for a muxed destination.
+	process.env.STELLAR_PAY_SESSION_DIR = mkdtempSync(
+		join(tmpdir(), "muxed-seam-"),
+	);
+	record({
+		kind: "payment",
+		network: "stellar:testnet",
+		protocol: "x402",
+		url: "https://api.example.com/x",
+		amount: "2000000",
+		asset: "USDC",
+		payee: m,
+		tx: "deadbeef",
+	});
+	const row = statement().at(-1);
+	check(row?.payee === m, "the statement still shows the M… the payer used");
+	check(
+		row?.verifiable === true && settlementPayee(row?.payee) === g,
+		"verifiable is true only because the payee RESOLVES — not because a string is present",
 	);
 
 	console.log(

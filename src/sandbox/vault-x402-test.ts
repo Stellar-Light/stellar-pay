@@ -11,8 +11,10 @@
  *            not through the sandbox's facilitator — see the note below) —
  *            cumulative 4/5, still under cap
  *   pay 2    same call again, over the CLI's --from-vault path — cumulative
- *            6 > 5 → REFUSED, during OUR OWN pre-flight simulate, before any
- *            HTTP request is ever sent
+ *            6 > 5 → REFUSED, during OUR OWN pre-flight simulate — the
+ *            seller has been asked for its price by then (payFetch requests
+ *            the resource to GET the 402), but no payment is submitted and
+ *            no fee is paid
  *
  * KNOWN LIMITATION, documented rather than papered over: hitting the
  * sandbox's REAL /data-x402 endpoint — the real @x402/stellar/exact/facilitator
@@ -283,7 +285,7 @@ async function main() {
 
 	// 5. Same call again via the CLI's --from-vault path — cumulative would be
 	// 6 > 5. Refused during OUR OWN pre-flight simulate (createPaymentPayload's
-	// second tx.simulate()), before any HTTP request is sent — unaffected by
+	// second tx.simulate()), after the seller has been asked for its price, but before any payment is submitted — unaffected by
 	// the facilitator-side limitation above.
 	await withSandbox(PRICE_XLM, async (base) => {
 		const over = runCurl(`${base}/data-x402`);
@@ -368,7 +370,7 @@ async function main() {
 	});
 
 	console.log(
-		"\nRESULT: PASS — the vault contract paid directly (x402 exact payload, settled on-chain with a real tx hash), sharing the SAME on-chain cap as drawFromVault: under-cap succeeded, cumulative over-cap was refused BY THE CHAIN before any network request, refusal receipted. The sandbox's real facilitator round-trip reproduced (or, if fixed upstream, cleared) the documented event-validation limitation.",
+		"\nRESULT: PASS — the vault contract paid directly (x402 exact payload, settled on-chain with a real tx hash), sharing the SAME on-chain cap as drawFromVault: under-cap succeeded, cumulative over-cap was refused BY THE CHAIN before any payment transaction, refusal receipted. The sandbox's real facilitator round-trip reproduced (or, if fixed upstream, cleared) the documented event-validation limitation.",
 	);
 	console.log(
 		`explorer  https://stellar.expert/explorer/testnet/contract/${rec.contractId}`,

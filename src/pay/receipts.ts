@@ -23,7 +23,7 @@
  */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { Asset, Networks } from "@stellar/stellar-sdk";
+import { Asset, MuxedAccount, Networks, StrKey } from "@stellar/stellar-sdk";
 import { receipt as appendRaw, sessionPaths } from "./session-store.js";
 
 export type ReceiptKind =
@@ -78,6 +78,28 @@ export type ReceiptRow = {
 	prev?: string;
 	detail?: Record<string, unknown>;
 };
+
+/**
+ * The account a row's payment actually SETTLED into.
+ *
+ * A muxed (M…) payee is the address the payer was given; Horizon reports the
+ * underlying G… on every effect and operation (the muxed id arrives beside it
+ * in `to_muxed`/`to_muxed_id`, never in `account`). So comparing a stored M…
+ * against Horizon with `===` never matches, and a payment that settled
+ * exactly where it was sent reads back as unverified — or, in reconcile, as a
+ * confirmed discrepancy. Resolve the row's payee to the settlement account
+ * before any comparison against chain data.
+ *
+ * Kept here rather than in send.ts so verify, reconcile and the statement all
+ * share one answer: the seam between those three is where this bug lived.
+ */
+export function settlementPayee(
+	payee: string | null | undefined,
+): string | null {
+	if (!payee) return null;
+	if (!StrKey.isValidMed25519PublicKey(payee)) return payee;
+	return MuxedAccount.fromAddress(payee, "0").baseAccount().accountId();
+}
 
 /** Canonical content = the row minus its own id, keys sorted. */
 function contentId(row: Omit<ReceiptRow, "id">): string {
@@ -299,7 +321,7 @@ export async function verifyOnChain(row: ReceiptRow): Promise<VerifyResult> {
 		const hit = (d._embedded?.records ?? []).some(
 			(e) =>
 				e.type === "account_credited" &&
-				e.account === row.payee &&
+				e.account === settlementPayee(row.payee) &&
 				assetMatches(e) &&
 				toBase(e.amount ?? "0") === BigInt(row.amount ?? "0"),
 		);
@@ -399,7 +421,12 @@ export function statement(opts?: { limit?: number }): StatementRow[] {
 			payee: r.payee ?? null,
 			tx: r.tx ?? null,
 			rule,
-			verifiable: Boolean(r.tx && r.amount && r.payee && r.network),
+			// Presence only — never a claim that verification RAN. A muxed payee
+			// resolves to its settlement account first, so this cannot report
+			// verifiable on a row verifyOnChain would refuse for that reason.
+			verifiable: Boolean(
+				r.tx && r.amount && settlementPayee(r.payee) && r.network,
+			),
 		});
 	}
 	return rows;
