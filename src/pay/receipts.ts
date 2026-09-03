@@ -314,3 +314,117 @@ export async function verifyOnChain(row: ReceiptRow): Promise<VerifyResult> {
 	}
 	return { ok: true, checks };
 }
+
+/**
+ * A statement row — the join a finance team actually needs.
+ *
+ * Every payment already carries both halves: `url` (the HTTP request that
+ * caused the spend) and `tx` (the settlement on Stellar). What was missing
+ * was one artifact that puts them on the same line, in both directions, so
+ * a spend can be traced from an invoice line to a request and back.
+ *
+ * `rule` comes from the policy-decision receipt this payment references
+ * (`refs`), so the statement also answers WHY the spend was allowed — not
+ * just that it happened. `verifiable` says whether the row carries what
+ * `verifyOnChain` needs; it is a property of the row, never a claim that
+ * verification was run.
+ */
+export type StatementRow = {
+	at: string;
+	receipt: string;
+	kind: ReceiptKind;
+	network: string | null;
+	protocol: string | null;
+	/** the HTTP request that caused the spend */
+	url: string | null;
+	amount: string | null;
+	asset: string | null;
+	payee: string | null;
+	/** the settlement on Stellar */
+	tx: string | null;
+	/** the policy rule that allowed it, from the referenced decision */
+	rule: string | null;
+	verifiable: boolean;
+};
+
+/**
+ * Kinds that MOVE VALUE — a statement is about money, not bookkeeping.
+ * Both directions: `bounty-income` is money in, the rest is money out, and
+ * the `kind` column is what distinguishes them. Deliberately excludes rows
+ * that only record a decision or a state change (`policy-decision`,
+ * `job-open`, `job-deliver`, `vault-create`, `channel-open`, …) — those are
+ * reachable from a payment's `refs`, which is how `rule` below is resolved.
+ */
+const VALUE_KINDS = new Set<ReceiptKind>([
+	"payment",
+	"channel-close",
+	"job-fund",
+	"job-release",
+	"vault-topup",
+	"vault-draw",
+	"bounty-income",
+]);
+
+/**
+ * Build the statement from the ledger. Rows are returned oldest-first, the
+ * order a statement is read in. `list` returns oldest-first already, so no
+ * reversal is needed here.
+ */
+export function statement(opts?: { limit?: number }): StatementRow[] {
+	const all = list({ limit: opts?.limit ?? 10_000 });
+	const byId = new Map(all.map((r) => [r.id, r]));
+	const rows: StatementRow[] = [];
+	for (const r of all) {
+		if (!VALUE_KINDS.has(r.kind)) continue;
+		// The rule lives on the decision this payment references, not on the
+		// payment itself — follow refs rather than duplicating it at write time.
+		let rule: string | null =
+			typeof r.detail?.rule === "string" ? r.detail.rule : null;
+		for (const ref of r.refs ?? []) {
+			const d = byId.get(ref);
+			if (d?.kind === "policy-decision" && typeof d.detail?.rule === "string") {
+				rule = d.detail.rule;
+				break;
+			}
+		}
+		rows.push({
+			at: r.at,
+			receipt: r.id,
+			kind: r.kind,
+			network: r.network ?? null,
+			protocol: r.protocol ?? null,
+			url: r.url ?? null,
+			amount: r.amount ?? null,
+			asset: r.asset ?? null,
+			payee: r.payee ?? null,
+			tx: r.tx ?? null,
+			rule,
+			verifiable: Boolean(r.tx && r.amount && r.payee && r.network),
+		});
+	}
+	return rows;
+}
+
+/** CSV, for the spreadsheet a finance team already lives in. RFC 4180
+ *  quoting: wrap every field, double any embedded quote. */
+export function statementCsv(rows: StatementRow[]): string {
+	const cols: (keyof StatementRow)[] = [
+		"at",
+		"receipt",
+		"kind",
+		"network",
+		"protocol",
+		"url",
+		"amount",
+		"asset",
+		"payee",
+		"tx",
+		"rule",
+		"verifiable",
+	];
+	const cell = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+	return [
+		cols.join(","),
+		...rows.map((r) => cols.map((c) => cell(r[c])).join(",")),
+	].join("\n");
+}
