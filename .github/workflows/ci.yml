@@ -53,6 +53,8 @@ jobs:
       - run: npm run test:guards    # every paying door runs the SAME gate
       - run: npm run test:ledger    # deletion is caught, not just editing
       - run: npm run test:reconcile # a Horizon outage reports could-not-check, never missing
+      - run: npm run test:muxed     # M… attribution: no memo merged, checks hit the real account
+      - run: npm run test:statement # the fiat-line ⇄ Stellar-tx join
       - run: npm run test:feed-tamper # a hostile feed cannot retarget the inbox
       - run: npm run test:second-party # a stranger can implement our formats
       - run: npm run test:vectors     # published vectors match the implementation

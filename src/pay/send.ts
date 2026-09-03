@@ -16,8 +16,10 @@ import {
 	Horizon,
 	Keypair,
 	Memo,
+	MuxedAccount,
 	Networks,
 	Operation,
+	StrKey,
 	TransactionBuilder,
 } from "@stellar/stellar-sdk";
 import { record } from "./receipts.js";
@@ -164,6 +166,37 @@ export async function holds(
 }
 
 /**
+ * Muxed (M…) address helpers — SEP-23.
+ *
+ * An M… address is an ed25519 account plus a 64-bit id, encoded together. It
+ * is the protocol's own answer to per-customer attribution: one real account
+ * receives everything, while each payer is given a distinct address whose id
+ * says who the payment is for. No memo, no sweep, no per-customer account to
+ * fund. Tempo shipped the same idea as "virtual addresses" and Stellar has
+ * had it since SEP-23; `@x402/stellar` already accepts M… as a destination.
+ */
+export function isMuxed(address: string): boolean {
+	return StrKey.isValidMed25519PublicKey(address);
+}
+
+/** The underlying G… account an M… settles into. Throws on a non-muxed input,
+ *  so a caller cannot quietly get its argument back and check the wrong
+ *  account for funding or trustlines. */
+export function underlyingAccount(muxedAddress: string): string {
+	if (!isMuxed(muxedAddress))
+		throw new Error(`"${muxedAddress}" is not a muxed (M…) address`);
+	return MuxedAccount.fromAddress(muxedAddress, "0").baseAccount().accountId();
+}
+
+/** The routing id encoded in an M… address — the attribution a memo would
+ *  otherwise have carried. */
+export function muxedId(muxedAddress: string): string {
+	if (!isMuxed(muxedAddress))
+		throw new Error(`"${muxedAddress}" is not a muxed (M…) address`);
+	return MuxedAccount.fromAddress(muxedAddress, "0").id();
+}
+
+/**
  * Send any classic asset. Refuses before submission if the sender lacks the
  * balance or the recipient lacks a trustline (op_no_trust) — a payment to an
  * account that cannot hold the asset is a mistake worth catching early.
@@ -180,15 +213,30 @@ export async function sendAsset(
 	 * asked for is, in practice, lost. Supporting it is not a nicety. */
 	memo?: string,
 ): Promise<SendResult> {
-	// A muxed address (M…) carries the memo INSIDE it, which is exactly the
-	// footgun this guard exists to name: accepting it while silently dropping
-	// the embedded id would misroute a deposit. Refuse with the fix.
-	if (/^M[A-Z2-7]{68}$/.test(to))
+	// A muxed address (M…) carries its routing id INSIDE the address, which is
+	// what makes it the right primitive for per-customer attribution: the
+	// sender needs no memo and the operator receives into one account.
+	// Supported now, with the two things that make it safe rather than the
+	// footgun this guard used to refuse outright:
+	//
+	//  1. A memo alongside a muxed destination is REFUSED, not merged. The id
+	//     in the address IS the attribution; accepting both would leave two
+	//     competing answers to "who is this for", which is exactly how a
+	//     deposit gets misrouted. The ambiguity was real — the blanket refusal
+	//     was just not the only way to resolve it.
+	//  2. Every pre-flight check below runs against the UNDERLYING G…
+	//     account. Horizon holds no record of an M… address, so asking it
+	//     whether "M…" is funded or trusts an asset would fail, or worse
+	//     answer about nothing.
+	const muxed = isMuxed(to);
+	if (muxed && memo)
 		throw new Error(
-			`"${to.slice(0, 8)}…" is a muxed (M…) address. This client does not send to muxed addresses yet — use the underlying G… address plus --memo <id>, which is what the M… encodes.`,
+			`"${to.slice(0, 8)}…" is a muxed (M…) address, which already carries its routing id — passing a memo too gives two conflicting answers. Send to the M… address with no memo, or to the underlying G… address with one.`,
 		);
-	if (!/^G[A-Z2-7]{55}$/.test(to))
-		throw new Error(`"${to}" is not a Stellar account address (G…)`);
+	if (!muxed && !/^G[A-Z2-7]{55}$/.test(to))
+		throw new Error(`"${to}" is not a Stellar account address (G… or M…)`);
+	// Funding and trustlines belong to the underlying account, never the M….
+	const settlesTo = muxed ? underlyingAccount(to) : to;
 	if (!(Number(amount) > 0))
 		throw new Error(`amount must be positive, got "${amount}"`);
 	const code = asset.getCode();
@@ -200,14 +248,14 @@ export async function sendAsset(
 	if (!me.trusts) throw new Error(`this wallet has no ${code} trustline`);
 	if (Number(me.balance) < Number(amount))
 		throw new Error(`insufficient ${code}: have ${me.balance}, need ${amount}`);
-	const recipient = await holds(to, wallet.network, code, issuer);
+	const recipient = await holds(settlesTo, wallet.network, code, issuer);
 	if (!recipient.funded)
 		throw new Error(
-			`recipient ${to.slice(0, 6)}… is not funded (send it some XLM first)`,
+			`recipient ${settlesTo.slice(0, 6)}… is not funded (send it some XLM first)`,
 		);
 	if (!recipient.trusts)
 		throw new Error(
-			`recipient ${to.slice(0, 6)}… has no ${code} trustline and cannot receive ${code}`,
+			`recipient ${settlesTo.slice(0, 6)}… has no ${code} trustline and cannot receive ${code}`,
 		);
 	const hash = await submit(wallet, (b) => {
 		b.addOperation(Operation.payment({ destination: to, asset, amount }));

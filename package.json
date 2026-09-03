@@ -27,6 +27,7 @@
 		"test:ssrf": "tsx src/sandbox/ssrf-test.ts",
 		"test:units": "tsx src/sandbox/unit-test.ts",
 		"test:statement": "tsx src/sandbox/statement-test.ts",
+		"test:muxed": "tsx src/sandbox/muxed-test.ts",
 		"test:policy": "tsx src/sandbox/policy-test.ts",
 		"build": "tsc -p tsconfig.build.json",
 		"prepublishOnly": "npm run build && npm run typecheck",
