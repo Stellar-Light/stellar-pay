@@ -58,7 +58,7 @@ import {
 	resolveHost,
 } from "./pay/policy.js";
 import { list as listReceiptRows, record } from "./pay/receipts.js";
-import { history, sendUSDC } from "./pay/send.js";
+import { history, isMuxed, sendUSDC } from "./pay/send.js";
 import {
 	closeChannel,
 	DEFAULT_DEPOSIT_XLM,
@@ -748,8 +748,12 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 		},
 		async ({ to, amount, confirm, memo }) => {
 			const w = getWallet();
-			if (!/^G[A-Z2-7]{55}$/.test(to))
-				return json({ error: `"${to}" is not a Stellar account (G…)` });
+			// M… (muxed) destinations are accepted: the routing id lives in the
+			// address, so an operator can attribute a deposit without a memo.
+			// sendAsset refuses a memo alongside one rather than merging two
+			// competing answers, and checks funding against the underlying G….
+			if (!/^G[A-Z2-7]{55}$/.test(to) && !isMuxed(to))
+				return json({ error: `"${to}" is not a Stellar account (G… or M…)` });
 			const usd = Number(amount);
 			if (!(usd > 0))
 				return json({ error: `amount must be positive, got "${amount}"` });

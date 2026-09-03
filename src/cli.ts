@@ -84,6 +84,7 @@ import { reconcile } from "./pay/reconcile.js";
 import {
 	addTrustline,
 	history,
+	isMuxed,
 	payUri,
 	pollFunding,
 	sendUSDC,
@@ -891,12 +892,16 @@ async function cmdSend(a: Args): Promise<void> {
 	const target = a.url ?? ""; // first positional: a G… address OR a saved name
 	// Sending to a saved account by NAME beats copy-pasting a 56-character key,
 	// which is exactly where people paste the wrong one.
+	// An M… address is a destination, not a saved name — don't send it to the
+	// address book only to be told it isn't one.
+	const looksLikeAddress = (t: string) =>
+		/^G[A-Z2-7]{55}$/.test(t) || isMuxed(t);
 	const named =
-		target && !/^G[A-Z2-7]{55}$/.test(target) ? accountPublicKey(target) : null;
+		target && !looksLikeAddress(target) ? accountPublicKey(target) : null;
 	const to = named ?? target;
-	if (target && !named && !/^G[A-Z2-7]{55}$/.test(target)) {
+	if (target && !named && !looksLikeAddress(target)) {
 		console.error(
-			`"${target}" is neither a G… address nor a saved account name — \`stellar-pay account list\` shows the saved ones`,
+			`"${target}" is neither a G…/M… address nor a saved account name — \`stellar-pay account list\` shows the saved ones`,
 		);
 		process.exitCode = EXIT.usage;
 		return;
