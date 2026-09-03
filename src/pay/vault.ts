@@ -6,10 +6,14 @@
  * locally); the AGENT is this install's wallet key, present ONLY on a
  * token-scoped rule carrying an on-chain spending-limit policy. The agent
  * draws float to its classic account and pays 402s/jobs from that float —
- * and the CHAIN, not our code, refuses any draw beyond the cap. Contrast,
- * plainly: custodial platforms enforce agent limits in their servers (a
- * policy promise by a company); here the limit is a property of the
- * contract, provable by the refusal transaction (test:vault).
+ * and the CHAIN, not our code, refuses any draw beyond the cap. The agent
+ * key can ALSO authorize the vault CONTRACT to pay a 402 directly, under the
+ * SAME cap — see `vaultAgentAuthorizer` below and src/pay/vault-x402.ts —
+ * so the cap covers every payment, not only what gets drawn out first.
+ * Contrast, plainly: custodial platforms enforce agent limits in their
+ * servers (a policy promise by a company); here the limit is a property of
+ * the contract, provable by the refusal transaction (test:vault,
+ * test:vault-x402).
  *
  * TESTNET ONLY — the smart-account contracts' audit posture gates mainnet,
  * same standard as everything else here.
@@ -20,13 +24,19 @@
  * cannot be replaced by it silently), but moving it into the sealed
  * keystore is the right next hardening; noted in the roadmap.
  */
-import { Keypair } from "@stellar/stellar-sdk";
 import {
+	authorizeEntry as signWithBaseAuthorizeEntry,
+	xdr,
+} from "@stellar/stellar-sdk";
+import {
+	computeEntryAuthDigest,
 	createCallContractContext,
 	createEd25519Signer,
 	createSpendingLimitParams,
+	Ed25519Signer,
 	MemoryStorage,
 	SmartAccountKit,
+	signerToScVal,
 } from "smart-account-kit";
 import {
 	getOsSecret,
@@ -407,6 +417,141 @@ export async function drawFromVault(o: {
 		detail: { vault: v.contractId },
 	});
 	return { ok: true, hash: res.hash };
+}
+
+/**
+ * A kit-authorized `authorizeEntry` for the vault's CAPPED agent key, scoped
+ * to one token contract — the escape hatch ECOSYSTEM-ASKS.md §2.3 says the
+ * x402 client layer does not expose. It exists one level down: stellar-base's
+ * `authorizeEntry` hard-wraps the classic `{public_key, signature}`
+ * credential (a `C…` payer fails `Keypair.fromPublicKey`), but
+ * `AssembledTransaction#signAuthEntries` itself accepts an `authorizeEntry`
+ * OVERRIDE parameter — a full replacement of the signing algorithm, not the
+ * `signAuthEntry` wallet callback. That second door alone can never reach the
+ * classic-bypassing shape: `signAuthEntries` always re-wraps whatever a
+ * `signAuthEntry` callback returns as a raw `Buffer` before handing it to the
+ * (unreplaced) default algorithm, so it still ends at
+ * `Keypair.fromPublicKey`. Only the `authorizeEntry` override sees a signer
+ * function that may return `{ signatureScVal }` and skip that call entirely.
+ *
+ * This delegates to the SDK's OWN `authorizeEntry` for everything except the
+ * final signature — same cloning, same preimage, same target-node selection —
+ * supplying only an OZ smart-account `AuthPayload` (context_rule_ids plus one
+ * ed25519 entry), signed against the token-scoped context rule that carries
+ * the vault's spending-limit policy. That is the SAME rule `drawFromVault`
+ * signs under: whatever this authorizes is checked against the SAME on-chain
+ * cap, read fresh from the ledger on every call — there is no separate "vault
+ * pay" limit to keep in sync with the draw path.
+ *
+ * `kit.signAuthEntry` (the kit's own public single-entry signer) is
+ * deliberately NOT used here — verified, not assumed: it is
+ * passkey/WebAuthn-only (`smart-account-kit/dist/kit/webauthn-ops.js` calls
+ * `webAuthn.startAuthentication`), i.e. it signs as the OWNER, whose rule
+ * carries no spending limit. Using it would build a technically-valid but
+ * UNCAPPED payment — exactly the gap this function exists to close. The
+ * agent's ed25519 path instead goes through smart-account-kit's public
+ * `Ed25519Signer` + `computeEntryAuthDigest` + `signerToScVal` — the same
+ * primitives `kit.multiSigners`' internal signing loop uses, called directly
+ * because that loop itself is not part of the package's published surface
+ * (its `exports` map publishes only the package root and `/storage`).
+ */
+export type VaultAuthorizeEntry = (
+	entry: xdr.SorobanAuthorizationEntry,
+	signer: unknown,
+	validUntilLedgerSeq: number,
+	networkPassphrase: string,
+) => Promise<xdr.SorobanAuthorizationEntry>;
+
+export async function vaultAgentAuthorizer(
+	wallet: Wallet,
+	tokenContract: string,
+): Promise<{
+	vault: string;
+	rpcUrl: string;
+	networkPassphrase: string;
+	authorizeEntry: VaultAuthorizeEntry;
+}> {
+	if (wallet.network !== "stellar:testnet")
+		throw new Error(
+			"vaults are testnet-only: mainnet is gated on the smart-account contracts' audit posture",
+		);
+	const v = getVault();
+	if (!v)
+		throw new Error("no vault — create one first: vault create --cap-xlm N");
+	if (wallet.publicKey !== v.agentPublicKey)
+		throw new Error(
+			`this wallet (${wallet.publicKey.slice(0, 8)}…) is not the vault's agent (${v.agentPublicKey.slice(0, 8)}…)`,
+		);
+	const ed25519 = Ed25519Signer.fromSecret(
+		wallet.keypair.secret(),
+		CFG.ed25519VerifierAddress,
+	);
+	const { kit } = kitFor({
+		ownerPasskeyPem: ownerKeyOf(v),
+		ownerCredentialId: v.ownerCredentialId,
+		deployerSecret: wallet.keypair.secret(),
+	});
+	await kit.connectWallet({
+		contractId: v.contractId,
+		credentialId: v.ownerCredentialId,
+	});
+	// A READ, not a signed call: get_context_rule takes no auth, so finding
+	// which rule id this agent key lives under needs no signer at all.
+	const rules = await kit.rules.getAll(
+		createCallContractContext(tokenContract),
+	);
+	const rule = rules.find((r) =>
+		r.signers.some(
+			(s) => s.tag === "External" && s.values[1].equals(ed25519.publicKey),
+		),
+	);
+	if (!rule)
+		throw new Error(
+			`the vault has no on-chain context rule authorizing this agent key to call ${tokenContract} (it was set up for ${v.tokenContract}) — the cap does not cover this asset`,
+		);
+	const contextRuleId = rule.id;
+
+	return {
+		vault: v.contractId,
+		rpcUrl: CFG.rpcUrl,
+		networkPassphrase: CFG.networkPassphrase,
+		authorizeEntry: (entry, _signer, validUntilLedgerSeq, networkPassphrase) =>
+			signWithBaseAuthorizeEntry(
+				entry,
+				async () => {
+					// computeEntryAuthDigest also normalizes and writes
+					// signatureExpirationLedger onto `entry` as a side effect — but
+					// this is a discarded copy of the one signWithBaseAuthorizeEntry
+					// already cloned internally before calling us, so mutating it here
+					// is inert; only the digest bytes this call returns matter.
+					const { authDigest } = computeEntryAuthDigest(
+						networkPassphrase,
+						entry,
+						validUntilLedgerSeq,
+						[contextRuleId],
+					);
+					return {
+						signatureScVal: xdr.ScVal.scvMap([
+							new xdr.ScMapEntry({
+								key: xdr.ScVal.scvSymbol("context_rule_ids"),
+								val: xdr.ScVal.scvVec([xdr.ScVal.scvU32(contextRuleId)]),
+							}),
+							new xdr.ScMapEntry({
+								key: xdr.ScVal.scvSymbol("signers"),
+								val: xdr.ScVal.scvMap([
+									new xdr.ScMapEntry({
+										key: signerToScVal(ed25519.signer),
+										val: xdr.ScVal.scvBytes(ed25519.signAuthDigest(authDigest)),
+									}),
+								]),
+							}),
+						]),
+					};
+				},
+				validUntilLedgerSeq,
+				networkPassphrase,
+			),
+	};
 }
 
 /** Vault state: config + the contract's token balance (RPC read). */

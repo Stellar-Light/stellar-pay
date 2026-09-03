@@ -187,10 +187,21 @@ app.get(
 // external service, all crypto from @x402/stellar. Research tie: the settle
 // response we return in PAYMENT-RESPONSE *is* a receipt — the PGTR-pattern
 // artifact (payment receipt as proof-of-action) our strategy builds on.
+// A contract (smart-account) payer's auth entry costs far more to verify
+// on-chain than a classic keypair's — __check_auth fans out into a verifier
+// contract and, for a capped agent key, a spending-limit policy contract on
+// top of the SAC transfer itself. The library's own default fee ceiling
+// (5e4 stroops) is sized for the classic case and rejects a contract payer's
+// simulation-derived fee outright (invalid_exact_stellar_payload_fee_exceeds_maximum).
+// MAX_FEE_STROOPS lets an operator raise it; unset, behavior is unchanged.
+const maxFeeStroops = process.env.MAX_FEE_STROOPS
+	? Number(process.env.MAX_FEE_STROOPS)
+	: undefined;
 const x402Fac = new x402Facilitator().register(
 	"stellar:testnet",
 	new X402FacilitatorScheme([createEd25519Signer(seller.secret())], {
 		areFeesSponsored: true,
+		...(maxFeeStroops ? { maxTransactionFeeStroops: maxFeeStroops } : {}),
 	}),
 );
 const X402_PRICE_STROOPS = String(
@@ -246,15 +257,22 @@ app.get("/data-x402", async (req, res) => {
 	const reqs = x402Requirements(url) as never;
 	try {
 		const v = await x402Fac.verify(payload as never, reqs);
-		if (!(v as { isValid?: boolean }).isValid)
-			return send402(
-				`payment invalid: ${(v as { invalidReason?: string }).invalidReason ?? "unspecified"}`,
-			);
+		if (!(v as { isValid?: boolean }).isValid) {
+			const vr = v as { invalidReason?: string; invalidMessage?: string };
+			// The client only gets the terse reason code; the detail (e.g. the
+			// actual simulated fee vs the ceiling) is only useful server-side.
+			if (vr.invalidMessage)
+				console.error(`x402 verify failed: ${vr.invalidMessage}`);
+			return send402(`payment invalid: ${vr.invalidReason ?? "unspecified"}`);
+		}
 		const settle = await x402Fac.settle(payload as never, reqs);
-		if (!(settle as { success?: boolean }).success)
+		if (!(settle as { success?: boolean }).success) {
+			const sr = settle as { errorReason?: string; errorMessage?: string };
+			if (sr.errorMessage) console.error(`x402 settle failed: ${sr.errorMessage}`);
 			return send402(
-				`settlement failed: ${(settle as { errorReason?: string }).errorReason ?? "unspecified"}`,
+				`settlement failed: ${sr.errorReason ?? "unspecified"}`,
 			);
+		}
 		res
 			.setHeader(
 				"PAYMENT-RESPONSE",

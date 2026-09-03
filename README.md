@@ -210,6 +210,7 @@ stellar-pay vault create --cap-xlm 5    # deploy; owner = durable passkey, agent
 stellar-pay vault topup --amount-xlm 20 # bulk funds behind the cap (a plain SAC transfer)
 stellar-pay vault draw  --amount-xlm 2  # agent pulls float; over-cap → REFUSED BY THE CHAIN
 stellar-pay vault status
+stellar-pay curl <url> --from-vault --yes  # or skip the draw: the VAULT pays the 402 itself, same cap
 ```
 
 The contrast that matters, stated precisely: a hosted platform's spending
@@ -222,6 +223,16 @@ over-cap draw refused on-chain → reopen from persistence
 ([`test:vault-flow`](src/sandbox/vault-flow-test.ts)). Built on SDF's
 [smart-account-kit](https://github.com/stellar/smart-account-kit) and
 OpenZeppelin's contracts — we author no Soroban contracts, anywhere.
+
+The draw above hands float to the agent's own key; `--from-vault` skips that
+hop and pays the 402 with the vault CONTRACT itself as payer, so the payment
+never leaves the on-chain cap at all — the gap this project used to name in
+§2.3 of [ECOSYSTEM-ASKS.md](docs/ECOSYSTEM-ASKS.md) as the client's, not the
+facilitator's, to fix. Same cap as the draw, same chain-level refusal for an
+over-cap attempt, proven with real transaction hashes
+([`test:vault-x402`](src/sandbox/vault-x402-test.ts)) — which also documents
+the one thing that ISN'T fully closed: the reference facilitator, unmodified,
+has its own separate limitation settling this specific payload (§2.3 again).
 
 ## 🧾 Receipts: the evidence substrate
 
@@ -735,15 +746,21 @@ each and who owns it.
 - **Subscriptions / standing delegations.** pay.sh has them; we don't.
   Sessions are the honest primitive for "pay repeatedly without asking" —
   a delegation UX on top is not designed yet.
-- **Paying 402s directly from the smart account.** `@x402/stellar` signs
-  with classic keys, and the blocker is on the *client* side: stellar-base's
-  `authorizeEntry` hard-wraps the classic credential shape and rejects a
-  `C…` address outright, with no override exposed by `ExactStellarScheme`.
-  The reference facilitator already accepts contract-account payers — an
-  earlier version of this bullet had that backwards. Hence the vault→float
-  pattern (bulk funds capped on-chain, small float at the paying key) until
-  the client hook lands upstream; we are asking `coinbase/x402` for it, and
-  the wiring on our side is ours to build once it does — not an SDF ask.
+- ~~Paying 402s directly from the smart account.~~ — **built, on our side.**
+  `@x402/stellar`'s `ExactStellarScheme` still signs with a classic key and
+  exposes no way to change that, but `@stellar/stellar-sdk`'s own
+  `AssembledTransaction#signAuthEntries` already accepts an `authorizeEntry`
+  override — we didn't need to wait on `coinbase/x402` after all.
+  `curl --from-vault` (and the MCP `curl` tool's `from_vault`) pays a 402
+  with the VAULT CONTRACT as payer, under the SAME on-chain cap
+  `drawFromVault` proves — `test:vault-x402` settles a real payment on
+  testnet and shows a cumulative over-cap attempt refused by the chain, cap
+  untouched. One caveat, found while proving it: the reference facilitator,
+  unmodified, cannot currently settle this payload itself — its own event
+  validation assumes a lone transfer event and rejects a capped account's
+  own spending-limit-policy event first (docs/ECOSYSTEM-ASKS.md §2.3), so
+  `test:vault-x402` settles directly and separately documents that as the
+  new upstream ask, replacing the client hook we used to be waiting on.
 - **x402 `upto` scheme.** Requires authoring the scheme spec upstream; when
   it lands in `@x402/stellar` we inherit it by bumping the dependency.
 - **Windows Hello / Linux biometric gating; per-signature biometrics in the

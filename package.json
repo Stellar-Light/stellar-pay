@@ -47,6 +47,7 @@
 		"test:bounty": "tsx src/sandbox/bounty-test.ts",
 		"test:bounty-open": "tsx src/sandbox/bounty-open-test.ts",
 		"test:vault-flow": "tsx src/sandbox/vault-flow-test.ts",
+		"test:vault-x402": "tsx src/sandbox/vault-x402-test.ts",
 		"test:marketplace": "tsx src/sandbox/marketplace-test.ts",
 		"test:stream": "tsx src/sandbox/stream-test.ts",
 		"test:guards": "tsx src/sandbox/guard-parity-test.ts",

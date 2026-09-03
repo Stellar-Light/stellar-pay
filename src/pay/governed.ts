@@ -44,8 +44,12 @@ export type Governed = {
 
 /** Per-call protocol preference rides ON the init (Scrimp forwards it to the
  * payer verbatim) — mutable client-level state would race between concurrently
- * dispatched tool calls. */
-export type PreferInit = RequestInit & { stellarPayPrefer?: Protocol };
+ * dispatched tool calls. stellarPayFromVault rides the same way, for the same
+ * reason: whether THIS call pays from the vault is a per-call choice. */
+export type PreferInit = RequestInit & {
+	stellarPayPrefer?: Protocol;
+	stellarPayFromVault?: boolean;
+};
 
 const HDR = {
 	hash: "x-payment-tx-hash", // also what Scrimp's default txHashOf reads
@@ -78,6 +82,7 @@ export function buildGoverned(o: {
 			approve: o.approve,
 			guard: o.guard,
 			prefer: (init as PreferInit | undefined)?.stellarPayPrefer ?? o.prefer,
+			fromVault: (init as PreferInit | undefined)?.stellarPayFromVault,
 		});
 		// Rebuild the response with the payment facts as headers. Reading the
 		// body here is safe: payFetch hands back an unread body, and Scrimp
