@@ -144,6 +144,8 @@ type Args = {
 	limit?: number;
 	/** receipts --verify <id>: prove one ledger row against the chain */
 	verifyReceipt?: string;
+	/** debug --port N: the local payment debugger */
+	port?: number;
 	/** receipts --statement [--csv]: the fiat-line ⇄ Stellar-tx join */
 	statement: boolean;
 	/** --csv: emit the statement as CSV rather than a table */
@@ -270,7 +272,10 @@ function parse(argv: string[]): Args {
 			const n = Number(next());
 			if (Number.isInteger(n) && n > 0) a.limit = n;
 		} else if (t === "--verify") a.verifyReceipt = next();
-		else if (t === "--statement") a.statement = true;
+		else if (t === "--port") {
+			const n = Number(next());
+			if (Number.isInteger(n) && n > 0) a.port = n;
+		} else if (t === "--statement") a.statement = true;
 		else if (t === "--csv") a.csv = true;
 		else if (t === "--session") a.session = true;
 		else if (t === "--from-vault") a.fromVault = true;
@@ -1480,6 +1485,27 @@ workers race with: bounty pack --contract ${r.contractId} --evidence ev.json`,
 	return usage();
 }
 
+/** `debug` — serve the local payment debugger over the receipts ledger.
+ *
+ * Reads only. It renders what the ledger already records, so it cannot
+ * change what a payment does, and it binds to loopback because those rows
+ * name counterparties, amounts and URLs. */
+async function cmdDebug(a: Args): Promise<void> {
+	const { startDebugger } = await import("./pay/debugger.js");
+	try {
+		const { url } = await startDebugger(a.port ?? 1402);
+		console.log(`payment debugger → ${url}`);
+		console.log("reading the receipts ledger; ctrl-c to stop");
+	} catch (e) {
+		const msg =
+			(e as NodeJS.ErrnoException).code === "EADDRINUSE"
+				? `port ${a.port ?? 1402} is already in use — pass --port N`
+				: (e as Error).message;
+		console.error(`debugger did not start: ${msg}`);
+		process.exitCode = EXIT.runtime;
+	}
+}
+
 async function cmdReceipts(a: Args): Promise<void> {
 	if (a.positional[0] === "check") {
 		const r = checkLedger();
@@ -1987,6 +2013,7 @@ WALLET
   send <G…address|account-name> --amount <USDC|max> [--yes]
                                              send USDC; 'max' drains the balance
   history [--limit N] [--json]
+  debug [--port N]                       local payment debugger: every payment, refusal and rule, in a browser
   receipts [--limit N] [--verify ID] [--json]  the local ledger; --verify proves a row on-chain
   receipts --statement [--csv] [--limit N]  every value-moving row: the URL that caused it, the Stellar tx that settled it, the rule that allowed it
   receipts check                         tamper check: every row id must re-derive from its content
@@ -2025,6 +2052,7 @@ const commands: Record<string, (a: Args, init: RequestInit) => Promise<void>> =
 		cashout: cmdCashout,
 		send: cmdSend,
 		history: cmdHistory,
+		debug: cmdDebug,
 		receipts: cmdReceipts,
 		reconcile: cmdReconcile,
 		session: cmdSession,
