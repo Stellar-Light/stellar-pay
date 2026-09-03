@@ -53,7 +53,10 @@ a payment rail — it takes funding an agent safely, hiring one you don't
 trust, verifying what it did, paying on the verdict, and keeping evidence of
 all of it. stellar-pay is that loop as a CLI, an MCP server, and a library —
 neutral (no gateway, no operator's cut) and self-custody: your keys, and a
-spend policy **you** write that refuses before it signs.
+spend policy **you** write that refuses before it signs. Who is
+responsible for what — including where we are deliberately weaker than a
+custodial platform — is stated in
+[`docs/RESPONSIBILITY.md`](docs/RESPONSIBILITY.md).
 
 Precisely, because the distinction matters: on mainnet, spend is bounded by
 that policy file — per-host allowlists and per-call ceilings enforced in this
