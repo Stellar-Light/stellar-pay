@@ -127,4 +127,9 @@ await new Promise<void>((r) => upstream.close(() => r()));
 console.log(
 	`\n${fail === 0 ? "ALL PASS" : `${fail} FAILED`} — ${pass}/${pass + fail} streaming checks (spread ${last - first}ms)`,
 );
-process.exit(fail === 0 ? 0 : 1);
+// exitCode, not process.exit(): the close above is awaited, but forcing an
+// exit can still tear libuv down while a handle finishes closing — the same
+// assertion redirect-test.ts documents and reconcile-test.ts hit on Windows.
+// Not CI-gated, so this was only ever a local-developer trap; fixed anyway
+// because "half migrated" is worse than either state.
+process.exitCode = fail === 0 ? 0 : 1;

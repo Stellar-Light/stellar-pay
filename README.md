@@ -222,12 +222,13 @@ one, and their MPC wallets are not simply "they hold your keys". Ours is a
 **property of the contract** (`__check_auth`): the refusal is a transaction
 anyone can verify, and it holds even if every server we run disappears.
 
-It is also **free**. `__check_auth` runs during simulation, so a breach is
-caught while the transaction is being assembled — nothing is submitted, no
-fee is paid, and on the 402 path no HTTP request is even sent. A platform
-whose limit lives in its servers can only refuse you after a round trip; a
-platform that checks on-chain by submitting pays for a failed transaction to
-find out. Proven, not asserted: `test:vault-flow` reads the agent account's
+It is also **cheap**. `__check_auth` runs during simulation, so a breach is
+caught while the transaction is being assembled: nothing is submitted and no
+fee is paid. A platform that checks on-chain by submitting pays for a failed
+transaction to find out. What it does NOT save you on the 402 path is the
+seller's own round trip — `payFetch` requests the resource first, since the
+402 challenge is where the price comes from, so a refusal still costs the
+request that discovered the price. Proven, not asserted: `test:vault-flow` reads the agent account's
 sequence number either side of an over-cap draw and fails the run if it moved,
 since every submitted transaction consumes one whether it succeeds or not. Proven
 end-to-end: create → topup → draw → *pay a real 402 from the drawn float* →

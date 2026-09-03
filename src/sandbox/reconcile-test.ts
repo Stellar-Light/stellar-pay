@@ -25,7 +25,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Keypair } from "@stellar/stellar-sdk";
+import { Account, Keypair, MuxedAccount } from "@stellar/stellar-sdk";
 
 process.env.STELLAR_PAY_SESSION_DIR = mkdtempSync(
 	join(tmpdir(), "stellar-pay-reconcile-"),
@@ -47,6 +47,15 @@ const check = (n: string, c: boolean, d = "") => {
 };
 
 const wallet = Keypair.random().publicKey();
+// MUX: a payee the payer was given as M…, credited on-chain to its underlying
+// G… — exactly what Horizon reports. Before settlementPayee() existed, a
+// payment that settled precisely where it was sent came back as a confirmed
+// discrepancy, because the stored M… was compared to the chain's G… with ===.
+const muxUnderlying = Keypair.random().publicKey();
+const muxPayee = new MuxedAccount(
+	new Account(muxUnderlying, "0"),
+	"777",
+).accountId();
 const payee1 = Keypair.random().publicKey();
 const payee2 = Keypair.random().publicKey();
 const payee3 = Keypair.random().publicKey();
@@ -57,6 +66,23 @@ const NETWORK = "stellar:testnet" as const;
 // A fixture Horizon: only the routes reconcile.ts is expected to touch.
 const routes: Record<string, { status: number; body: unknown }> = {
 	"/transactions/AAA": { status: 200, body: { successful: true } },
+	"/transactions/MUX": { status: 200, body: { successful: true } },
+	"/transactions/MUX/effects": {
+		status: 200,
+		body: {
+			_embedded: {
+				records: [
+					{
+						type: "account_credited",
+						// Horizon reports the UNDERLYING account, never the M….
+						account: muxUnderlying,
+						amount: "0.5000000",
+						asset_type: "native",
+					},
+				],
+			},
+		},
+	},
 	"/transactions/AAA/effects": {
 		status: 200,
 		body: {
@@ -173,6 +199,14 @@ async function main() {
 		kind: "payment",
 		network: NETWORK,
 		payer: wallet,
+		payee: muxPayee, // stored as the payer saw it: M…
+		amount: "5000000", // 0.5 XLM — matches the MUX effect exactly
+		tx: "MUX",
+	});
+	record({
+		kind: "payment",
+		network: NETWORK,
+		payer: wallet,
 		payee: payee2,
 		amount: "20000000",
 		tx: "BBB", // Horizon 404s this hash
@@ -235,6 +269,19 @@ async function main() {
 		r.matched.some(
 			(m) => m.tx === "AAA" && m.amount === "10000000" && m.payee === payee1,
 		),
+	);
+	// The seam finding: a muxed payee must MATCH, not read as a discrepancy.
+	check(
+		"MUX matched — a muxed payee resolves to the account Horizon credited",
+		r.matched.some((m) => m.tx === "MUX" && m.amount === "5000000"),
+	);
+	check(
+		"MUX is NOT reported as a mismatch (the regression this guards)",
+		!r.mismatched.some((m) => m.tx === "MUX"),
+	);
+	check(
+		"MUX is NOT reported as ledger-not-on-chain either",
+		!r.ledgerNotOnChain.some((m) => m.tx === "MUX"),
 	);
 
 	// --- bucket 2: in the ledger, never settled -----------------------------
