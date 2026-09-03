@@ -69,30 +69,62 @@ advance.
   bumping a dependency — our catalog already records `scheme` per endpoint,
   so no data-model change is needed on our side.
 
-### 2.3 A smart account cannot pay a 402 directly — and the blocker is the client, not the facilitator
-`@x402/stellar` signs with a classic ed25519 key. We used to say the
-*facilitator* would have to accept contract-account authorization. That was
-wrong, and we checked: the reference facilitator is already address-agnostic
-(it accepts any non-void signature and re-simulates in enforcing mode). The
-blocker is on the **client** side — stellar-base's `authorizeEntry` hard-wraps
-the classic `{public_key, signature}` credential shape and calls
-`Keypair.fromPublicKey()` on the address, so a `C…` payer never gets past it,
-and `ExactStellarScheme` exposes no `authorizeEntry` override to route around
-that. So the vault cannot pay for anything itself, and the fix lives in the
-x402 client, not in any facilitator.
+### 2.3 A smart account cannot pay a 402 directly — CLOSED on the client side; a separate facilitator limitation found while proving it
+**Update:** the client-side half of this is fixed, on our side, without an
+upstream release. `@x402/stellar`'s `ExactStellarScheme` signs with a classic
+ed25519 key and exposes no way to change that — but `@stellar/stellar-sdk`'s
+own `AssembledTransaction#signAuthEntries` already accepts an `authorizeEntry`
+**override** parameter (a full replacement of the signing algorithm, not the
+`signAuthEntry` wallet callback, which the SDK always re-wraps as a raw buffer
+before handing it to the unreplaced default — so that door alone can never
+reach the classic-bypassing shape). `src/pay/vault.ts`'s `vaultAgentAuthorizer`
+and `src/pay/vault-x402.ts` reimplement `ExactStellarScheme.createPaymentPayload`
+line for line — same SEP-41 `transfer` call, same build → simulate → sign →
+re-simulate shape, same `{x402Version, payload:{transaction}}` return — with
+the vault CONTRACT as `from` and that override supplying an OZ smart-account
+`AuthPayload` signature instead. `curl --from-vault` / the MCP `curl` tool's
+`from_vault` wire this into the existing 402 loop, gated by the SAME policy
+decision as every other payment (`src/pay/policy.ts`).
 
-- **Owner:** `coinbase/x402` — the Stellar scheme package (`@x402/stellar`)
-  and its use of stellar-base. We are raising this there.
-- **Unblocks it:** a `ClientStellarSigner` that can supply a fully-signed
-  `SorobanAuthorizationEntry` (or an `authorizeEntry` override) so a
-  contract-account payer produces the single legacy-credential entry the
-  scheme already specifies. Facilitators need no change — only a conformance
-  probe with a real `C…` payer to prove it.
-- **We shipped instead:** the vault→float pattern — bulk funds stay behind
-  the on-chain cap, and the agent draws a small float to the classic key it
-  pays 402s with. It works, and it is strictly weaker: income credited
-  directly to that classic key is spendable without the cap ever being
-  consulted.
+We had also written "the reference facilitator is already address-agnostic"
+as settled. That part held — it accepts any non-void signature and
+re-simulates in enforcing mode — but proving this end to end
+(`test:vault-x402`) surfaced a **second, independent** facilitator-side
+limitation the address-agnostic claim didn't cover: `@x402/stellar`'s
+facilitator `validateSimulationEvents()` assumes a settlement simulation
+emits exactly one "contract"-type event — the SEP-41 `transfer` — and bails
+on the first contract event that doesn't match a transfer's shape. A capped
+smart-account payer's authorization emits its OWN `spending_limit_enforced`
+event from the policy contract ahead of the transfer event, so the reference
+facilitator, unmodified, currently refuses to settle a capped vault payment
+with `invalid_exact_stellar_payload_event_not_transfer` — a bug in the
+facilitator's event scan (it should skip non-transfer contract events, not
+reject on the first one), not evidence the payload itself is invalid.
+`test:vault-x402` settles the identical payload directly (rebuild envelope,
+real fee-payer, same auth entries — what a facilitator without that bug would
+do) to prove the payload is genuinely valid and chain-accepted, and separately
+exercises the real facilitator so a future upstream fix shows up as a pass.
+
+- **Owner:** `coinbase/x402` — the Stellar scheme package (`@x402/stellar`).
+  Two independent items now, not one:
+  1. `ExactStellarScheme.createPaymentPayload` could accept an
+     `authorizeEntry` override (or a `ClientStellarSigner` that returns a
+     fully-signed entry) so a contract-account payer doesn't need a parallel
+     reimplementation of the scheme just to change the signing algorithm.
+  2. The facilitator's `validateSimulationEvents` should skip non-transfer
+     contract events while scanning for the transfer, rather than rejecting
+     on the first one it finds — this is what actually blocks a REAL
+     facilitator from settling a capped contract payer today.
+  We are raising both; (2) is the one with a concrete repro
+  (`test:vault-x402`) and no workaround on the client side, since it lives in
+  code we do not run.
+- **We shipped instead:** the vault can now pay a 402 directly (this repo,
+  proven on testnet with real transaction hashes, same on-chain cap as the
+  existing draw path), on top of the vault→float pattern this section used to
+  describe as the whole story. Float is still there and still additive: bulk
+  funds stay behind the on-chain cap either way; the agent can draw float to
+  its classic key, or the vault contract can pay a 402 itself — same cap,
+  read fresh from the ledger on every call, whichever door is used.
 
 ### 2.4 Deploying a smart account still needs a WebAuthn dance
 `smart-account-kit` wants a passkey as the initial signer. For a headless
@@ -201,8 +233,13 @@ For a conversation with SDF, in the order we would argue for them:
    ecosystem, not just us, and everything downstream of it.
 3. **The seller side of MPP channels** — registration handshake and settle
    loop. Turns agents from customers into peers.
-4. **Contract-account authorization for x402 payments.** Lets a capped smart
-   account pay directly, which closes the gap our float pattern papers over.
+4. **The facilitator's event scan should skip non-transfer contract events.**
+   We closed the client-side half ourselves (§2.3) — the vault pays directly
+   today. What is left is upstream: `validateSimulationEvents` rejects a
+   capped smart account's own `spending_limit_enforced` event instead of
+   scanning past it to the transfer, so the reference facilitator, unmodified,
+   still cannot settle a capped contract payer. Reproduced in
+   `test:vault-x402`, worked around there by settling directly.
 5. **`scheme_upto_stellar.md`.** Metered and streaming pricing; already
    inside the SCF facilitator RFP's scope.
 6. **Escrow capabilities, with Trustless Work:** after-deadline unilateral

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Working name: stellar-pay. Commands:
- *   curl <url> [-X M] [-H "K: V"]… [-d body] [--yes] [--max-usd N] [--x402|--mpp] [-i]
+ *   curl <url> [-X M] [-H "K: V"]… [-d body] [--yes] [--max-usd N] [--x402|--mpp] [--from-vault] [-i]
  *   offers <url> [-X M] [-H …] [-d body]     show what the 402 asks for; pay nothing
  *   verify <url> [-X M] [-d body]          seller check: is this a correct, Stellar-payable 402?
  *   balance | whoami
@@ -142,6 +142,8 @@ type Args = {
 	verifyReceipt?: string;
 	/** curl --session: pay via the host's registered one-way channel */
 	session: boolean;
+	/** curl --from-vault: pay an x402 offer with the vault as payer (on-chain cap) */
+	fromVault: boolean;
 	/** session open --deposit <xlm>: channel deposit (default 5) */
 	deposit?: number;
 	/** bounty verbs */
@@ -203,6 +205,7 @@ function parse(argv: string[]): Args {
 		keychain: false,
 		maxUsdSet: false,
 		session: false,
+		fromVault: false,
 		positional: [],
 		force: false,
 		send: false,
@@ -247,6 +250,7 @@ function parse(argv: string[]): Args {
 			if (Number.isInteger(n) && n > 0) a.limit = n;
 		} else if (t === "--verify") a.verifyReceipt = next();
 		else if (t === "--session") a.session = true;
+		else if (t === "--from-vault") a.fromVault = true;
 		else if (t === "--deposit") {
 			const n = Number(next());
 			if (Number.isFinite(n) && n > 0) a.deposit = n;
@@ -1691,6 +1695,7 @@ async function cmdCurl(a: Args, init: RequestInit): Promise<void> {
 		guard: (u) =>
 			payGuard(u, { requested: a.maxUsd, requestedExplicit: a.maxUsdSet }),
 		prefer: a.prefer,
+		fromVault: a.fromVault,
 	});
 	const bodyText = await r.res.text();
 	if (r.paid) {
@@ -1884,6 +1889,7 @@ WALLET
   bounty list --from <feed>   |   bounty watch --contract C…   earn: vet listings against the CHAIN, get paid
   vault create|topup|draw|status         fund an agent behind an ON-CHAIN spend cap (testnet)
   curl <url> --session                   pay via the host's channel — off-chain per call
+  curl <url> --from-vault                pay an x402 offer with the VAULT as payer (on-chain cap, not just the float)
 
 AGENTS
   mcp                                        serve the MCP on stdio

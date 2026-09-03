@@ -550,11 +550,23 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 					.describe(
 						"pay via the host's open payment channel (see session_open): off-chain commitment per call, ~10x faster, capped by the channel deposit",
 					),
+				from_vault: z
+					.boolean()
+					.optional()
+					.describe(
+						"pay an x402 offer with this install's VAULT as payer instead of the wallet key — the payment then sits behind the vault's on-chain spending cap (see vault_status). x402 only. TESTNET ONLY.",
+					),
 			},
 		},
-		async ({ url, method, headers, body, prefer, session }) => {
+		async ({ url, method, headers, body, prefer, session, from_vault }) => {
 			const blocked = await blockedTarget(url);
 			if (blocked) return json({ error: blocked });
+			// The description says TESTNET ONLY; that is not an enforcement (same
+			// rule as vault_draw/vault_status) — the gate has to be in the code.
+			if (from_vault) {
+				const gate = requireTestnet();
+				if (gate) return json({ error: gate });
+			}
 			if (session) {
 				// Channel path: no per-call spend gate — exposure was capped at
 				// session_open by the deposit, and the channel cannot pay the
@@ -624,6 +636,7 @@ Copy urls from search_catalog exactly; do not call upstream hosts directly. body
 			const isJson = body != null && typeof body !== "string";
 			const init: PreferInit = {
 				stellarPayPrefer: prefer,
+				stellarPayFromVault: from_vault,
 				method: (method ?? (body != null ? "POST" : "GET")).toUpperCase(),
 				headers: {
 					"user-agent": "stellar-pay-mcp/0.1",

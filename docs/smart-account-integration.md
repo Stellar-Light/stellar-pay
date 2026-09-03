@@ -11,54 +11,74 @@ on-chain. So the two "caveats" split cleanly:**
 |--------|---------------|--------|
 | Headless deploy needs a browser passkey | **the user's**, once, at setup — not ours | not a blocker; it's normal wallet setup |
 | The kit is unaudited | the user's risk call | a disclosure, not our bug |
-| Pay a 402 *from* the vault (contract-account auth) | **ours** — the client fix | designed below; **not yet built** — needs a provisioned vault |
+| Pay a 402 *from* the vault (contract-account auth) | **ours** — the client fix | **built** — `curl --from-vault` / MCP `curl{from_vault:true}`; proven on testnet with real tx hashes (`test:vault-x402`). One remaining gap, and it is upstream, not ours: the reference facilitator's own event validation, see below |
 
 Everything below is the *ours* row: what stellar-pay builds so an agent can use
 a vault the user already set up.
 
-## Caveat 1 — paying a 402 *from* a smart account. **Fixable, client-side.**
+## Caveat 1 — paying a 402 *from* a smart account. **Built.**
 
-`@x402/stellar` doesn't hardcode a classic key. Its client is built on the
-Stellar SDK's standard **`SignAuthEntry`** hook
-(`@stellar/stellar-sdk/contract`) — a pluggable callback that signs a Soroban
-authorization entry. `createEd25519Signer` is just the built-in implementation
-for a classic key.
+`@x402/stellar`'s `ExactStellarScheme` takes any `ClientStellarSigner`
+(`{ address, signAuthEntry, signTransaction? }`), which *looks* like the plug
+point. It is not, and this doc used to say the fix needed an upstream client
+change before it could land. It doesn't: `signAuthEntry` (SEP-43) returns raw
+signature bytes that stellar-base's `authorizeEntry` then re-wraps in the
+classic `{public_key, signature}` credential — after calling
+`Keypair.fromPublicKey()` on the address, which rejects a `C…` account. No
+`ClientStellarSigner` can route around that; the wrapping happens
+unconditionally, regardless of what the callback returns.
 
-So the fix is an **adapter**, not a fork: implement `SignAuthEntry` so that,
-for a transfer whose `from` is the smart account (C-address), it produces the
-smart-account authorization instead of a classic ed25519 signature.
+The actual plug point is one level down, and it was already there:
+`@stellar/stellar-sdk`'s own `AssembledTransaction#signAuthEntries` accepts an
+`authorizeEntry` **override** — a full replacement of the signing algorithm,
+not the `signAuthEntry` callback. So the fix wasn't an upstream `@x402/stellar`
+change; it was a from-scratch reimplementation of
+`ExactStellarScheme.createPaymentPayload` (mirroring it line for line — same
+SEP-41 `transfer` call, same build → simulate → sign → re-simulate shape,
+same `{x402Version, payload:{transaction}}` return) that calls
+`signAuthEntries({ authorizeEntry })` instead of `{ signAuthEntry }`:
 
 ```
-x402 client
+our scheme (src/pay/vault-x402.ts)
   → SAC transfer, from = smart account (C…)
-  → SignAuthEntry(entry):
-        digest = computeEntryAuthDigest(entry)          // exported by the kit
-        sig    = agentEd25519.sign(digest)              // the agent's key
-        assemble the SorobanAuthorizationEntry the OZ __check_auth expects
+  → tx.signAuthEntries({ authorizeEntry: ourOverride }):
+        ourOverride delegates to the SDK's OWN authorizeEntry, supplying only
+        the signature:
+          digest = computeEntryAuthDigest(entry, contextRuleId)  // kit, public
+          sig    = agentEd25519.signAuthDigest(digest)           // the agent's key
+          return { signatureScVal: <OZ AuthPayload ScVal> }      // skips the
+                                                                  // classic path entirely
   → facilitator submits
   → on settle: __check_auth runs → spending-limit policy checks the amount
 ```
 
-`@x402/stellar`'s `ExactStellarScheme` takes any `ClientStellarSigner`
-(`{ address, signAuthEntry, signTransaction? }`), which *looks* like an exact
-plug point. It is not, and this doc used to claim otherwise. `signAuthEntry`
-(SEP-43) returns raw signature bytes that stellar-base's `authorizeEntry` then
-re-wraps in the classic `{public_key, signature}` credential — after calling
-`Keypair.fromPublicKey()` on the address, which rejects a `C…` account. A
-smart-account payer needs to hand the scheme a *fully built* authorization
-entry (or an `authorizeEntry` override), and `ExactStellarScheme` exposes no
-such hook. So the adapter needs an upstream client change first; until it
-lands, this path means patching the scheme, not plugging into it.
+`kit.signAuthEntry` (the kit's own single-entry signer) is deliberately not
+used for this — it is passkey/WebAuthn-only, i.e. it signs as the OWNER,
+whose rule carries no spending limit. The agent's capped ed25519 path instead
+goes through the kit's public `Ed25519Signer` + `computeEntryAuthDigest` +
+`signerToScVal` directly (see `vaultAgentAuthorizer` in `src/pay/vault.ts`).
 
-The facilitator, on the other hand, needs nothing: the reference
-implementation already verifies and settles address-agnostically (any
-non-void signature, enforcing re-simulation). It should still be *proved*
-against a real `C…` payer before we rely on it — that is a conformance probe,
-not a change request.
+The facilitator needed nothing on the address-agnosticism front — confirmed:
+the reference implementation verifies and settles address-agnostically (any
+non-void signature, enforcing re-simulation) — but proving this end to end
+(`test:vault-x402`) surfaced a **separate, independent** facilitator-side
+limitation: its `validateSimulationEvents()` assumes a settlement simulation
+emits exactly one "contract"-type event (the transfer) and rejects on the
+first contract event that doesn't match that shape. A capped smart-account
+payer's authorization emits its own `spending_limit_enforced` event from the
+policy contract ahead of the transfer event, so the reference facilitator,
+unmodified, currently cannot settle a capped vault payment — see
+`docs/ECOSYSTEM-ASKS.md` §2.3 for the full writeup and the upstream ask.
+`test:vault-x402` settles the identical payload directly (rebuild envelope,
+real fee-payer, same auth entries) to prove the payload itself is valid and
+chain-accepted independent of that bug.
 
-**Status:** designed, not yet built — it needs (a) the upstream client hook
-above and (b) a deployed smart account to test end to end (see caveat 2).
-We are asking `coinbase/x402` for (a); it cannot land before that.
+**Status:** built and proven on testnet with real transaction hashes
+(`curl --from-vault`, MCP `curl{from_vault:true}`, `test:vault-x402`). No
+upstream `@x402/stellar` client change was needed. What remains is upstream,
+on the facilitator side (previous paragraph) — not a blocker for us, since we
+settle directly, but real for anyone relying on the reference facilitator
+unmodified.
 
 ## The setup step is the user's, in a browser (not a blocker for us)
 
@@ -87,10 +107,11 @@ Creation is a one-time human step; the agent then runs headless:
    flows through `__check_auth` → the spending-limit policy caps it on-chain. A
    compromised agent key still cannot exceed the daily cap or touch a
    non-USDC contract.
-3. **Paying 402s:** the SignAuthEntry adapter (caveat 1) lets the agent pay
-   x402/MPP 402s directly from the vault; or, until a facilitator is confirmed
-   to accept a C-address payer, the vault tops up a small **hot classic key**
-   the client uses for 402s (bulk funds stay capped on-chain).
+3. **Paying 402s:** the agent can pay an x402 402 directly from the vault
+   (caveat 1 — `curl --from-vault`), same on-chain cap either way; or draw a
+   small float to its own classic key first and pay from that (`vault draw`).
+   MPP has no equivalent yet — the vault has no MPP signer, so an MPP 402
+   still goes through the classic key.
 
 This is a sound model — the owner provisions the vault and its limits once,
 the agent operates within them forever — but it means the on-chain

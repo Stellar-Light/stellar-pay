@@ -24,7 +24,9 @@ STELLAR_SECRET_KEY or an encrypted keystore (`stellar-pay setup --save main`).
   session_open, session_status, session_close (+ curl{session:true}); hire —
   bounty_post, bounty_assign, bounty_open, bounty_dispute, bounty_resolve,
   bounty_status; earn — bounty_feed, bounty_pack, bounty_submit,
-  bounty_submit_packet, bounty_watch; fund — vault_draw, vault_status.
+  bounty_submit_packet, bounty_watch; fund — vault_draw, vault_status
+  (+ curl{from_vault:true} pays a 402 with the vault contract itself, same
+  on-chain cap).
 
 ## Spend control
 

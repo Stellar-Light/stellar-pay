@@ -15,6 +15,7 @@ import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
 import { createEd25519Signer } from "@x402/stellar";
 import { ExactStellarScheme } from "@x402/stellar/exact/client";
 import { isStellar, type Offer, type Protocol, readOffers } from "./offers.js";
+import { createVaultExactStellarScheme } from "./vault-x402.js";
 import type { Wallet } from "./wallet.js";
 
 /** MPP `Payment-Receipt` (base64url or plain JSON): { method, reference, status, timestamp }. */
@@ -133,6 +134,11 @@ export async function payFetch(
 		/** re-checked on every redirect hop (SSRF / per-host policy) */
 		guard?: (url: string) => Promise<string | null> | string | null;
 		prefer?: Protocol;
+		/** Pay an x402 offer with the VAULT as payer (see vault-x402.ts) instead
+		 * of `wallet`'s own classic key — the payment then sits behind the
+		 * vault's on-chain spending cap. x402 only: the vault has no MPP signer,
+		 * so this is refused up front if it would otherwise pay over MPP. */
+		fromVault?: boolean;
 		fetch?: typeof globalThis.fetch;
 	},
 ): Promise<PayResult> {
@@ -179,9 +185,16 @@ export async function payFetch(
 	// An EXPLICIT --x402/--mpp is a constraint, not a preference: falling back
 	// to the other protocol silently paid over the top of the user's choice.
 	// With no flag, the old ordering stands (MPP first, x402 second).
-	const order: Protocol[] = o.prefer
-		? [o.prefer]
-		: (["mpp", "x402"] as Protocol[]);
+	// fromVault has no MPP signer (the vault contract cannot speak MPP's
+	// pull-mode charge protocol), so it implies x402 the same way — and an
+	// explicit --mpp alongside it is a contradiction, refused rather than
+	// silently paid from the classic wallet instead of the vault.
+	const prefer = o.prefer ?? (o.fromVault ? "x402" : undefined);
+	if (o.fromVault && prefer !== "x402")
+		throw new Error(
+			"paying from the vault only supports the x402 protocol — drop --mpp",
+		);
+	const order: Protocol[] = prefer ? [prefer] : (["mpp", "x402"] as Protocol[]);
 	const offer = order
 		.map((p) => payable.find((x) => x.protocol === p))
 		.find(Boolean);
@@ -301,19 +314,38 @@ export async function payFetch(
 		return pick;
 	}).register(
 		o.wallet.network,
-		new ExactStellarScheme(
-			createEd25519Signer(o.wallet.keypair.secret(), o.wallet.network),
-			// @x402/stellar REFUSES to build a mainnet client without an explicit
-			// RPC url (testnet has a default), so every pubnet x402 payment threw
-			// before this. Overridable for operators who run their own node.
-			o.wallet.network === "stellar:pubnet"
-				? {
-						url:
-							process.env.STELLAR_RPC_URL ?? "https://mainnet.sorobanrpc.com",
-					}
-				: undefined,
-		),
+		// fromVault: the PAYER is the vault contract, capped on-chain — see
+		// vault-x402.ts. Otherwise, the classic wallet key, as before.
+		o.fromVault
+			? createVaultExactStellarScheme(o.wallet)
+			: new ExactStellarScheme(
+					createEd25519Signer(o.wallet.keypair.secret(), o.wallet.network),
+					// @x402/stellar REFUSES to build a mainnet client without an
+					// explicit RPC url (testnet has a default), so every pubnet x402
+					// payment threw before this. Overridable for operators who run
+					// their own node.
+					o.wallet.network === "stellar:pubnet"
+						? {
+								url:
+									process.env.STELLAR_RPC_URL ??
+									"https://mainnet.sorobanrpc.com",
+							}
+						: undefined,
+				),
 	);
+	// @x402/core's OWN client-side spend control rejects any asset that is not
+	// its hardcoded "default" (USDC) unless explicitly allowed — a SEPARATE,
+	// less-informed gate that runs after our own approve() already vetted this
+	// exact offer. Undiscovered until the vault (XLM SAC, never USDC) exercised
+	// it: every non-USDC x402 payment through this client was silently refused
+	// by @x402/core before ever reaching a scheme, float or vault alike (see
+	// x402-test.ts's own comment on the same knob). Allow precisely the asset
+	// already approved — never the whole catalog — so this stays as narrow as
+	// the pin check above it.
+	if (offer.asset)
+		client.setSpendControls({
+			allowedAssets: [{ asset: offer.asset, network: o.wallet.network }],
+		});
 	const res = await wrapFetchWithPayment(f, client)(url, init);
 	let hash: string | null = null;
 	const receipt = res.headers.get("payment-response");
