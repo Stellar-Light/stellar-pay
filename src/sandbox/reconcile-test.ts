@@ -137,6 +137,22 @@ const server = createServer((req, res) => {
 });
 let base = "";
 await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+
+/**
+ * Close the fixture server and WAIT for it, then let the loop drain on its
+ * own rather than calling process.exit().
+ *
+ * Windows CI caught this: all 15 checks passed and the run still failed with
+ * `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), src\win\async.c`.
+ * `server.close()` immediately followed by `process.exit()` tears the process
+ * down while libuv is still closing the handle, which aborts on Windows and
+ * is merely invisible on macOS and Linux. Keep-alive sockets are dropped
+ * first, since close() waits for live connections and would otherwise hang.
+ */
+async function shutdown(): Promise<void> {
+	server.closeAllConnections?.();
+	await new Promise<void>((r) => server.close(() => r()));
+}
 base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
 async function main() {
@@ -302,12 +318,12 @@ async function main() {
 	console.log(
 		`\n${fail === 0 ? "ALL PASS" : `${fail} FAILED`} — ${pass}/${pass + fail} reconcile checks`,
 	);
-	server.close();
-	process.exit(fail === 0 ? 0 : 1);
+	await shutdown();
+	process.exitCode = fail === 0 ? 0 : 1;
 }
 
-main().catch((e) => {
+main().catch(async (e) => {
 	console.error("FATAL:", e);
-	server.close();
-	process.exit(1);
+	await shutdown();
+	process.exitCode = 1;
 });

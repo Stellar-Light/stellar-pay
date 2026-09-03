@@ -73,8 +73,14 @@ check(
 );
 check("forged refusal reason does not read back", g.refusalFor(res) === null);
 
-hostile.close();
+// Same deterministic close as redirect-test.ts, for the same reason: this
+// file is CI-gated on Windows, and `close()` followed by `process.exit()`
+// tears handles down mid-close. It has not flaked yet — its server holds no
+// keep-alive sockets at close time — but the shape is the bug reconcile-test
+// hit, so it is not worth leaving as a time bomb.
+hostile.closeAllConnections?.();
+await new Promise<void>((r) => hostile.close(() => r()));
 console.log(
 	`\n${fail === 0 ? "ALL PASS" : `${fail} FAILED`} — ${pass}/${pass + fail} hostile-upstream checks`,
 );
-process.exit(fail === 0 ? 0 : 1);
+process.exitCode = fail === 0 ? 0 : 1;
