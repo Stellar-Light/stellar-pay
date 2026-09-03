@@ -371,17 +371,37 @@ export type StatementRow = {
 
 /**
  * Kinds that MOVE VALUE — a statement is about money, not bookkeeping.
+ *
  * Both directions: `bounty-income` is money in, the rest is money out, and
- * the `kind` column is what distinguishes them. Deliberately excludes rows
- * that only record a decision or a state change (`policy-decision`,
- * `job-open`, `job-deliver`, `vault-create`, `channel-open`, …) — those are
- * reachable from a payment's `refs`, which is how `rule` below is resolved.
+ * the `kind` column distinguishes them. Deliberately excludes rows that only
+ * record a decision or a state change (`policy-decision`, `job-open`,
+ * `job-deliver`, `vault-create`, `channel-drop`, `task-outcome`, …) — those
+ * stay reachable through a payment's `refs`, which is how `rule` is resolved.
+ *
+ * Three were missing until an audit caught them, and the test of membership
+ * is "did funds move", not "does the row look like a payment":
+ *   - `channel-open` deploys the channel AND deposits into it in the same
+ *     transaction. It carries a real `tx`, `amount`, `payer` and `payee`; the
+ *     old comment filed it under "state change" alongside `vault-create`,
+ *     which is true of that one and false of this.
+ *   - `job-resolved` credits the winner (pot − fee) with a real `payee` and
+ *     `amount`.
+ *   - `job-resolve-dispute` distributes escrowed funds. It carries a `tx` but
+ *     no single `amount` or `payee`, because a distribution has several — so
+ *     it appears with those columns empty rather than being hidden, and its
+ *     splits live in the receipt's own `detail.distributions`. A settled
+ *     payout missing from an audit export is worse than one that needs a
+ *     second look, and a disputed payout is exactly what someone goes
+ *     looking for.
  */
 const VALUE_KINDS = new Set<ReceiptKind>([
 	"payment",
+	"channel-open",
 	"channel-close",
 	"job-fund",
 	"job-release",
+	"job-resolve-dispute",
+	"job-resolved",
 	"vault-topup",
 	"vault-draw",
 	"bounty-income",

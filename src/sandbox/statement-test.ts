@@ -61,8 +61,64 @@ async function main() {
 		payee: "GOTHER",
 	});
 
+	// The three an audit found missing: money moved, the row proved it, and
+	// the statement hid it. A settled payout absent from the audit export is
+	// the worst failure this file can have.
+	record({
+		kind: "channel-open",
+		network: "stellar:testnet",
+		url: "https://api.example.com/stream",
+		amount: "50000000",
+		payer: "GPAYER",
+		payee: "GSELLER",
+		tx: "chanopen1",
+	});
+	record({
+		kind: "job-resolved",
+		network: "stellar:testnet",
+		payer: "GRESOLVER",
+		payee: "GWINNER",
+		amount: "9000000",
+		detail: { contractId: "CJOB", mode: "open-claim" },
+	});
+	record({
+		kind: "job-resolve-dispute",
+		network: "stellar:testnet",
+		payer: "GRESOLVER",
+		tx: "dispute1",
+		detail: {
+			contractId: "CJOB",
+			distributions: [
+				["GA", "6000000"],
+				["GB", "3000000"],
+			],
+		},
+	});
+
 	const st = statement();
-	eq(st.length, 2, "only value-moving rows appear (job-open excluded)");
+	eq(st.length, 5, "only value-moving rows appear (job-open excluded)");
+	eq(
+		st.some((r) => r.kind === "channel-open" && r.tx === "chanopen1"),
+		true,
+		"a channel deposit is on the statement — it moves real funds",
+	);
+	eq(
+		st.some((r) => r.kind === "job-resolved" && r.amount === "9000000"),
+		true,
+		"a resolved job's payout is on the statement",
+	);
+	const dispute = st.find((r) => r.kind === "job-resolve-dispute");
+	eq(!!dispute, true, "a disputed distribution is NOT hidden");
+	eq(
+		dispute?.amount,
+		null,
+		"a multi-way distribution shows no single amount rather than inventing one",
+	);
+	eq(
+		dispute?.verifiable,
+		false,
+		"and it is not claimed checkable — one row cannot prove several splits",
+	);
 	eq(
 		st[0]?.rule,
 		"per-host cap",
@@ -93,7 +149,7 @@ async function main() {
 
 	// CSV: RFC 4180 quoting, header plus one line per row.
 	const csv = statementCsv(st).split("\n");
-	eq(csv.length, 3, "CSV is a header plus one line per row");
+	eq(csv.length, st.length + 1, "CSV is a header plus one line per row");
 	eq(
 		csv[0],
 		"at,receipt,kind,network,protocol,url,amount,asset,payee,tx,rule,verifiable",

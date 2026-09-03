@@ -463,7 +463,14 @@ async function cmdRun(a: Args): Promise<void> {
 				network: wallet.network,
 				protocol: p.protocol,
 				url: p.url,
+				// The offer's own terms, not just the fact of payment: without
+				// them reconcile has no amount to match and defaults a missing
+				// asset to native, filing a real USDC settlement made through
+				// this door as a discrepancy (audit finding 4).
+				amount: p.amount,
+				asset: p.asset,
 				payer: wallet.publicKey,
+				payee: p.payee,
 				tx: p.hash ?? null,
 				detail: { surface: "run", ...(p.usd != null ? { usd: p.usd } : {}) },
 			});
