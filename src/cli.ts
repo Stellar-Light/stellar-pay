@@ -78,6 +78,7 @@ import {
 	record,
 	verifyOnChain,
 } from "./pay/receipts.js";
+import { reconcile } from "./pay/reconcile.js";
 import {
 	addTrustline,
 	history,
@@ -173,8 +174,19 @@ type Args = {
 
 // Documented, stable exit codes so a wrapper script can branch without parsing
 // text (gh/clig.dev convention). 0 ok · 2 usage · 3 payment refused/declined ·
-// 4 no wallet · 1 generic runtime failure.
-const EXIT = { ok: 0, runtime: 1, usage: 2, refused: 3, noWallet: 4 } as const;
+// 4 no wallet · 1 generic runtime failure · 5 reconcile found a real gap
+// (on-chain/ledger mismatch) · 6 reconcile could not fully verify (Horizon
+// trouble) — kept distinct from 5 so a cron job never reads an outage as
+// money gone missing.
+const EXIT = {
+	ok: 0,
+	runtime: 1,
+	usage: 2,
+	refused: 3,
+	noWallet: 4,
+	gap: 5,
+	unverifiable: 6,
+} as const;
 
 /** Commands that forward their remaining argv to a child process, so an
  * unrecognised flag is the CHILD's business, not a usage error of ours. */
@@ -1518,6 +1530,55 @@ async function cmdReceipts(a: Args): Promise<void> {
 	});
 }
 
+/**
+ * `reconcile` — the whole-ledger, other-direction check: not "does this one
+ * receipt prove itself on-chain" (`receipts --verify`) but "does the CHAIN'S
+ * OWN payment history for this wallet agree with everything the ledger
+ * claims". Read-only; see pay/reconcile.ts for exactly what it does and does
+ * not cover before trusting a clean run.
+ */
+async function cmdReconcile(a: Args): Promise<void> {
+	await ensureSecretLoaded(a.account);
+	const w = loadWallet();
+	const r = await reconcile({ publicKey: w.publicKey, network: w.network });
+	emit(a, r, () => {
+		console.log(`scope: ${r.scope}`);
+		console.log(
+			`${r.complete ? "complete read" : "PARTIAL read"} · ${r.pagesRead} Horizon page(s)${r.excludedOffChainRows ? ` · ${r.excludedOffChainRows} off-chain channel row(s) excluded (not reconciled here)` : ""}`,
+		);
+		console.log(
+			`matched ${r.matched.length} · on-chain-not-ledger ${r.onChainNotLedger.length} · ledger-not-on-chain ${r.ledgerNotOnChain.length} · mismatched ${r.mismatched.length} · could-not-check ${r.couldNotCheck.length}`,
+		);
+		for (const m of r.onChainNotLedger)
+			console.log(
+				`  ✗ on-chain, not in ledger   ${m.tx.slice(0, 12)}…  ${m.amount} ${m.asset} → ${m.counterparty.slice(0, 6)}…  (${m.at.slice(0, 10)})`,
+			);
+		for (const m of r.ledgerNotOnChain)
+			console.log(
+				`  ✗ in ledger, not on-chain   ${m.id}  ${m.tx ? `${m.tx.slice(0, 12)}…` : "(no tx)"}  — ${m.note}`,
+			);
+		for (const m of r.mismatched)
+			console.log(
+				`  ✗ mismatch   ${m.id}  ${m.tx.slice(0, 12)}…  ledger=${m.ledger.amount ?? "?"}/${m.ledger.payee?.slice(0, 6) ?? "?"}…  chain=${m.chain.amount}/${m.chain.payee.slice(0, 6)}…`,
+			);
+		for (const c of r.couldNotCheck)
+			console.log(
+				`  ? could not check   ${c.id ?? c.tx ?? "(history walk)"}  — ${c.reason}`,
+			);
+		if (r.ok)
+			console.log(
+				"OK — every ledger row matches the chain, and no on-chain payment is missing from the ledger.",
+			);
+	});
+	if (
+		r.onChainNotLedger.length ||
+		r.ledgerNotOnChain.length ||
+		r.mismatched.length
+	)
+		process.exitCode = EXIT.gap;
+	else if (r.couldNotCheck.length) process.exitCode = EXIT.unverifiable;
+}
+
 async function cmdVerify(a: Args): Promise<void> {
 	if (!a.url) {
 		console.error(
@@ -1884,6 +1945,7 @@ WALLET
   history [--limit N] [--json]
   receipts [--limit N] [--verify ID] [--json]  the local ledger; --verify proves a row on-chain
   receipts check                         tamper check: every row id must re-derive from its content
+  reconcile [--json]                     the WHOLE ledger vs the chain's own history: matched, on-chain-not-logged, logged-not-settled, mismatched (read-only)
   session open <url> [--deposit 5] | status | close <url>   one-way payment channels (testnet)
   bounty post|assign|open|submit|pack|dispute|resolve|status   escrowed verification bounties (testnet)
   bounty list --from <feed>   |   bounty watch --contract C…   earn: vet listings against the CHAIN, get paid
@@ -1899,7 +1961,8 @@ GLOBAL   --sandbox (testnet)   --json (machine output)   -h/--help
          --account <name>   run one command as a specific saved wallet
          --force            replace an existing account on import/setup
 ENV      STELLAR_SECRET_KEY, STELLAR_NETWORK, STELLAR_PAY_PASSPHRASE, STELLAR_PAY_MAX_USD_PER_CALL
-EXIT     0 ok · 2 usage · 3 payment refused/declined · 4 no wallet · 1 runtime error`;
+EXIT     0 ok · 2 usage · 3 payment refused/declined · 4 no wallet · 1 runtime error
+         reconcile: 5 found a real gap · 6 could not fully verify (Horizon trouble)`;
 
 const commands: Record<string, (a: Args, init: RequestInit) => Promise<void>> =
 	{
@@ -1918,6 +1981,7 @@ const commands: Record<string, (a: Args, init: RequestInit) => Promise<void>> =
 		send: cmdSend,
 		history: cmdHistory,
 		receipts: cmdReceipts,
+		reconcile: cmdReconcile,
 		session: cmdSession,
 		bounty: cmdBounty,
 		vault: cmdVault,
