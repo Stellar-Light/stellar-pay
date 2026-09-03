@@ -138,6 +138,13 @@ export type ProxyOptions = {
 		 *  the value could not be handed to a receipt row without a cast. */
 		protocol: "x402" | "mpp" | "channel";
 		hash: string | null;
+		/** The offer's own terms, so the row this becomes can be reconciled
+		 *  against the chain. Without them a `run` payment recorded no amount,
+		 *  asset or payee, and reconcile's "a missing asset means native"
+		 *  default then filed a real USDC settlement as a discrepancy. */
+		amount: string | null;
+		asset: string | null;
+		payee: string | null;
 	}) => void;
 	onRefused?: (info: { url: string; reason: string }) => void;
 };
@@ -217,6 +224,9 @@ export async function startProxy(o: ProxyOptions): Promise<{
 					usd: offerUSD(r.paid.offer),
 					protocol: r.paid.protocol,
 					hash: r.paid.hash,
+					amount: r.paid.offer.amount,
+					asset: r.paid.offer.asset,
+					payee: r.paid.offer.payTo,
 				});
 			if (r.declined && r.offers[0])
 				o.onRefused?.({
