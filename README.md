@@ -373,7 +373,7 @@ claude mcp add stellar-pay -- stellar-pay mcp   # or register it yourself
 stellar-pay mcp               # raw stdio server for Cursor, goose, or your own client
 ```
 
-**26 tools**, grouped by job:
+**27 tools**, grouped by job:
 
 | group | tools |
 |---|---|
@@ -382,7 +382,7 @@ stellar-pay mcp               # raw stdio server for Cursor, goose, or your own 
 | governance | `begin_task` / `end_task`, `spend_report` |
 | sessions | `session_open`, `session_status`, `session_close` (+ `curl{session:true}`) |
 | hire | `bounty_post`, `bounty_assign`, `bounty_open`, `bounty_dispute`, `bounty_resolve`, `bounty_status` |
-| earn | `bounty_feed`, `bounty_pack`, `bounty_submit` (directed), `bounty_submit_packet`, `bounty_watch` |
+| earn | `bounty_feed`, `bounty_pack`, `bounty_commit`, `bounty_submit` (directed), `bounty_submit_packet`, `bounty_watch` |
 | fund | `vault_draw`, `vault_status` |
 
 The agent-facing playbook — including the **Earning** loop — is
