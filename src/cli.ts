@@ -76,6 +76,8 @@ import {
 	checkLedger,
 	list as listReceipts,
 	record,
+	statement,
+	statementCsv,
 	verifyOnChain,
 } from "./pay/receipts.js";
 import {
@@ -140,6 +142,10 @@ type Args = {
 	limit?: number;
 	/** receipts --verify <id>: prove one ledger row against the chain */
 	verifyReceipt?: string;
+	/** receipts --statement [--csv]: the fiat-line ⇄ Stellar-tx join */
+	statement: boolean;
+	/** --csv: emit the statement as CSV rather than a table */
+	csv: boolean;
 	/** curl --session: pay via the host's registered one-way channel */
 	session: boolean;
 	/** curl --from-vault: pay an x402 offer with the vault as payer (on-chain cap) */
@@ -209,6 +215,8 @@ function parse(argv: string[]): Args {
 		positional: [],
 		force: false,
 		send: false,
+		statement: false,
+		csv: false,
 	};
 	for (let i = 1; i < argv.length; i++) {
 		const t = argv[i] ?? "";
@@ -249,6 +257,8 @@ function parse(argv: string[]): Args {
 			const n = Number(next());
 			if (Number.isInteger(n) && n > 0) a.limit = n;
 		} else if (t === "--verify") a.verifyReceipt = next();
+		else if (t === "--statement") a.statement = true;
+		else if (t === "--csv") a.csv = true;
 		else if (t === "--session") a.session = true;
 		else if (t === "--from-vault") a.fromVault = true;
 		else if (t === "--deposit") {
@@ -1508,6 +1518,35 @@ async function cmdReceipts(a: Args): Promise<void> {
 		if (!v.ok) process.exitCode = EXIT.runtime;
 		return;
 	}
+	// --statement: the join a finance team needs — every value-moving row with
+	// the URL that caused it AND the Stellar tx that settled it on one line,
+	// plus the policy rule that allowed it (followed from the payment's refs).
+	// Both directions from one artifact: invoice line → request, and back.
+	if (a.statement) {
+		const st = statement({ limit: a.limit ?? 10_000 });
+		if (a.csv) {
+			console.log(statementCsv(st));
+			return;
+		}
+		emit(a, { statement: st }, () => {
+			if (!st.length) return console.log("no value-moving receipts yet");
+			for (const r of st)
+				console.log(
+					`${r.at.slice(0, 19)}  ${r.kind.padEnd(13)} ${(r.amount ?? "").padStart(12)} ${(r.asset ?? "").padEnd(6)} ${
+						r.tx ? r.tx.slice(0, 10) : "—".padEnd(10)
+					}  ${r.url ?? r.payee ?? ""}${r.rule ? `  [${r.rule}]` : ""}`,
+				);
+			const unverifiable = st.filter((r) => !r.verifiable).length;
+			console.log(
+				`\n${st.length} row(s)${
+					unverifiable
+						? `, ${unverifiable} missing what an on-chain check needs (verify one with \`receipts --verify <id>\`)`
+						: " — every row carries what an on-chain check needs"
+				}`,
+			);
+		});
+		return;
+	}
 	const rows = listReceipts({ limit: a.limit ?? 20 });
 	emit(a, { receipts: rows }, () => {
 		if (!rows.length) return console.log("no receipts yet");
@@ -1883,6 +1922,7 @@ WALLET
                                              send USDC; 'max' drains the balance
   history [--limit N] [--json]
   receipts [--limit N] [--verify ID] [--json]  the local ledger; --verify proves a row on-chain
+  receipts --statement [--csv] [--limit N]  every value-moving row: the URL that caused it, the Stellar tx that settled it, the rule that allowed it
   receipts check                         tamper check: every row id must re-derive from its content
   session open <url> [--deposit 5] | status | close <url>   one-way payment channels (testnet)
   bounty post|assign|open|submit|pack|dispute|resolve|status   escrowed verification bounties (testnet)

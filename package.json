@@ -26,6 +26,7 @@
 		"test:scrimp": "tsx src/sandbox/scrimp-test.ts",
 		"test:ssrf": "tsx src/sandbox/ssrf-test.ts",
 		"test:units": "tsx src/sandbox/unit-test.ts",
+		"test:statement": "tsx src/sandbox/statement-test.ts",
 		"test:policy": "tsx src/sandbox/policy-test.ts",
 		"build": "tsc -p tsconfig.build.json",
 		"prepublishOnly": "npm run build && npm run typecheck",
