@@ -20,6 +20,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Keypair } from "@stellar/stellar-sdk";
 
+/** The account's current sequence number, straight from Horizon. Every
+ *  SUBMITTED transaction consumes one — success or failure — so this is how a
+ *  "nothing was submitted" claim gets proven rather than assumed. */
+async function accountSequence(publicKey: string): Promise<string> {
+	const res = await fetch(
+		`https://horizon-testnet.stellar.org/accounts/${publicKey}`,
+	);
+	if (!res.ok) throw new Error(`horizon ${res.status} reading sequence`);
+	return ((await res.json()) as { sequence: string }).sequence;
+}
+
 const PORT = Number(process.env.VAULT_FLOW_PORT ?? 8894);
 const DIR = mkdtempSync(join(tmpdir(), "stellar-pay-vault-flow-"));
 process.env.STELLAR_PAY_SESSION_DIR = DIR;
@@ -113,13 +124,40 @@ async function main() {
 	}
 
 	// 5. DRAW 4 → cumulative 6 > 5 → the CHAIN refuses.
+	//
+	// And prove the refusal is FREE: a cap breach must be caught while the
+	// transaction is being assembled (`__check_auth` runs in simulation), never
+	// by submitting a transaction that then fails. The proof is the fee
+	// source's SEQUENCE NUMBER: every submitted transaction consumes one and
+	// costs a fee, whether it succeeds or fails. If the sequence is unchanged
+	// across a refused draw, nothing was submitted and nothing was paid.
+	//
+	// Worth pinning rather than assuming: "the limit check costs nothing" is a
+	// real advantage over a platform whose check costs a failed transaction,
+	// and it would regress silently the first time this path started
+	// submitting before checking.
+	const seqBefore = await accountSequence(wallet.publicKey);
 	const d2 = await drawFromVault({ wallet, amountXlm: 4 });
+	const seqAfter = await accountSequence(wallet.publicKey);
 	console.log(
 		d2.ok
 			? "draw 4   ✗ WENT THROUGH — cap did not hold"
 			: `draw 4   ✓ REFUSED BY THE CHAIN: ${(d2.refusal ?? "").slice(0, 80)}…`,
 	);
 	if (d2.ok) throw new Error("over-cap draw was not refused");
+	if (d2.hash)
+		throw new Error(
+			`a refused draw must carry no transaction hash, got ${d2.hash}`,
+		);
+	console.log(
+		seqBefore === seqAfter
+			? `         ✓ free: agent sequence unchanged (${seqBefore}) — nothing was submitted, no fee paid`
+			: `         ✗ COSTLY: agent sequence ${seqBefore} → ${seqAfter} — a transaction WAS submitted to be refused`,
+	);
+	if (seqBefore !== seqAfter)
+		throw new Error(
+			"the cap refusal cost a submitted transaction — it must be caught in simulation, before submission",
+		);
 
 	// 6. REOPEN in a fresh process: durability of the persisted passkey.
 	const probePath = join(DIR, "reopen-probe.mts");

@@ -220,7 +220,16 @@ The contrast that matters, stated precisely: a hosted platform's spending
 limit is a **policy promise** enforced by its own servers — Circle's is a good
 one, and their MPC wallets are not simply "they hold your keys". Ours is a
 **property of the contract** (`__check_auth`): the refusal is a transaction
-anyone can verify, and it holds even if every server we run disappears. Proven
+anyone can verify, and it holds even if every server we run disappears.
+
+It is also **free**. `__check_auth` runs during simulation, so a breach is
+caught while the transaction is being assembled — nothing is submitted, no
+fee is paid, and on the 402 path no HTTP request is even sent. A platform
+whose limit lives in its servers can only refuse you after a round trip; a
+platform that checks on-chain by submitting pays for a failed transaction to
+find out. Proven, not asserted: `test:vault-flow` reads the agent account's
+sequence number either side of an over-cap draw and fails the run if it moved,
+since every submitted transaction consumes one whether it succeeds or not. Proven
 end-to-end: create → topup → draw → *pay a real 402 from the drawn float* →
 over-cap draw refused on-chain → reopen from persistence
 ([`test:vault-flow`](src/sandbox/vault-flow-test.ts)). Built on SDF's
