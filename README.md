@@ -271,6 +271,68 @@ nothing of ours. Treat the ledger as the index and Horizon as the witness.
 This ledger is deliberately the substrate reputation will be built from — see
 [Not built yet](#not-built-yet--and-why).
 
+## 🏛 Running this inside an organisation
+
+The ledger above exists because the second question an organisation asks —
+after "what does it do" — is "what does the audit trail look like". These are
+the cases this is actually built for, each with the control that makes it work
+and, below, the gaps that decide whether it works for you at all.
+
+**Metered API spend across a team of agents.** Agents buy data, inference and
+tools per call. You set the ceiling per host in
+`~/.config/stellar-pay/policy.json`, and `stellar-pay run` wraps anything —
+including tools that know nothing about payments — behind a proxy that pays
+their 402s. Every call *and every refusal* lands in the ledger with the rule
+that decided it.
+
+**Per-customer attribution.** `send` accepts muxed (`M…`) destinations, so a
+platform reselling agent work can route each customer's payment through one
+account without a memo scheme and without an account per customer. The routing
+id travels inside the address; passing a memo alongside one is refused rather
+than merged, because two conflicting routing answers are worse than none.
+
+**Month-end close.** `receipts --statement --csv` is the join a finance team
+actually needs — every value-moving row with its amount, asset, payee, the URL
+that caused it, the Stellar tx that settled it and the policy rule that
+authorised it, in the spreadsheet they already live in.
+
+**Continuous reconciliation.** `stellar-pay reconcile` checks the whole local
+ledger against Horizon's own payment history for that wallet, in four buckets:
+matched, on-chain-but-not-logged, logged-but-never-settled, and amount/payee
+mismatches. It exits **5** on a real gap and **6** when it could not fully
+verify — kept distinct on purpose, so a Horizon outage never reads as a missing
+payment. That distinction is what makes it safe on a cron.
+
+**A budget an agent cannot exceed.** The vault's cap lives in the smart
+account's `__check_auth`, so it holds even if every process of ours disappears,
+and an over-cap attempt is refused during simulation — costing no fee.
+`curl --from-vault` pays a 402 with the vault contract as the payer, under that
+same cap. Testnet.
+
+**A payment that can be debugged after the fact.** `stellar-pay debug` serves
+the ledger locally — every payment, refusal and rule in a browser — so "why did
+the agent buy that" is a question with an answer.
+
+### What an institution does not get here
+
+Stated plainly, because these decide whether this is usable for you at all. The
+full boundary, including who is liable for what, is
+[`docs/RESPONSIBILITY.md`](docs/RESPONSIBILITY.md).
+
+| | |
+|---|---|
+| **KYC / KYB** | None. We perform no identity checks and gate nothing behind them. That is the point for an autonomous agent, and a gap if your obligations require it. |
+| **Sanctions / AML screening** | None. If you must screen, screen before your policy allows the host. |
+| **A fiat leg** | None. No off-ramp, no regulated entity in this stack, no reconciliation to a bank balance. If you need that, it is elsewhere in your architecture. |
+| **Custody** | None, deliberately — funds land in your account or your vault contract, with no pooled or omnibus balance. That also means no recovery: lose the key, lose the funds. |
+| **A support SLA** | There is no service to be down and nobody to call. The CLI runs on your machine; an outage is between you, your RPC provider and Horizon. |
+| **Mainnet for the work layer** | Jobs, bounties, vault and sessions are testnet. The 402 client and catalog run on mainnet today. |
+
+One boundary worth reading twice: on mainnet the 402 path signs with a classic
+ed25519 key under **this software's** policy, not the chain's. The vault is what
+moves that boundary onto the chain, and the vault is testnet. Do not read "spend
+cap" as "chain-enforced" unless you are on the `--from-vault` path.
+
 ## ✅ Everything here is checkable
 
 Most agent-payment tooling asks you to believe a README. This one is built so
