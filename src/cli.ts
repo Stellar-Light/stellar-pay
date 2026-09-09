@@ -2017,8 +2017,9 @@ WALLET
   account default --name N | remove --name N
   topup [--buy] [--amount N]                 fund the wallet (QR + on-ramps; --buy opens a card ramp)
   cashout [--json]                          the EXIT: where USDC on Stellar converts to fiat
-  send <G…address|account-name> --amount <USDC|max> [--yes]
-                                             send USDC; 'max' drains the balance
+  send <G…|M…address|account-name> --amount <USDC|max> [--yes]
+                                             send USDC; 'max' drains the balance;
+                                             an M… (muxed) payee carries its own routing id
   history [--limit N] [--json]
   debug [--port N]                       local payment debugger: every payment, refusal and rule, in a browser
   receipts [--limit N] [--verify ID] [--json]  the local ledger; --verify proves a row on-chain
