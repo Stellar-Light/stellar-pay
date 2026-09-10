@@ -6,8 +6,13 @@
  *
  * These are plain classic-asset operations the sender submits itself, so —
  * unlike the sponsored x402/MPP flows — the sender needs a little XLM for the
- * network fee (~0.00001 XLM). That is the one place a stellar-pay wallet needs
- * XLM at all.
+ * network fee (~0.00001 XLM), and enough reserve to carry the trustline.
+ *
+ * Neither is unavoidable. A wallet onboarded through src/pay/sponsor.ts holds
+ * no XLM at all: the reserves are its sponsor's, it can always RECEIVE, and it
+ * sends whenever someone fee-bumps for it or the seller's 402 sponsors fees.
+ * So "a stellar-pay wallet needs a little XLM" is true of a self-funded wallet
+ * and false of a sponsored one — say which you mean.
  */
 
 import {
@@ -65,21 +70,91 @@ async function submit(
 	}
 }
 
-/** True once the account holds a USDC trustline (so it can receive USDC). */
-async function hasTrustline(
-	publicKey: string,
-	network: Network,
-): Promise<boolean> {
-	const b = await balances(publicKey, network);
-	return b.funded && b.usdc !== null;
+/**
+ * The base reserve, in XLM. Hardcoded because it has been 0.5 since protocol
+ * 11 and changing it is a validator vote, not a routine event — but it is a
+ * NETWORK parameter, so if a reserve check ever disagrees with Horizon, read
+ * `base_reserve_in_stroops` from /ledgers before trusting this line.
+ */
+const BASE_RESERVE_XLM = 0.5;
+
+/**
+ * XLM an account must hold to add one more subentry AND pay for the
+ * transaction that adds it: (2 + subentries + 1) base reserves, plus the fee.
+ *
+ * MEASURED on testnet 2026-09-10, in a bare account, because this module used
+ * to tell people "~1 XLM" and that number cannot work:
+ *
+ *   1.0000000 → tx_insufficient_balance   (the whole balance IS the minimum;
+ *                                          nothing spare for the fee)
+ *   1.5000000 → op_low_reserve            (the fee drops it back under)
+ *   1.5000100 → OK                        (1.5 of reserves + the 100-stroop fee)
+ *
+ * So the floor for a bare account is 1.50001, NOT the 1.6 an earlier draft of
+ * this guard rounded up to — 1.6 refuses accounts Horizon would accept, and
+ * calling the extra 0.1 "the fee" (it is 0.00001) is the kind of confident
+ * wrong number this whole guard exists to stop serving.
+ */
+function trustlineMinXlm(subentries: number): number {
+	return (
+		(2 + subentries + 1) * BASE_RESERVE_XLM + Number(BASE_FEE) / 10_000_000
+	);
 }
 
-/** Add the USDC trustline to this wallet. No-op (returns null) if already present. */
-export async function addTrustline(wallet: Wallet): Promise<string | null> {
-	if (await hasTrustline(wallet.publicKey, wallet.network)) return null;
-	return submit(wallet, (b) =>
-		b.addOperation(Operation.changeTrust({ asset: usdc(wallet.network) })),
+/** The bare-account floor — what `setup` and `topup` quote to a newcomer. */
+export const TRUSTLINE_MIN_XLM = trustlineMinXlm(0);
+
+/**
+ * What we tell someone to SEND, which is deliberately not the floor: land on
+ * the floor exactly and the account can never pay another fee. The padding is
+ * padding and is named as such wherever it is quoted.
+ */
+export const TRUSTLINE_SUGGESTED_XLM = 2;
+
+/** Explain a reserve failure the same way whether it is caught before submit
+ *  or comes back from Horizon — the point of the guard is that this reader
+ *  never sees a bare protocol code. */
+function reserveShortfall(held: string, need: number): string {
+	return (
+		`not enough XLM for a USDC trustline: this account holds ${held} and needs ${need.toFixed(7)} ` +
+		`(${need - Number(BASE_FEE) / 10_000_000} of reserves at ${BASE_RESERVE_XLM} each, plus the ${Number(BASE_FEE) / 10_000_000} fee). ` +
+		`Send ${Math.max(0, need - Number(held)).toFixed(7)} more XLM — or have whoever onboards you sponsor the ` +
+		"reserves, and hold no XLM at all."
 	);
+}
+
+export async function addTrustline(wallet: Wallet): Promise<string | null> {
+	// ONE read, used for all three questions: does the trustline already
+	// exist, does the account exist, can it afford another subentry.
+	const b = await balances(wallet.publicKey, wallet.network);
+	if (b.funded && b.usdc !== null) return null;
+	if (!b.funded)
+		throw new Error(
+			`${wallet.publicKey.slice(0, 8)}… does not exist on ${wallet.network} yet. ` +
+				`An account needs ${TRUSTLINE_MIN_XLM.toFixed(7)} XLM to exist and hold a USDC trustline — ` +
+				"or zero, if whoever onboards you sponsors its reserves (see src/pay/sponsor.ts).",
+		);
+	// Counted from the account's OWN subentries, not the bare-account figure:
+	// an account already carrying trustlines, signers, data entries or offers
+	// needs a reserve for each, and a check that ignored them would pass an
+	// account that then died op_low_reserve at submit.
+	const need = trustlineMinXlm(b.subentries);
+	if (Number(b.xlm) < need) throw new Error(reserveShortfall(b.xlm, need));
+	try {
+		return await submit(wallet, (b2) =>
+			b2.addOperation(Operation.changeTrust({ asset: usdc(wallet.network) })),
+		);
+	} catch (e) {
+		// The preflight above is a read followed by a write, so the balance can
+		// move underneath it. Losing that race must not hand back the raw code
+		// the preflight exists to replace.
+		const m = (e as Error).message;
+		if (m.includes("op_low_reserve") || m.includes("tx_insufficient_balance"))
+			throw new Error(
+				`${reserveShortfall((await balances(wallet.publicKey, wallet.network)).xlm, need)} (the balance changed between the check and the submission)`,
+			);
+		throw e;
+	}
 }
 
 /** Testnet only: create + fund a fresh account via friendbot. */
@@ -126,7 +201,7 @@ export async function setupWallet(network: Network): Promise<SetupResult> {
 		network,
 		funded: false,
 		trustlineTx: null,
-		note: "send at least ~1 XLM to this address to activate it, then run `stellar-pay setup --trustline` (with STELLAR_SECRET_KEY set to this secret) to add the USDC trustline",
+		note: `send ${TRUSTLINE_SUGGESTED_XLM} XLM to this address (the floor is ${TRUSTLINE_MIN_XLM.toFixed(7)} — 1.5 of reserves plus the fee, since 1 XLM activates the account but leaves nothing for the trustline; the rest is headroom for later fees), then \`stellar-pay setup --trustline\` with STELLAR_SECRET_KEY set to this secret. Or hold no XLM at all: whoever onboards you can sponsor both reserves in the same transaction that creates the account — a sponsored wallet receives freely, and sends whenever someone fee-bumps for it or the seller's 402 sponsors fees.`,
 	};
 }
 
@@ -459,7 +534,7 @@ export async function topupInfo(wallet: Wallet): Promise<TopupInfo> {
 	const parts: string[] = [];
 	if (!b.funded)
 		parts.push(
-			"account not yet activated — send it at least ~1 XLM first (an exchange withdrawal in XLM, or a friend)",
+			`account not yet activated — send it ${TRUSTLINE_SUGGESTED_XLM} XLM first (the floor is ${TRUSTLINE_MIN_XLM.toFixed(7)}; the rest is fee headroom) from an exchange withdrawal in XLM or a friend, or have whoever onboards you sponsor the reserves so it needs no XLM`,
 		);
 	if (b.funded && b.usdc === null)
 		parts.push(

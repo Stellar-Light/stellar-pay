@@ -57,17 +57,46 @@ is precisely the shape agent-to-agent commerce needs.
 - **We shipped instead:** the sandbox serves channel mode, so the loop is
   provable today with both sides ours — which is also the problem.
 
-### 2.2 There is no `upto` scheme on Stellar, so metered pricing is impossible
-x402's `exact` scheme is all that exists here. A seller who wants "up to
-$0.05, settle the actual usage" — the natural shape for inference, streaming
-and per-token work — has no scheme to express it, so every price is fixed in
+### 2.2 Metered pricing is still impossible in shipped form — but `upto` now has an author
+A seller who wants "up to $0.05, settle the actual usage" — the natural shape
+for inference, streaming and per-token work — still cannot express it. Every
+402 a buyer can actually pay today names `exact`, so every price is fixed in
 advance.
 
-- **Owner:** upstream x402 + whoever authors `scheme_upto_stellar.md`; the
-  SCF facilitator RFP already asks for it.
-- **Unblocks it:** the spec landing in `@x402/stellar`. We inherit it by
-  bumping a dependency — our catalog already records `scheme` per endpoint,
-  so no data-model change is needed on our side.
+**Update (2026-09-10):** this entry used to say the scheme did not exist and
+name its owner as "whoever authors `scheme_upto_stellar.md`". Someone did.
+[`Ithaca-Labs/openx402`](https://github.com/Ithaca-Labs/openx402) (Apache-2.0)
+carries a draft Stellar `upto` scheme at `x402-stellar-upto/spec/scheme_upto_stellar.md`
+— that exact filename — with a Soroban settlement contract, a threat model, an
+SDF review brief, and testnet evidence: two Horizon transactions settling a
+partial (max 10,000 → actual 3,000) and a zero (max 10,000 → actual 0). Their
+client implements the canonical x402 v2 `SchemeNetworkClient` on an unmodified
+`x402Client` and their `UPSTREAM.md` maps its exports into `@x402/stellar`,
+which is the same landing path this entry already predicted.
+
+It is a proposal, not a release, and we treat it as one. Their own
+facilitator's `/supported` declares `exact` and `upto` on `stellar:testnet`
+only (read 2026-09-10); their docs gate pubnet on an explicit audited
+settlement-contract address. One implementation of a draft is not a scheme a
+buyer can rely on, so we implement nothing against it yet.
+
+- **Owner:** no longer unnamed. The proposal is openx402's, pending SDF
+  technical review and then the x402 Technical Steering Committee; the SCF
+  facilitator RFP already asks for the capability.
+- **Unblocks it:** unchanged in mechanism — the scheme landing in
+  `@x402/stellar`, which we inherit by bumping a dependency. Added by their
+  work: an audited pubnet settlement contract, since a draft that only ever
+  settles on testnet moves no metered price on mainnet.
+- **We shipped instead:** nothing — and a claim this entry used to make about
+  our own readiness turns out to be false. It said "the catalog already
+  records `scheme` per endpoint, so no data-model change is needed on our
+  side". The probe does read `scheme` off every accept
+  (`src/probe.ts`), but the published row drops it on the way out: **0 of the
+  1,272 rows in `catalog.json` carry a `scheme` field** (checked 2026-09-10).
+  So the first real `upto` seller would be probed correctly and then published
+  as if it were `exact`. Carrying `scheme` onto the row is a small fix, it is
+  ours, and it is now the thing to do before this scheme ships rather than
+  after.
 
 ### 2.3 A smart account cannot pay a 402 directly — CLOSED on the client side; a separate facilitator limitation found while proving it
 **Update:** the client-side half of this is fixed, on our side, without an

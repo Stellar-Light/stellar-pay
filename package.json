@@ -60,7 +60,8 @@
 		"test:second-party": "tsx src/sandbox/second-party-test.ts",
 		"test:vault-key": "tsx src/sandbox/vault-key-test.ts",
 		"vectors": "tsx src/sandbox/gen-vectors.ts",
-		"test:vectors": "tsx src/sandbox/vectors-test.ts"
+		"test:vectors": "tsx src/sandbox/vectors-test.ts",
+		"test:sponsored": "tsx src/sandbox/sponsored-onboarding-test.ts"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.3.2",
