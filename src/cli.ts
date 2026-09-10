@@ -1924,6 +1924,7 @@ async function cmdSearch(a: Args): Promise<void> {
 		title: h.title,
 		price_usd: h.priceUSD,
 		protocol: h.protocol,
+		schemes: h.schemes,
 		method: h.method ?? "GET or POST",
 		alive_days: daysAlive(h),
 		last_verified: h.lastCheckedAt,
@@ -1933,10 +1934,20 @@ async function cmdSearch(a: Args): Promise<void> {
 			return console.log(
 				`no live match for "${query}" — try \`stellar-pay search\` with broader words, or a different task`,
 			);
-		for (const r of rows)
-			console.log(
-				`${r.price_usd != null ? `$${r.price_usd.toFixed(4)}`.padStart(9) : "     ?  "}  ${r.protocol.padEnd(5)} ${r.url}${r.title ? `  — ${r.title}` : ""}`,
+		for (const r of rows) {
+			// Show a scheme only when it is not already implied: `exact` is the
+			// default every price is quoted under, and `mpp` restates the
+			// protocol column. What is left is the thing that changes how you
+			// budget — `upto`, where you authorise a maximum and are billed for
+			// what you use. Today that prints nothing; the day a metered seller
+			// exists it is the one word that matters on the line.
+			const notable = (r.schemes ?? []).filter(
+				(x) => x !== "exact" && x !== "mpp",
 			);
+			console.log(
+				`${r.price_usd != null ? `$${r.price_usd.toFixed(4)}`.padStart(9) : "     ?  "}  ${r.protocol.padEnd(5)} ${notable.length ? `[${notable.join(",")}] ` : ""}${r.url}${r.title ? `  — ${r.title}` : ""}`,
+			);
+		}
 		console.log(
 			`\npay one:  stellar-pay curl <url> --yes --max-usd ${a.maxUsd}`,
 		);
