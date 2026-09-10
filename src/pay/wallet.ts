@@ -20,8 +20,18 @@ export function loadWallet(
 ): Wallet {
 	const secret = opts.secret ?? process.env.STELLAR_SECRET_KEY;
 	if (!secret)
+		// This is the first thing a newcomer sees, and it used to name only an
+		// env var — which assumes they already have a Stellar secret key. The
+		// population arriving here is the one a payment router just sent over
+		// with no wallet at all, so the error has to be the path, not a
+		// prerequisite. Keep the words "no wallet": the CLI matches on them to
+		// exit 4, the code an agent branches on.
 		throw new Error(
-			"no wallet: set STELLAR_SECRET_KEY (an S… secret whose account holds USDC)",
+			"no wallet.\n" +
+				"  make one:  stellar-pay setup --save main   (seals the key in the encrypted keystore)\n" +
+				"  fund it:   stellar-pay topup                (address, QR, and the routes that reach it)\n" +
+				"  have one:  set STELLAR_SECRET_KEY, or stellar-pay account import --name <name>\n" +
+				"  just look: stellar-pay offers <url> reads any 402 and pays nothing",
 		);
 	const network = (opts.network ??
 		process.env.STELLAR_NETWORK ??

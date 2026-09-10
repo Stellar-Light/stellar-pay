@@ -28,6 +28,7 @@ import {
 	Operation,
 	TransactionBuilder,
 } from "@stellar/stellar-sdk";
+import { addTrustline, TRUSTLINE_MIN_XLM } from "../pay/send.js";
 import {
 	feeBump,
 	onboardSponsored,
@@ -223,6 +224,46 @@ async function main() {
 		"payer STILL holds zero XLM",
 		Number(await xlm(user.publicKey())) === 0,
 		`${await xlm(user.publicKey())} XLM after receiving and sending`,
+	);
+
+	// ── 5. the UNSPONSORED path refuses with a reason ──────────────────────
+	// The contrast that makes the sponsored path worth having. Until today our
+	// own mainnet note said "send at least ~1 XLM, then add the trustline";
+	// that sequence cannot work, and it failed with a bare Horizon code.
+	const poor = Keypair.random();
+	const sp = await horizon.loadAccount(sponsor.publicKey());
+	const makePoor = new TransactionBuilder(sp, {
+		fee: BASE_FEE,
+		networkPassphrase: Networks.TESTNET,
+	})
+		.addOperation(
+			Operation.createAccount({
+				destination: poor.publicKey(),
+				startingBalance: "1",
+			}),
+		)
+		.setTimeout(60)
+		.build();
+	makePoor.sign(sponsor);
+	await horizon.submitTransaction(makePoor);
+	let refusal = "allowed";
+	try {
+		await addTrustline({
+			keypair: poor,
+			publicKey: poor.publicKey(),
+			network: NETWORK,
+		});
+	} catch (e) {
+		refusal = (e as Error).message;
+	}
+	check(
+		"1 XLM unsponsored: refused with a REASON",
+		refusal.includes(String(TRUSTLINE_MIN_XLM)) &&
+			refusal.includes("1.0000000") &&
+			refusal.includes("sponsor"),
+		refusal === "allowed"
+			? "it was allowed"
+			: "names the shortfall + the sponsored way out",
 	);
 
 	const sponsorXlm = await xlm(sponsor.publicKey());

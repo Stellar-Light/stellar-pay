@@ -74,11 +74,43 @@ async function hasTrustline(
 	return b.funded && b.usdc !== null;
 }
 
+/**
+ * XLM an account must hold before it can add a trustline and still pay for
+ * the transaction that adds it: 2 base reserves for the account, 1 for the
+ * trustline (1.5 XLM at the current 0.5 base reserve), plus fee headroom.
+ *
+ * MEASURED on testnet 2026-09-10, because this module used to tell people
+ * "~1 XLM" and that number cannot work: at 1 XLM the whole balance is the
+ * account's own minimum, so changeTrust dies `tx_insufficient_balance`
+ * (nothing spare for the fee); at exactly 1.5 it dies `op_low_reserve` (the
+ * fee drops it under the new minimum); 1.6 succeeds and leaves 1.5999900.
+ * Both failures are raw Horizon codes with no explanation — a newcomer who
+ * followed our own instructions hit one of them.
+ */
+export const TRUSTLINE_MIN_XLM = 1.6;
+
 /** Add the USDC trustline to this wallet. No-op (returns null) if already present. */
 export async function addTrustline(wallet: Wallet): Promise<string | null> {
 	if (await hasTrustline(wallet.publicKey, wallet.network)) return null;
-	return submit(wallet, (b) =>
-		b.addOperation(Operation.changeTrust({ asset: usdc(wallet.network) })),
+	// Refuse with a reason rather than forwarding an opaque protocol code.
+	// Every caller (setup --trustline, topup, the mainnet onboarding path)
+	// routes through here, so the check belongs here and not in each of them.
+	const b = await balances(wallet.publicKey, wallet.network);
+	if (!b.funded)
+		throw new Error(
+			`${wallet.publicKey.slice(0, 8)}… does not exist on ${wallet.network} yet. ` +
+				`An account needs ${TRUSTLINE_MIN_XLM} XLM to exist and hold a USDC trustline — ` +
+				"or zero, if whoever onboards you sponsors its reserves (see src/pay/sponsor.ts).",
+		);
+	if (Number(b.xlm) < TRUSTLINE_MIN_XLM)
+		throw new Error(
+			`not enough XLM for a USDC trustline: this account holds ${b.xlm} and needs ${TRUSTLINE_MIN_XLM} ` +
+				`(1.5 of reserves — 1 for the account, 0.5 for the trustline — plus the fee). ` +
+				`Send ${(TRUSTLINE_MIN_XLM - Number(b.xlm)).toFixed(4)} more XLM, or have a sponsor cover the ` +
+				"reserves so you never hold XLM at all.",
+		);
+	return submit(wallet, (b2) =>
+		b2.addOperation(Operation.changeTrust({ asset: usdc(wallet.network) })),
 	);
 }
 
@@ -126,7 +158,7 @@ export async function setupWallet(network: Network): Promise<SetupResult> {
 		network,
 		funded: false,
 		trustlineTx: null,
-		note: "send at least ~1 XLM to this address to activate it, then run `stellar-pay setup --trustline` (with STELLAR_SECRET_KEY set to this secret) to add the USDC trustline",
+		note: `send at least ${TRUSTLINE_MIN_XLM} XLM to this address (1.5 of reserves plus the fee — 1 XLM activates the account but leaves nothing for the trustline), then \`stellar-pay setup --trustline\` with STELLAR_SECRET_KEY set to this secret. Or hold no XLM at all: whoever onboards you can sponsor both reserves in the same transaction that creates the account.`,
 	};
 }
 
@@ -459,7 +491,7 @@ export async function topupInfo(wallet: Wallet): Promise<TopupInfo> {
 	const parts: string[] = [];
 	if (!b.funded)
 		parts.push(
-			"account not yet activated — send it at least ~1 XLM first (an exchange withdrawal in XLM, or a friend)",
+			`account not yet activated — send it at least ${TRUSTLINE_MIN_XLM} XLM first (an exchange withdrawal in XLM, or a friend), or have whoever onboards you sponsor the reserves so it needs no XLM`,
 		);
 	if (b.funded && b.usdc === null)
 		parts.push(
