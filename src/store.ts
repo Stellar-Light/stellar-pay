@@ -27,6 +27,11 @@ export type EndpointRow = {
 	acceptsStellar: boolean;
 	/** every network the 402 actually named, verbatim */
 	networks?: string[];
+	/** every payment scheme the 402 named (`exact`, `upto`, …), denormalised
+	 *  from `accepts` so the published snapshot can carry it. Absent on rows
+	 *  written before 2026-09-10 — see Entry.schemes for why that is null and
+	 *  not an empty list. */
+	schemes?: string[];
 	accepts: Accept[];
 	priceUSD: number | null;
 	source: "bazaar" | "mpp-router" | "stellar-directory" | "curated";

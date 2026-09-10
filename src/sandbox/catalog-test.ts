@@ -94,6 +94,55 @@ check(
 	`${all.length}`,
 );
 
+// ── the scheme a 402 named must survive the trip to the snapshot ────────
+// The probe read `scheme` off every accept from the start and toEntry dropped
+// it, so 0 of the 1,272 published rows carried one: the first metered (`upto`)
+// seller would have been probed correctly and published as if it were `exact`.
+const { toEntry } = await import("../catalog.js");
+
+check(
+	"a scheme on the accepts reaches the row",
+	JSON.stringify(
+		toEntry({ url: "https://x.example", accepts: [{ scheme: "upto" }] })
+			.schemes,
+	) === '["upto"]',
+	JSON.stringify(
+		toEntry({ url: "https://x.example", accepts: [{ scheme: "upto" }] })
+			.schemes,
+	),
+);
+check(
+	"several accepts collapse to the distinct set",
+	JSON.stringify(
+		toEntry({
+			url: "https://x.example",
+			accepts: [{ scheme: "exact" }, { scheme: "mpp" }, { scheme: "exact" }],
+		}).schemes,
+	) === '["exact","mpp"]',
+);
+check(
+	"a denormalised schemes field is taken as-is",
+	JSON.stringify(
+		toEntry({ url: "https://x.example", schemes: ["upto"], accepts: [] })
+			.schemes,
+	) === '["upto"]',
+);
+check(
+	"a row that never recorded one is null, NOT an empty list",
+	toEntry({ url: "https://x.example" }).schemes === null,
+	"[] would claim the 402 named no scheme; null admits we did not carry it",
+);
+check(
+	"accepts present but none named a scheme IS an empty list",
+	JSON.stringify(
+		toEntry({
+			url: "https://x.example",
+			accepts: [{ network: "stellar:pubnet" }],
+		}).schemes,
+	) === "[]",
+	"checked-and-none differs from never-checked",
+);
+
 console.log(
 	`\n${fail === 0 ? "ALL PASS" : `${fail} FAILED`} — ${pass}/${pass + fail} catalog-integrity checks`,
 );

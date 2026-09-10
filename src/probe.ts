@@ -384,6 +384,17 @@ async function main() {
 				method: r.method,
 				acceptsStellar,
 				networks,
+				// Denormalised beside `networks` and for the same reason: the
+				// published snapshot carries row fields, not the raw accepts.
+				schemes: [
+					...new Set(
+						r.accepts
+							.map((a) => a.scheme)
+							.filter(
+								(x): x is string => typeof x === "string" && x.length > 0,
+							),
+					),
+				],
 				accepts: r.accepts,
 				priceUSD,
 				source: c.source,

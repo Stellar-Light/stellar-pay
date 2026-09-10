@@ -23,6 +23,18 @@ export type Entry = {
 	acceptsStellar: boolean;
 	/** every network the 402 actually named (empty on older rows) */
 	networks: string[];
+	/**
+	 * Every payment SCHEME the 402 named — `exact` today, `upto` when a
+	 * metered seller exists. A scheme is not a protocol: `protocol` says x402
+	 * or MPP, this says how the price is settled, and an agent budgeting for
+	 * "up to $0.05, billed for what you use" needs the second one.
+	 *
+	 * NULL, never [], on a row recorded before this field existed. The probe
+	 * read `scheme` off every accept from the beginning and the published
+	 * snapshot dropped it, so an old row is an ADMISSION that we did not carry
+	 * the value — not a claim that the endpoint named no scheme.
+	 */
+	schemes: string[] | null;
 	priceUSD: number | null;
 	source: string;
 	lastStatus: string;
@@ -39,6 +51,21 @@ export const CATALOG_REPO = "Stellar-Light/stellar-pay";
 const iso = (d: unknown) =>
 	d instanceof Date ? d.toISOString() : typeof d === "string" ? d : null;
 
+/**
+ * Schemes for one row, from either shape it arrives in: the denormalised
+ * `schemes` a probe writes, or the `accepts` array Mongo has carried all
+ * along. Deriving from `accepts` means the next export populates the whole
+ * corpus without waiting for every endpoint to be re-probed.
+ */
+function schemesOf(r: Record<string, unknown>): string[] | null {
+	if (Array.isArray(r.schemes)) return r.schemes as string[];
+	if (!Array.isArray(r.accepts)) return null;
+	const seen = (r.accepts as Array<{ scheme?: string | null }>)
+		.map((a) => a?.scheme)
+		.filter((x): x is string => typeof x === "string" && x.length > 0);
+	return [...new Set(seen)];
+}
+
 export function toEntry(r: Record<string, unknown>): Entry {
 	return {
 		url: String(r.url),
@@ -49,6 +76,7 @@ export function toEntry(r: Record<string, unknown>): Entry {
 		protocol: String(r.protocol ?? "unknown"),
 		acceptsStellar: !!r.acceptsStellar,
 		networks: Array.isArray(r.networks) ? (r.networks as string[]) : [],
+		schemes: schemesOf(r),
 		priceUSD: typeof r.priceUSD === "number" ? r.priceUSD : null,
 		source: String(r.source ?? "curated"),
 		lastStatus: String(r.lastStatus ?? ""),
