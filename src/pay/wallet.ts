@@ -49,9 +49,16 @@ export async function balances(publicKey: string, network: Network) {
 		signal: AbortSignal.timeout(15_000),
 	});
 	if (r.status === 404)
-		return { funded: false as const, xlm: "0", usdc: null, others: [] };
+		return {
+			funded: false as const,
+			xlm: "0",
+			usdc: null,
+			others: [],
+			subentries: 0,
+		};
 	if (!r.ok) throw new Error(`horizon ${r.status}`);
 	const d = (await r.json()) as {
+		subentry_count?: number;
 		balances: Array<{
 			asset_type: string;
 			asset_code?: string;
@@ -73,5 +80,14 @@ export async function balances(publicKey: string, network: Network) {
 				balance: b.balance,
 			});
 	}
-	return { funded: true as const, xlm, usdc, others };
+	// Every subentry (trustline, signer, data entry, offer) costs one base
+	// reserve. A reserve check that ignores them passes an account that then
+	// dies op_low_reserve at submit.
+	return {
+		funded: true as const,
+		xlm,
+		usdc,
+		others,
+		subentries: d.subentry_count ?? 0,
+	};
 }
