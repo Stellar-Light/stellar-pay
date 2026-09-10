@@ -386,9 +386,12 @@ async function main() {
 				networks,
 				// Denormalised beside `networks` and for the same reason: the
 				// published snapshot carries row fields, not the raw accepts.
-				schemes: [
+				// Scoped to Stellar accepts — an `upto` on Base is not metered
+				// pricing a Stellar wallet can buy (see Entry.stellarSchemes).
+				stellarSchemes: [
 					...new Set(
 						r.accepts
+							.filter((a) => isStellar(a.network))
 							.map((a) => a.scheme)
 							.filter(
 								(x): x is string => typeof x === "string" && x.length > 0,

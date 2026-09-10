@@ -10,6 +10,7 @@
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
+import { isStellar } from "./pay/offers.js";
 
 const run = promisify(execFile);
 
@@ -24,17 +25,26 @@ export type Entry = {
 	/** every network the 402 actually named (empty on older rows) */
 	networks: string[];
 	/**
-	 * Every payment SCHEME the 402 named — `exact` today, `upto` when a
-	 * metered seller exists. A scheme is not a protocol: `protocol` says x402
-	 * or MPP, this says how the price is settled, and an agent budgeting for
-	 * "up to $0.05, billed for what you use" needs the second one.
+	 * Payment schemes this endpoint offers ON A STELLAR NETWORK — `exact`
+	 * today, `upto` when a metered Stellar seller exists. A scheme is not a
+	 * protocol: `protocol` says x402 or MPP, this says how the price settles,
+	 * and an agent budgeting for "up to $0.05, billed for what you use" needs
+	 * the second one.
 	 *
-	 * NULL, never [], on a row recorded before this field existed. The probe
-	 * read `scheme` off every accept from the beginning and the published
-	 * snapshot dropped it, so an old row is an ADMISSION that we did not carry
-	 * the value — not a claim that the endpoint named no scheme.
+	 * SCOPED TO STELLAR ON PURPOSE, and the reason is a bug this field had for
+	 * one publish on 2026-09-10: flattened across every accept, 540 rows read
+	 * `["exact","upto","mpp"]` when the `upto` was on eip155:8453 and Stellar
+	 * got `exact` only. x402 is a shared standard, so an endpoint's accepts
+	 * describe many chains at once and a scheme joined across them advertises
+	 * metered pricing a Stellar wallet cannot buy. Same defect as reading
+	 * `acceptsStellar` off a prefix match, which this catalog already guards.
+	 *
+	 * NULL, never [], on a row recorded before this field existed: an old row
+	 * is an ADMISSION that we did not carry the value, not a claim that the
+	 * endpoint named no scheme. [] means we read the accepts and no STELLAR
+	 * one named a scheme.
 	 */
-	schemes: string[] | null;
+	stellarSchemes: string[] | null;
 	priceUSD: number | null;
 	source: string;
 	lastStatus: string;
@@ -52,15 +62,20 @@ const iso = (d: unknown) =>
 	d instanceof Date ? d.toISOString() : typeof d === "string" ? d : null;
 
 /**
- * Schemes for one row, from either shape it arrives in: the denormalised
- * `schemes` a probe writes, or the `accepts` array Mongo has carried all
- * along. Deriving from `accepts` means the next export populates the whole
+ * Stellar-scheme set for one row, from either shape it arrives in: the
+ * denormalised field a probe writes, or the `accepts` array Mongo has carried
+ * all along. Deriving from `accepts` means the next export populates the whole
  * corpus without waiting for every endpoint to be re-probed.
  */
 function schemesOf(r: Record<string, unknown>): string[] | null {
-	if (Array.isArray(r.schemes)) return r.schemes as string[];
+	if (Array.isArray(r.stellarSchemes)) return r.stellarSchemes as string[];
 	if (!Array.isArray(r.accepts)) return null;
-	const seen = (r.accepts as Array<{ scheme?: string | null }>)
+	const seen = (
+		r.accepts as Array<{ scheme?: string | null; network?: string | null }>
+	)
+		// The filter that makes this a STELLAR catalog's field and not a census
+		// of every chain the endpoint happens to serve.
+		.filter((a) => isStellar(a?.network))
 		.map((a) => a?.scheme)
 		.filter((x): x is string => typeof x === "string" && x.length > 0);
 	return [...new Set(seen)];
@@ -76,7 +91,7 @@ export function toEntry(r: Record<string, unknown>): Entry {
 		protocol: String(r.protocol ?? "unknown"),
 		acceptsStellar: !!r.acceptsStellar,
 		networks: Array.isArray(r.networks) ? (r.networks as string[]) : [],
-		schemes: schemesOf(r),
+		stellarSchemes: schemesOf(r),
 		priceUSD: typeof r.priceUSD === "number" ? r.priceUSD : null,
 		source: String(r.source ?? "curated"),
 		lastStatus: String(r.lastStatus ?? ""),

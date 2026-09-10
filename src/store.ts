@@ -27,11 +27,12 @@ export type EndpointRow = {
 	acceptsStellar: boolean;
 	/** every network the 402 actually named, verbatim */
 	networks?: string[];
-	/** every payment scheme the 402 named (`exact`, `upto`, …), denormalised
-	 *  from `accepts` so the published snapshot can carry it. Absent on rows
-	 *  written before 2026-09-10 — see Entry.schemes for why that is null and
-	 *  not an empty list. */
-	schemes?: string[];
+	/** payment schemes the 402 named ON A STELLAR NETWORK (`exact`, `upto`, …),
+	 *  denormalised from `accepts` so the published snapshot can carry it.
+	 *  Stellar-scoped because an `upto` accept on Base is not metered pricing a
+	 *  Stellar wallet can buy. Absent on rows written before 2026-09-10 — see
+	 *  Entry.stellarSchemes for why that is null and not an empty list. */
+	stellarSchemes?: string[];
 	accepts: Accept[];
 	priceUSD: number | null;
 	source: "bazaar" | "mpp-router" | "stellar-directory" | "curated";

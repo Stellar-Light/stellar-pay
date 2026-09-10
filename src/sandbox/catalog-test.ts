@@ -103,12 +103,16 @@ const { toEntry } = await import("../catalog.js");
 check(
 	"a scheme on the accepts reaches the row",
 	JSON.stringify(
-		toEntry({ url: "https://x.example", accepts: [{ scheme: "upto" }] })
-			.schemes,
+		toEntry({
+			url: "https://x.example",
+			accepts: [{ scheme: "upto", network: "stellar:pubnet" }],
+		}).stellarSchemes,
 	) === '["upto"]',
 	JSON.stringify(
-		toEntry({ url: "https://x.example", accepts: [{ scheme: "upto" }] })
-			.schemes,
+		toEntry({
+			url: "https://x.example",
+			accepts: [{ scheme: "upto", network: "stellar:pubnet" }],
+		}).stellarSchemes,
 	),
 );
 check(
@@ -116,21 +120,52 @@ check(
 	JSON.stringify(
 		toEntry({
 			url: "https://x.example",
-			accepts: [{ scheme: "exact" }, { scheme: "mpp" }, { scheme: "exact" }],
-		}).schemes,
+			accepts: [
+				{ scheme: "exact", network: "stellar:pubnet" },
+				{ scheme: "mpp", network: "stellar:testnet" },
+				{ scheme: "exact", network: "stellar:pubnet" },
+			],
+		}).stellarSchemes,
 	) === '["exact","mpp"]',
+);
+check(
+	"an accept that names no network is not a Stellar accept",
+	JSON.stringify(
+		toEntry({ url: "https://x.example", accepts: [{ scheme: "exact" }] })
+			.stellarSchemes,
+	) === "[]",
+	"an unnamed network is not evidence of Stellar — the same rule acceptsStellar follows",
 );
 check(
 	"a denormalised schemes field is taken as-is",
 	JSON.stringify(
-		toEntry({ url: "https://x.example", schemes: ["upto"], accepts: [] })
-			.schemes,
+		toEntry({ url: "https://x.example", stellarSchemes: ["upto"], accepts: [] })
+			.stellarSchemes,
 	) === '["upto"]',
 );
 check(
 	"a row that never recorded one is null, NOT an empty list",
-	toEntry({ url: "https://x.example" }).schemes === null,
+	toEntry({ url: "https://x.example" }).stellarSchemes === null,
 	"[] would claim the 402 named no scheme; null admits we did not carry it",
+);
+// The false positive that reached the published snapshot on 2026-09-10:
+// agent402.tools serves 13 accepts across 14 chains, `upto` on Base and
+// `exact` on Stellar. Flattened, 540 rows advertised metered pricing that a
+// Stellar wallet cannot buy. x402 is a shared standard, so this shape is the
+// norm, not an edge case.
+check(
+	"an upto on ANOTHER chain is not a Stellar scheme",
+	JSON.stringify(
+		toEntry({
+			url: "https://agent402.example/api/random",
+			accepts: [
+				{ scheme: "upto", network: "eip155:8453" },
+				{ scheme: "exact", network: "solana:5eykt4Us" },
+				{ scheme: "exact", network: "stellar:pubnet" },
+			],
+		}).stellarSchemes,
+	) === '["exact"]',
+	"a scheme joined across chains advertises what a Stellar wallet cannot pay",
 );
 check(
 	"accepts present but none named a scheme IS an empty list",
@@ -138,7 +173,7 @@ check(
 		toEntry({
 			url: "https://x.example",
 			accepts: [{ network: "stellar:pubnet" }],
-		}).schemes,
+		}).stellarSchemes,
 	) === "[]",
 	"checked-and-none differs from never-checked",
 );
