@@ -1924,7 +1924,7 @@ async function cmdSearch(a: Args): Promise<void> {
 		title: h.title,
 		price_usd: h.priceUSD,
 		protocol: h.protocol,
-		schemes: h.schemes,
+		stellar_schemes: h.stellarSchemes,
 		method: h.method ?? "GET or POST",
 		alive_days: daysAlive(h),
 		last_verified: h.lastCheckedAt,
@@ -1941,8 +1941,8 @@ async function cmdSearch(a: Args): Promise<void> {
 			// budget — `upto`, where you authorise a maximum and are billed for
 			// what you use. Today that prints nothing; the day a metered seller
 			// exists it is the one word that matters on the line.
-			const notable = (r.schemes ?? []).filter(
-				(x) => x !== "exact" && x !== "mpp",
+			const notable = (r.stellar_schemes ?? []).filter(
+				(x: string) => x !== "exact" && x !== "mpp",
 			);
 			console.log(
 				`${r.price_usd != null ? `$${r.price_usd.toFixed(4)}`.padStart(9) : "     ?  "}  ${r.protocol.padEnd(5)} ${notable.length ? `[${notable.join(",")}] ` : ""}${r.url}${r.title ? `  — ${r.title}` : ""}`,
